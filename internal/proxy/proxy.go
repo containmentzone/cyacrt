@@ -50,7 +50,7 @@ func (s *Server) Reload() error {
 	routes := map[string]target{}
 	for _, b := range boxes {
 		for _, r := range b.Routes {
-			routes[strings.ToLower(r.Host)] = target{Route: r, IP: b.IP()}
+			routes[strings.ToLower(r.Host)] = target{Route: r, IP: s.Store.IP(b)}
 		}
 	}
 	s.mu.Lock()

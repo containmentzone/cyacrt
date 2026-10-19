@@ -17,9 +17,9 @@ everything else survive stop/start and host reboots.
 PID 1 is the image's own `ENTRYPOINT`+`CMD` (for exeuntu that's
 `/usr/local/bin/init`, which starts systemd). Override it with `--init`.
 
-The same disk boots under one of two tiers, picked per host at start:
+The same disk boots under one of two runtime drivers. At start, cyac uses the first one this host can run:
 
-| | VM tier | Container tier |
+| | `firecracker` (VM) | `runc` (container) |
 |---|---|---|
 | When | `/dev/kvm` usable, `firecracker` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
 | Runs under | Firecracker | runc |
@@ -27,10 +27,10 @@ The same disk boots under one of two tiers, picked per host at start:
 | Growing the disk | host extends the file, the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | host extends the file and runs online `resize2fs` |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
 
-The container tier gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
+The runc runtime gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
-code on my own machine", not as a sandbox. Set `CYAC_TIER=vm` or
-`CYAC_TIER=container` to force a tier.
+code on my own machine", not as a sandbox. Set `CYAC_RUNTIME=firecracker`
+or `CYAC_RUNTIME=runc` to force one.
 
 **Networking.** One bridge, `cyac0`, on 10.88.0.0/16 (host is
 10.88.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
@@ -50,12 +50,27 @@ hosts.
 There is no daemon besides the proxy. Every other command edits
 `$CYAC_DIR` (default `/var/lib/cyac`) directly under a file lock.
 
+## Code layout
+
+Two interfaces in `internal/driver` are the seams:
+
+- **`driver.Runtime`** boots a box's disk. It has two implementations,
+  `internal/runtime/firecracker` and `internal/runtime/runc`.
+- **`driver.Network`** gives a box an address and a link (a tap device or
+  a netns). Its implementation is `internal/network/bridge`.
+
+`internal/box` keeps box records, seeds disks and drives the lifecycle
+through those interfaces. `internal/proxy` is the front door, and
+`cmd/cyac` wires concrete drivers together. A new runtime or network
+backend is one package that implements one interface, plus a line in
+`cmd/cyac/main.go`.
+
 ## Usage
 
 ```sh
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
-cyac exec web                       # container tier only, for now
+cyac exec web                       # runc only, for now
 cyac expose web 8000 web.example.com   # prints a token
 cyac serve --acme-email you@example.com
 cyac resize web 50G
@@ -66,8 +81,8 @@ cyac stop web && cyac rm web
 
 Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
 `losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
-`runc` for the container tier (on a cgroup v2 host), or `firecracker`, KVM
-and a guest kernel at `$CYAC_DIR/vmlinux` for the VM tier. The guest kernel
+`runc` for the runc runtime (on a cgroup v2 host), or `firecracker`, KVM
+and a guest kernel at `$CYAC_DIR/vmlinux` for the Firecracker runtime. The guest kernel
 needs ext4, virtio-blk/net and `CONFIG_IP_PNP`; Firecracker's CI kernels
 should do. If another firewall (Docker, for example) sets the FORWARD policy
 to drop, allow `cyac0`.
@@ -93,7 +108,7 @@ optionally, links a guest kernel and runs the proxy:
         {
           services.cyac = {
             enable = true;
-            # kernel = ./vmlinux;   # enables the VM tier on KVM hosts
+            # kernel = ./vmlinux;   # enables Firecracker on KVM hosts
             serve = {
               enable = true;
               acmeEmail = "you@example.com";
@@ -127,7 +142,7 @@ Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
 
 Not tested yet:
 
-- **The VM tier.** There was no KVM in the sandbox.
+- **The Firecracker runtime.** There was no KVM in the sandbox.
 - **Online resize under runc.** The sandbox lacked `CAP_SYS_RESOURCE`.
 - **exeuntu itself.** Its layer blobs weren't reachable from the sandbox. Two things to check: that its `/etc/fstab` root entry matches a bare ext4 filesystem on `/dev/vda`, and how it behaves with the image's own SSH units masked.
 

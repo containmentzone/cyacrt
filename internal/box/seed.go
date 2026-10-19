@@ -11,10 +11,9 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-)
 
-// DNS is written into each box's network config.
-var DNS = "1.1.1.1"
+	"github.com/containmentzone/cyacrt/internal/driver"
+)
 
 // Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
 // scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it into a sparse
@@ -58,7 +57,7 @@ func (s Store) Seed(b *Box, sizeBytes int64) error {
 		return fmt.Errorf("unpack image: %v: %s", err, out)
 	}
 
-	if err := writeBoxConfig(scratch, b); err != nil {
+	if err := writeBoxConfig(scratch, b, s.Net.Addr(b.ID)); err != nil {
 		return err
 	}
 
@@ -78,7 +77,7 @@ func (s Store) Seed(b *Box, sizeBytes int64) error {
 // machine-id so systemd generates a fresh one on first boot.
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
-func writeBoxConfig(scratch string, b *Box) error {
+func writeBoxConfig(scratch string, b *Box, addr driver.Addr) error {
 	root, err := os.OpenRoot(scratch)
 	if err != nil {
 		return err
@@ -90,7 +89,7 @@ func writeBoxConfig(scratch string, b *Box) error {
 	}
 
 	network := fmt.Sprintf("[Match]\nName=eth0\n\n[Network]\nAddress=%s/%d\nGateway=%s\nDNS=%s\n",
-		b.IP(), PrefixLen, HostIP, DNS)
+		addr.IP, addr.Prefix, addr.Gateway, addr.DNS)
 	files := map[string]string{
 		"etc/hostname":                        b.Name + "\n",
 		"etc/machine-id":                      "",

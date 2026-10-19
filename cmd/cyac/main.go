@@ -23,7 +23,11 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/driver"
+	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
+	"github.com/containmentzone/cyacrt/internal/runtime/firecracker"
+	"github.com/containmentzone/cyacrt/internal/runtime/runc"
 )
 
 const usage = `usage: cyac <command> [args]
@@ -34,12 +38,13 @@ const usage = `usage: cyac <command> [args]
   rm <name>
   ls
   resize <name> <size>
-  exec <name> [cmd...]          (container tier only; default: bash -l)
+  exec <name> [cmd...]          (runc only; default: bash -l)
   expose <name> <port> <host> [--public]
   unexpose <host>
   serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
 
 State lives in $CYAC_DIR (default /var/lib/cyac).
+CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
 `
 
 func main() {
@@ -52,7 +57,14 @@ func main() {
 	if dir == "" {
 		dir = "/var/lib/cyac"
 	}
-	s := box.Store{Dir: dir}
+	s := box.Store{
+		Dir: dir,
+		Net: bridge.Network{DNS: "1.1.1.1"},
+		Runtimes: []driver.Runtime{
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
+			runc.Runtime{},
+		},
+	}
 	cmd, args := os.Args[1], os.Args[2:]
 	if cmd != "serve" && cmd != "ls" {
 		if err := s.Lock(); err != nil {
@@ -131,7 +143,7 @@ func dispatch(s box.Store, cmd string, args []string) error {
 				}
 				routes = append(routes, fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis))
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP(), s.Status(b), b.Image, strings.Join(routes, ", "))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, s.IP(b), s.Status(b), b.Image, strings.Join(routes, ", "))
 		}
 		return w.Flush()
 

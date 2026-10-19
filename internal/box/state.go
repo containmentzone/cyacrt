@@ -1,17 +1,18 @@
-// Package box manages boxes: per-box ext4 disks booted either as a
-// Firecracker VM or as a systemd container under runc.
+// Package box manages boxes: per-box ext4 disks, booted by a runtime
+// driver and attached by a network driver (see package driver).
 package box
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"syscall"
+
+	"github.com/containmentzone/cyacrt/internal/driver"
 )
 
 // Box is the persisted record of one box. The disk itself lives next to it.
@@ -40,7 +41,11 @@ type Route struct {
 //	<dir>/boxes/<name>.json   box record
 //	<dir>/disks/<name>.ext4   box disk
 //	<dir>/run/<name>/         runtime files while running (bundle, sockets, logs)
-type Store struct{ Dir string }
+type Store struct {
+	Dir      string
+	Net      driver.Network
+	Runtimes []driver.Runtime // in order of preference; the first available one is used
+}
 
 var validName = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}$`)
 
@@ -113,8 +118,8 @@ func (s Store) List() ([]*Box, error) {
 	return boxes, nil
 }
 
-// FreeID returns the lowest box ID not in use. IDs start at 2 because
-// 10.88.0.1 is the host side of the bridge.
+// FreeID returns the lowest box ID not in use. IDs start at 2 so network
+// drivers can keep low addresses (like a gateway) for themselves.
 func (s Store) FreeID() (int, error) {
 	boxes, err := s.List()
 	if err != nil {
@@ -131,18 +136,3 @@ func (s Store) FreeID() (int, error) {
 	}
 	return 0, errors.New("out of box IDs")
 }
-
-// Network layout: one bridge, 10.88.0.0/16, host at 10.88.0.1.
-const (
-	BridgeName = "cyac0"
-	PrefixLen  = 16
-)
-
-var HostIP = netip.MustParseAddr("10.88.0.1")
-
-func (b *Box) IP() netip.Addr {
-	return netip.AddrFrom4([4]byte{10, 88, byte(b.ID >> 8), byte(b.ID)})
-}
-
-// ifName is the host-side interface name (tap or veth); Linux caps names at 15 bytes.
-func (b *Box) ifName() string { return fmt.Sprintf("ax%d", b.ID) }
