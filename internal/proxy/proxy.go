@@ -1,7 +1,7 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host matches a route created with
 // `cyac expose`, and, unless that route is public, it carries the route's
-// token.
+// token or an OIDC session for an allowed user.
 package proxy
 
 import (
@@ -16,6 +16,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,7 @@ type target struct {
 
 type Server struct {
 	Store box.Store
+	OIDC  *OIDC // optional
 
 	mu     sync.RWMutex
 	routes map[string]target // by lowercased host
@@ -60,17 +62,24 @@ func (s *Server) Reload() error {
 }
 
 func (s *Server) lookup(host string) (target, bool) {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	t, ok := s.routes[strings.ToLower(host)]
+	t, ok := s.routes[strings.ToLower(hostname(host))]
 	return t, ok
+}
+
+func hostname(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		return h
+	}
+	return host
 }
 
 // HostPolicy only lets ACME issue certificates for exposed hosts.
 func (s *Server) HostPolicy(_ context.Context, host string) error {
+	if s.OIDC != nil && strings.EqualFold(host, s.OIDC.host) {
+		return nil
+	}
 	if _, ok := s.lookup(host); !ok {
 		return errors.New("unknown host")
 	}
@@ -78,19 +87,39 @@ func (s *Server) HostPolicy(_ context.Context, host string) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.OIDC != nil && strings.EqualFold(hostname(r.Host), s.OIDC.host) {
+		switch r.URL.Path {
+		case oidcPrefix + "login":
+			s.oidcLogin(w, r)
+			return
+		case oidcPrefix + "callback":
+			s.oidcCallback(w, r)
+			return
+		}
+	}
+
 	t, ok := s.lookup(r.Host)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
 
-	if r.URL.Path == loginPath {
+	switch {
+	case r.URL.Path == loginPath:
 		s.login(w, r, t)
+		return
+	case r.URL.Path == oidcPrefix+"finish" && s.OIDC != nil:
+		s.OIDC.finish(w, r, t)
 		return
 	}
 
 	tok, fromHeader := tokenFrom(r)
-	if !t.Public && !validToken(t.Route, tok) {
+	user, signedIn := s.OIDC.session(r, t.Host)
+	if !t.Public && !validToken(t.Route, tok) && !signedIn {
+		if s.OIDC != nil && r.Method == http.MethodGet && !fromHeader {
+			s.OIDC.redirect(w, r)
+			return
+		}
 		w.Header().Set("WWW-Authenticate", `Basic realm="cyac"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -110,7 +139,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if fromHeader {
 				pr.Out.Header.Del("Authorization")
 			}
-			stripCookie(pr.Out, cookieName)
+			stripCookie(pr.Out, cookieName, sessionCookie)
+			if signedIn {
+				pr.Out.Header.Set("X-Cyac-User", user.Sub)
+				if user.Email != "" {
+					pr.Out.Header.Set("X-Cyac-Email", user.Email)
+				}
+			}
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("proxy %s: %v", r.Host, err)
@@ -157,11 +192,11 @@ func validToken(rt box.Route, tok string) bool {
 	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(rt.TokenHash)) == 1
 }
 
-func stripCookie(r *http.Request, name string) {
+func stripCookie(r *http.Request, names ...string) {
 	cookies := r.Cookies()
 	r.Header.Del("Cookie")
 	for _, c := range cookies {
-		if c.Name != name {
+		if !slices.Contains(names, c.Name) {
 			r.AddCookie(c)
 		}
 	}

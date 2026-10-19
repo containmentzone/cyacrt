@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,6 +43,8 @@ const usage = `usage: cyac <command> [args]
   expose <name> <port> <host> [--public]
   unexpose <host>
   serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
+        [--oidc-issuer <url> --oidc-client-id <id> --oidc-client-secret-file <f>
+         --oidc-redirect-url https://<auth host>/__cyac/oidc/callback --oidc-allow <sub|email>,...]
 
 State lives in $CYAC_DIR (default /var/lib/cyac).
 CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
@@ -225,8 +228,34 @@ func dispatch(s box.Store, cmd string, args []string) error {
 		email := fs.String("acme-email", "", "enable Let's Encrypt for exposed hosts")
 		httpsAddr := fs.String("https", ":443", "HTTPS listen address (ACME mode)")
 		httpAddr := fs.String("http", ":80", "HTTP listen address for ACME challenges (ACME mode)")
+		issuer := fs.String("oidc-issuer", "", "enable OIDC sign-in with this issuer")
+		clientID := fs.String("oidc-client-id", "", "OIDC client ID")
+		secretFile := fs.String("oidc-client-secret-file", "", "file holding the OIDC client secret")
+		redirect := fs.String("oidc-redirect-url", "", "OIDC callback, https://<auth host>/__cyac/oidc/callback")
+		allow := fs.String("oidc-allow", "", "comma-separated subjects or verified emails allowed to sign in")
 		parse(fs, args, 0)
-		return serve(s, *listen, *email, *httpsAddr, *httpAddr)
+		srv := &proxy.Server{Store: s}
+		if *issuer != "" {
+			secret, err := os.ReadFile(*secretFile)
+			if err != nil {
+				return err
+			}
+			key, err := oidcKey(s.Dir)
+			if err != nil {
+				return err
+			}
+			var users []string
+			for _, u := range strings.Split(*allow, ",") {
+				if u = strings.TrimSpace(u); u != "" {
+					users = append(users, u)
+				}
+			}
+			srv.OIDC, err = proxy.NewOIDC(context.Background(), *issuer, *clientID, strings.TrimSpace(string(secret)), *redirect, users, key)
+			if err != nil {
+				return err
+			}
+		}
+		return serve(s, srv, *listen, *email, *httpsAddr, *httpAddr)
 
 	default:
 		fmt.Fprint(os.Stderr, usage)
@@ -235,8 +264,7 @@ func dispatch(s box.Store, cmd string, args []string) error {
 	return nil
 }
 
-func serve(s box.Store, listen, email, httpsAddr, httpAddr string) error {
-	srv := &proxy.Server{Store: s}
+func serve(s box.Store, srv *proxy.Server, listen, email, httpsAddr, httpAddr string) error {
 	if err := srv.Reload(); err != nil {
 		return err
 	}
@@ -271,6 +299,18 @@ func serve(s box.Store, listen, email, httpsAddr, httpAddr string) error {
 	https := &http.Server{Addr: httpsAddr, Handler: srv, TLSConfig: m.TLSConfig()}
 	log.Printf("serving HTTPS on %s", httpsAddr)
 	return https.ListenAndServeTLS("", "")
+}
+
+// oidcKey signs OIDC sessions. It lives in the state dir so a restart
+// doesn't sign everyone out; delete it to revoke every session.
+func oidcKey(dir string) ([]byte, error) {
+	path := filepath.Join(dir, "oidc.key")
+	if k, err := os.ReadFile(path); err == nil && len(k) >= 32 {
+		return k, nil
+	}
+	k := make([]byte, 32)
+	rand.Read(k)
+	return k, os.WriteFile(path, k, 0o600)
 }
 
 // parse handles flags before or after positional args and requires exactly n of them.

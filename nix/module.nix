@@ -12,6 +12,7 @@ self:
 
 let
   cfg = config.services.cyac;
+  oidc = cfg.serve.oidc;
 in
 {
   options.services.cyac = {
@@ -58,6 +59,41 @@ in
         default = false;
         description = "Open TCP 80 and 443 (ACME mode only).";
       };
+
+      oidc = {
+        issuer = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "https://id.example.com";
+          description = "OIDC issuer URL. Setting it lets allowed users sign in to non-public routes; route tokens keep working.";
+        };
+
+        clientId = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          description = "OIDC client ID.";
+        };
+
+        clientSecretFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          description = "File holding the OIDC client secret, passed to the service with LoadCredential.";
+        };
+
+        redirectUrl = lib.mkOption {
+          type = lib.types.str;
+          default = "";
+          example = "https://auth.example.com/__cyac/oidc/callback";
+          description = "The one redirect URI to register with the provider. Its host doesn't have to be an exposed route.";
+        };
+
+        allow = lib.mkOption {
+          type = lib.types.listOf lib.types.str;
+          default = [ ];
+          example = [ "you@example.com" ];
+          description = "Subjects or verified emails allowed to sign in. Required: OIDC never opens a route to everyone.";
+        };
+      };
     };
   };
 
@@ -86,9 +122,37 @@ in
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       serviceConfig = {
-        ExecStart =
-          "${lib.getExe cfg.package} serve "
-          + (if cfg.serve.acmeEmail != null then "--acme-email ${cfg.serve.acmeEmail}" else "--listen ${cfg.serve.listen}");
+        ExecStart = lib.escapeShellArgs (
+          [
+            (lib.getExe cfg.package)
+            "serve"
+          ]
+          ++ (
+            if cfg.serve.acmeEmail != null then
+              [
+                "--acme-email"
+                cfg.serve.acmeEmail
+              ]
+            else
+              [
+                "--listen"
+                cfg.serve.listen
+              ]
+          )
+          ++ lib.optionals (oidc.issuer != null) [
+            "--oidc-issuer"
+            oidc.issuer
+            "--oidc-client-id"
+            oidc.clientId
+            "--oidc-client-secret-file"
+            "%d/oidc-client-secret"
+            "--oidc-redirect-url"
+            oidc.redirectUrl
+            "--oidc-allow"
+            (lib.concatStringsSep "," oidc.allow)
+          ]
+        );
+        LoadCredential = lib.mkIf (oidc.issuer != null) "oidc-client-secret:${oidc.clientSecretFile}";
         Restart = "on-failure";
       };
     };
@@ -96,6 +160,13 @@ in
     networking.firewall.allowedTCPPorts = lib.mkIf (
       cfg.serve.enable && cfg.serve.openFirewall && cfg.serve.acmeEmail != null
     ) [ 80 443 ];
+
+    assertions = lib.optionals (cfg.serve.enable && oidc.issuer != null) [
+      {
+        assertion = oidc.clientSecretFile != null && oidc.allow != [ ];
+        message = "services.cyac.serve.oidc needs clientSecretFile and a non-empty allow list.";
+      }
+    ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
       services.cyac: networking.nftables.flushRuleset wipes cyac's "inet cyac" table on every

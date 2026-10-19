@@ -42,8 +42,13 @@ in.
 only if its Host matches a route created with `cyac expose`. Everything
 else gets a 404. Unless a route is `--public`, the request also needs that
 route's token, as `Authorization: Bearer`, as a basic-auth password, or as a
-cookie set by visiting `/__cyac/login?token=…`. The proxy strips its own
-credentials and any inbound `X-Cyac-*` headers before forwarding. With
+cookie set by visiting `/__cyac/login?token=…`. With `--oidc-issuer`,
+browsers can instead sign in with an OpenID Connect provider, and only
+the subjects or verified emails in `--oidc-allow` get in. Every route
+shares one callback (`--oidc-redirect-url`), so the provider needs a
+single redirect URI. The proxy strips its own credentials and any inbound
+`X-Cyac-*` headers before forwarding, then sets `X-Cyac-User` and
+`X-Cyac-Email` for OIDC users. With
 `--acme-email` it gets Let's Encrypt certificates, but only for exposed
 hosts.
 
@@ -113,6 +118,13 @@ optionally, links a guest kernel and runs the proxy:
               enable = true;
               acmeEmail = "you@example.com";
               openFirewall = true;
+              # oidc = {
+              #   issuer = "https://id.example.com";
+              #   clientId = "cyac";
+              #   clientSecretFile = "/run/secrets/cyac-oidc";
+              #   redirectUrl = "https://auth.example.com/__cyac/oidc/callback";
+              #   allow = [ "you@example.com" ];
+              # };
             };
           };
         }
