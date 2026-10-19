@@ -134,7 +134,7 @@ func (s Store) FreeID() (int, error) {
 
 // Network layout: one bridge, 10.88.0.0/16, host at 10.88.0.1.
 const (
-	BridgeName = "cyacrt0"
+	BridgeName = "cyac0"
 	PrefixLen  = 16
 )
 

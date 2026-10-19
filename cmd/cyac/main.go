@@ -1,5 +1,5 @@
-// Command cyacrt manages boxes on a single host and serves the proxy in
-// front of them. There is no daemon besides `cyacrt serve`: every other
+// Command cyac manages boxes on a single host and serves the proxy in
+// front of them. There is no daemon besides `cyac serve`: every other
 // command edits the state directory directly under a file lock.
 package main
 
@@ -26,7 +26,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/proxy"
 )
 
-const usage = `usage: cyacrt <command> [args]
+const usage = `usage: cyac <command> [args]
 
   new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024] [--init cmd]
   start <name>
@@ -39,7 +39,7 @@ const usage = `usage: cyacrt <command> [args]
   unexpose <host>
   serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
 
-State lives in $CYACRT_DIR (default /var/lib/cyacrt).
+State lives in $CYAC_DIR (default /var/lib/cyac).
 `
 
 func main() {
@@ -48,9 +48,9 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	dir := os.Getenv("CYACRT_DIR")
+	dir := os.Getenv("CYAC_DIR")
 	if dir == "" {
-		dir = "/var/lib/cyacrt"
+		dir = "/var/lib/cyac"
 	}
 	s := box.Store{Dir: dir}
 	cmd, args := os.Args[1], os.Args[2:]
@@ -60,7 +60,7 @@ func main() {
 		}
 	}
 	if err := dispatch(s, cmd, args); err != nil {
-		log.Fatal("cyacrt: ", err)
+		log.Fatal("cyac: ", err)
 	}
 }
 
@@ -149,7 +149,7 @@ func dispatch(s box.Store, cmd string, args []string) error {
 
 	case "exec":
 		if len(args) < 1 {
-			return fmt.Errorf("usage: cyacrt exec <name> [cmd...]")
+			return fmt.Errorf("usage: cyac exec <name> [cmd...]")
 		}
 		b, err := s.Get(args[0])
 		if err != nil {
@@ -188,7 +188,7 @@ func dispatch(s box.Store, cmd string, args []string) error {
 			return err
 		}
 		if token != "" {
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyacrt/login?token=%s\n", token, host, token)
+			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", token, host, token)
 		}
 		return nil
 

@@ -1,6 +1,6 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host matches a route created with
-// `cyacrt expose`, and, unless that route is public, it carries the route's
+// `cyac expose`, and, unless that route is public, it carries the route's
 // token.
 package proxy
 
@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	cookieName = "cyacrt_token"
-	loginPath  = "/__cyacrt/login"
+	cookieName = "cyac_token"
+	loginPath  = "/__cyac/login"
 )
 
 type target struct {
@@ -91,7 +91,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	tok, fromHeader := tokenFrom(r)
 	if !t.Public && !validToken(t.Route, tok) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="cyacrt"`)
+		w.Header().Set("WWW-Authenticate", `Basic realm="cyac"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -102,7 +102,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			pr.Out.Host = pr.In.Host // apps see the public hostname
 			pr.SetXForwarded()
 			for k := range pr.Out.Header {
-				if strings.HasPrefix(http.CanonicalHeaderKey(k), "X-Cyacrt-") {
+				if strings.HasPrefix(http.CanonicalHeaderKey(k), "X-Cyac-") {
 					pr.Out.Header.Del(k)
 				}
 			}
