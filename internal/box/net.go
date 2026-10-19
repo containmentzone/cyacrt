@@ -21,23 +21,23 @@ func run(name string, args ...string) error {
 // (bridge port isolation handles that at L2), not private or link-local
 // ranges. 169.254.0.0/16 stays reserved for future host services.
 const nftRules = `
-table inet altexe
-delete table inet altexe
-table inet altexe {
+table inet cyacrt
+delete table inet cyacrt
+table inet cyacrt {
 	chain input {
 		type filter hook input priority 0; policy accept;
-		iifname "altexe0" ct state established,related accept
-		iifname "altexe0" drop
+		iifname "cyacrt0" ct state established,related accept
+		iifname "cyacrt0" drop
 	}
 	chain forward {
 		type filter hook forward priority 0; policy accept;
-		iifname "altexe0" ct state established,related accept
-		iifname "altexe0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
-		iifname "altexe0" accept
+		iifname "cyacrt0" ct state established,related accept
+		iifname "cyacrt0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
+		iifname "cyacrt0" accept
 	}
 	chain postrouting {
 		type nat hook postrouting priority 100;
-		ip saddr 10.88.0.0/16 oifname != "altexe0" masquerade
+		ip saddr 10.88.0.0/16 oifname != "cyacrt0" masquerade
 	}
 }
 `
@@ -87,7 +87,7 @@ func addTap(b *Box) error {
 	return attach(b.ifName())
 }
 
-func netnsName(b *Box) string { return "altexe-" + b.Name }
+func netnsName(b *Box) string { return "cyacrt-" + b.Name }
 
 // addNetns creates a named netns with eth0 configured, for the runc tier.
 // The address is also in the disk's networkd config, so it stays put if

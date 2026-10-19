@@ -1,4 +1,4 @@
-module github.com/acuteaura/altexe
+module github.com/containmentzone/cyacrt
 
 go 1.26.0
 

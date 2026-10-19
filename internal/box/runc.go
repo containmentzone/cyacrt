@@ -15,7 +15,7 @@ import (
 // This is NOT a security boundary: systemd needs CAP_SYS_ADMIN and a
 // writable cgroup subtree, so treat these boxes as trusted.
 
-func containerID(b *Box) string { return "altexe-" + b.Name }
+func containerID(b *Box) string { return "cyacrt-" + b.Name }
 
 func startContainer(s Store, b *Box) error {
 	dir := s.RunDir(b.Name)
@@ -91,7 +91,7 @@ func containerSpec(b *Box, netnsPath string) *specs.Spec {
 		Process: &specs.Process{
 			Args: b.Init,
 			// systemd reads $container to skip units that make no sense here.
-			Env:          []string{"container=altexe", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+			Env:          []string{"container=cyacrt", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 			Cwd:          "/",
 			Capabilities: &specs.LinuxCapabilities{Bounding: caps, Effective: caps, Permitted: caps},
 		},
@@ -113,7 +113,7 @@ func containerSpec(b *Box, netnsPath string) *specs.Spec {
 				{Type: specs.MountNamespace}, {Type: specs.CgroupNamespace},
 				{Type: specs.NetworkNamespace, Path: netnsPath},
 			},
-			CgroupsPath: "/altexe/" + b.Name,
+			CgroupsPath: "/cyacrt/" + b.Name,
 			Resources: &specs.LinuxResources{
 				Memory: &specs.LinuxMemory{Limit: &mem},
 				CPU:    &specs.LinuxCPU{Quota: &quota, Period: &period},

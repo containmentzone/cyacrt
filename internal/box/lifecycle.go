@@ -19,9 +19,9 @@ const (
 func (s Store) KernelPath() string { return filepath.Join(s.Dir, "vmlinux") }
 
 // DetectTier picks the VM tier when this host can run it, else the container
-// tier. ALTEXE_TIER overrides the choice.
+// tier. CYACRT_TIER overrides the choice.
 func (s Store) DetectTier() string {
-	if t := os.Getenv("ALTEXE_TIER"); t != "" {
+	if t := os.Getenv("CYACRT_TIER"); t != "" {
 		return t
 	}
 	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)

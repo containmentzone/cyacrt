@@ -66,14 +66,14 @@ func (s Store) Seed(b *Box, sizeBytes int64) error {
 	if err := createSparse(disk, sizeBytes); err != nil {
 		return err
 	}
-	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "altexe-root", "-d", scratch, disk).CombinedOutput(); err != nil {
+	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "cyacrt-root", "-d", scratch, disk).CombinedOutput(); err != nil {
 		os.Remove(disk)
 		return fmt.Errorf("mkfs.ext4: %v: %s", err, out)
 	}
 	return nil
 }
 
-// writeBoxConfig drops the only files altexe adds to an image: hostname,
+// writeBoxConfig drops the only files cyacrt adds to an image: hostname,
 // a systemd-networkd config with the box's static IP, and an empty
 // machine-id so systemd generates a fresh one on first boot.
 // The scratch tree is untrusted image content, so all writes go through
@@ -94,7 +94,7 @@ func writeBoxConfig(scratch string, b *Box) error {
 	files := map[string]string{
 		"etc/hostname":                          b.Name + "\n",
 		"etc/machine-id":                        "",
-		"etc/systemd/network/10-altexe.network": network,
+		"etc/systemd/network/10-cyacrt.network": network,
 	}
 	for _, dir := range []string{"etc", "etc/systemd", "etc/systemd/network"} {
 		if err := root.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {

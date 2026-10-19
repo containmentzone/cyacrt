@@ -1,4 +1,4 @@
-# altexe
+# cyacrt
 
 A small, single-host take on exe.dev: boxes that act like little VMs, built
 from any OCI image, behind an HTTPS proxy that is closed by default.
@@ -8,7 +8,7 @@ The whole thing is meant to stay small enough to read in one sitting
 
 ## How it works
 
-**A box is a disk, not a container.** `altexe new` pulls an image once,
+**A box is a disk, not a container.** `cyacrt new` pulls an image once,
 unpacks it into a sparse ext4 file, and adds three files: the hostname, a
 systemd-networkd config with the box's static IP, and an empty machine-id.
 From then on the disk *is* the box. apt installs, files in `/root`, and
@@ -21,7 +21,7 @@ The same disk boots under one of two tiers, picked per host at start:
 
 | | VM tier | Container tier |
 |---|---|---|
-| When | `/dev/kvm` usable, `firecracker` on PATH, `$ALTEXE_DIR/vmlinux` present | otherwise |
+| When | `/dev/kvm` usable, `firecracker` on PATH, `$CYACRT_DIR/vmlinux` present | otherwise |
 | Runs under | Firecracker | runc |
 | Root | disk as `/dev/vda` | disk loop-mounted on the host |
 | Growing the disk | host extends the file, the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | host extends the file and runs online `resize2fs` |
@@ -29,37 +29,37 @@ The same disk boots under one of two tiers, picked per host at start:
 
 The container tier gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
-code on my own machine", not as a sandbox. Set `ALTEXE_TIER=vm` or
-`ALTEXE_TIER=container` to force a tier.
+code on my own machine", not as a sandbox. Set `CYACRT_TIER=vm` or
+`CYACRT_TIER=container` to force a tier.
 
-**Networking.** One bridge, `altexe0`, on 10.88.0.0/16 (host is
+**Networking.** One bridge, `cyacrt0`, on 10.88.0.0/16 (host is
 10.88.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
 nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
 
-**Proxy.** `altexe serve` is an `httputil.ReverseProxy`. A request is routed
-only if its Host matches a route created with `altexe expose`. Everything
+**Proxy.** `cyacrt serve` is an `httputil.ReverseProxy`. A request is routed
+only if its Host matches a route created with `cyacrt expose`. Everything
 else gets a 404. Unless a route is `--public`, the request also needs that
 route's token, as `Authorization: Bearer`, as a basic-auth password, or as a
-cookie set by visiting `/__altexe/login?token=…`. The proxy strips its own
-credentials and any inbound `X-Altexe-*` headers before forwarding. With
+cookie set by visiting `/__cyacrt/login?token=…`. The proxy strips its own
+credentials and any inbound `X-Cyacrt-*` headers before forwarding. With
 `--acme-email` it gets Let's Encrypt certificates, but only for exposed
 hosts.
 
 There is no daemon besides the proxy. Every other command edits
-`$ALTEXE_DIR` (default `/var/lib/altexe`) directly under a file lock.
+`$CYACRT_DIR` (default `/var/lib/cyacrt`) directly under a file lock.
 
 ## Usage
 
 ```sh
-altexe new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
-altexe ls
-altexe exec web                       # container tier only, for now
-altexe expose web 8000 web.example.com   # prints a token
-altexe serve --acme-email you@example.com
-altexe resize web 50G
-altexe stop web && altexe rm web
+cyacrt new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
+cyacrt ls
+cyacrt exec web                       # container tier only, for now
+cyacrt expose web 8000 web.example.com   # prints a token
+cyacrt serve --acme-email you@example.com
+cyacrt resize web 50G
+cyacrt stop web && cyacrt rm web
 ```
 
 ## Host requirements
@@ -67,10 +67,10 @@ altexe stop web && altexe rm web
 Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
 `losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
 `runc` for the container tier (on a cgroup v2 host), or `firecracker`, KVM
-and a guest kernel at `$ALTEXE_DIR/vmlinux` for the VM tier. The guest kernel
+and a guest kernel at `$CYACRT_DIR/vmlinux` for the VM tier. The guest kernel
 needs ext4, virtio-blk/net and `CONFIG_IP_PNP`; Firecracker's CI kernels
 should do. If another firewall (Docker, for example) sets the FORWARD policy
-to drop, allow `altexe0`.
+to drop, allow `cyacrt0`.
 
 ## What has been tested
 
