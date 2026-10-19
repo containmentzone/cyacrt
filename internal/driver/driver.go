@@ -3,7 +3,10 @@
 // internal/runtime/* and internal/network/*; package box drives them.
 package driver
 
-import "net/netip"
+import (
+	"net/netip"
+	"os/exec"
+)
 
 // Machine is everything a driver needs to know about one box.
 type Machine struct {
@@ -59,8 +62,9 @@ type Runtime interface {
 	Cleanup(m *Machine)
 	// Grow makes an already extended disk file visible at its new size.
 	Grow(m *Machine) error
-	// Exec runs a command in the box on the caller's terminal.
-	Exec(m *Machine, args []string) error
+	// Command returns a command that runs args inside the box when started
+	// with a terminal on its stdio (the daemon attaches a pty).
+	Command(m *Machine, args []string) (*exec.Cmd, error)
 }
 
 // Network gives boxes links and addresses.

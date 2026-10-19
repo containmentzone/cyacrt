@@ -1,33 +1,32 @@
-// Command cyac manages boxes on a single host and serves the proxy in
-// front of them. There is no daemon besides `cyac serve`: every other
-// command edits the state directory directly under a file lock.
+// Command cyac is both the daemon (`cyac daemon`), which owns the state
+// directory and serves the proxy, and the CLI, which talks to the daemon
+// over a unix socket.
 package main
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"text/tabwriter"
-	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/client"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/runtime/firecracker"
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
+	"github.com/containmentzone/cyacrt/internal/server"
 )
 
 const usage = `usage: cyac <command> [args]
@@ -41,9 +40,11 @@ const usage = `usage: cyac <command> [args]
   exec <name> [cmd...]          (runc only; default: bash -l)
   expose <name> <port> <host> [--public]
   unexpose <host>
-  serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
 
-State lives in $CYAC_DIR (default /var/lib/cyac).
+  daemon [--listen :8080] | [--acme-email <e> --https :443 --http :80]
+
+The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
+The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
 CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
 `
 
@@ -53,30 +54,27 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	dir := os.Getenv("CYAC_DIR")
-	if dir == "" {
-		dir = "/var/lib/cyac"
-	}
-	s := box.Store{
-		Dir: dir,
-		Net: bridge.Network{DNS: "1.1.1.1"},
-		Runtimes: []driver.Runtime{
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
-			runc.Runtime{},
-		},
-	}
+	socket := env("CYAC_SOCKET", api.DefaultSocket)
 	cmd, args := os.Args[1], os.Args[2:]
-	if cmd != "serve" && cmd != "ls" {
-		if err := s.Lock(); err != nil {
-			log.Fatal(err)
-		}
+	var err error
+	if cmd == "daemon" {
+		err = daemon(socket, args)
+	} else {
+		err = dispatch(client.New(socket), cmd, args)
 	}
-	if err := dispatch(s, cmd, args); err != nil {
+	if err != nil {
 		log.Fatal("cyac: ", err)
 	}
 }
 
-func dispatch(s box.Store, cmd string, args []string) error {
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func dispatch(c *client.Client, cmd string, args []string) error {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
 	case "new":
@@ -90,46 +88,19 @@ func dispatch(s box.Store, cmd string, args []string) error {
 		if err != nil {
 			return err
 		}
-		if *image == "" {
-			return fmt.Errorf("--image is required")
-		}
-		if !box.ValidName(pos[0]) {
-			return fmt.Errorf("invalid box name %q (lowercase letters, digits, dashes)", pos[0])
-		}
-		if _, err := s.Get(pos[0]); err == nil {
-			return fmt.Errorf("box %q already exists", pos[0])
-		}
-		id, err := s.FreeID()
-		if err != nil {
-			return err
-		}
-		b := &box.Box{Name: pos[0], Image: *image, ID: id, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init)}
-		log.Printf("seeding %s from %s", b.Name, b.Image)
-		if err := s.Seed(b, bytes); err != nil {
-			return err
-		}
-		if err := s.Put(b); err != nil {
-			return err
-		}
-		return s.Start(b)
+		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init)}
+		return c.Do("POST", "/v1/boxes", req, nil)
 
-	case "start", "stop", "rm":
-		b, err := s.Get(parse(fs, args, 1)[0])
-		if err != nil {
-			return err
-		}
-		switch cmd {
-		case "start":
-			return s.Start(b)
-		case "stop":
-			return s.Stop(b)
-		default:
-			return s.Remove(b)
-		}
+	case "start", "stop":
+		return c.Do("POST", "/v1/boxes/"+parse(fs, args, 1)[0]+"/"+cmd, nil, nil)
+
+	case "rm":
+		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0], nil, nil)
 
 	case "ls":
-		boxes, err := s.List()
-		if err != nil {
+		parse(fs, args, 0)
+		var boxes []api.Box
+		if err := c.Do("GET", "/v1/boxes", nil, &boxes); err != nil {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
@@ -143,90 +114,47 @@ func dispatch(s box.Store, cmd string, args []string) error {
 				}
 				routes = append(routes, fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis))
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, s.IP(b), s.Status(b), b.Image, strings.Join(routes, ", "))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP, b.Status, b.Image, strings.Join(routes, ", "))
 		}
 		return w.Flush()
 
 	case "resize":
 		pos := parse(fs, args, 2)
-		b, err := s.Get(pos[0])
-		if err != nil {
-			return err
-		}
 		bytes, err := parseSize(pos[1])
 		if err != nil {
 			return err
 		}
-		return s.Resize(b, bytes)
+		return c.Do("POST", "/v1/boxes/"+pos[0]+"/resize", api.Resize{SizeBytes: bytes}, nil)
 
 	case "exec":
 		if len(args) < 1 {
-			return fmt.Errorf("usage: cyac exec <name> [cmd...]")
-		}
-		b, err := s.Get(args[0])
-		if err != nil {
-			return err
+			return errors.New("usage: cyac exec <name> [cmd...]")
 		}
 		command := args[1:]
 		if len(command) == 0 {
 			command = []string{"/bin/bash", "-l"}
 		}
-		return s.Exec(b, command)
+		return c.Exec(args[0], command)
 
 	case "expose":
 		public := fs.Bool("public", false, "no token required")
 		pos := parse(fs, args, 3)
-		b, err := s.Get(pos[0])
-		if err != nil {
-			return err
-		}
 		port, err := strconv.Atoi(pos[1])
-		if err != nil || port < 1 || port > 65535 {
+		if err != nil {
 			return fmt.Errorf("bad port %q", pos[1])
 		}
-		host := strings.ToLower(pos[2])
-		if owner := routeOwner(s, host); owner != "" {
-			return fmt.Errorf("%s is already exposed by %s", host, owner)
-		}
-		r := box.Route{Host: host, Port: port, Public: *public}
-		token := ""
-		if !*public {
-			token = rand.Text()
-			sum := sha256.Sum256([]byte(token))
-			r.TokenHash = hex.EncodeToString(sum[:])
-		}
-		b.Routes = append(b.Routes, r)
-		if err := s.Put(b); err != nil {
+		var tok api.Token
+		if err := c.Do("POST", "/v1/boxes/"+pos[0]+"/routes", api.Expose{Host: pos[2], Port: port, Public: *public}, &tok); err != nil {
 			return err
 		}
-		if token != "" {
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", token, host, token)
+		if tok.Token != "" {
+			host := strings.ToLower(pos[2])
+			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", tok.Token, host, tok.Token)
 		}
 		return nil
 
 	case "unexpose":
-		host := strings.ToLower(parse(fs, args, 1)[0])
-		boxes, err := s.List()
-		if err != nil {
-			return err
-		}
-		for _, b := range boxes {
-			for i, r := range b.Routes {
-				if r.Host == host {
-					b.Routes = append(b.Routes[:i], b.Routes[i+1:]...)
-					return s.Put(b)
-				}
-			}
-		}
-		return fmt.Errorf("%s is not exposed", host)
-
-	case "serve":
-		listen := fs.String("listen", ":8080", "plain HTTP listen address (when not using ACME)")
-		email := fs.String("acme-email", "", "enable Let's Encrypt for exposed hosts")
-		httpsAddr := fs.String("https", ":443", "HTTPS listen address (ACME mode)")
-		httpAddr := fs.String("http", ":80", "HTTP listen address for ACME challenges (ACME mode)")
-		parse(fs, args, 0)
-		return serve(s, *listen, *email, *httpsAddr, *httpAddr)
+		return c.Do("DELETE", "/v1/routes/"+parse(fs, args, 1)[0], nil, nil)
 
 	default:
 		fmt.Fprint(os.Stderr, usage)
@@ -235,42 +163,69 @@ func dispatch(s box.Store, cmd string, args []string) error {
 	return nil
 }
 
-func serve(s box.Store, listen, email, httpsAddr, httpAddr string) error {
-	srv := &proxy.Server{Store: s}
-	if err := srv.Reload(); err != nil {
+// daemon owns the state directory: it serves the API on the unix socket
+// and the proxy on the network.
+func daemon(socket string, args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	listen := fs.String("listen", ":8080", "proxy: plain HTTP listen address (when not using ACME)")
+	email := fs.String("acme-email", "", "proxy: enable Let's Encrypt for exposed hosts")
+	httpsAddr := fs.String("https", ":443", "proxy: HTTPS listen address (ACME mode)")
+	httpAddr := fs.String("http", ":80", "proxy: HTTP listen address for ACME challenges (ACME mode)")
+	parse(fs, args, 0)
+
+	dir := env("CYAC_DIR", "/var/lib/cyac")
+	s := box.Store{
+		Dir: dir,
+		Net: bridge.Network{DNS: "1.1.1.1"},
+		Runtimes: []driver.Runtime{
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
+			runc.Runtime{},
+		},
+	}
+	if err := s.Lock(); err != nil {
 		return err
 	}
-	// The CLI changes routes by rewriting box records; pick them up every
-	// few seconds, or immediately on SIGHUP.
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	go func() {
-		tick := time.NewTicker(5 * time.Second)
-		for {
-			select {
-			case <-tick.C:
-			case <-hup:
-			}
-			if err := srv.Reload(); err != nil {
-				log.Printf("reload: %v", err)
-			}
-		}
-	}()
+	px := &proxy.Server{Store: s}
+	if err := px.Reload(); err != nil {
+		return err
+	}
 
-	if email == "" {
-		log.Printf("serving plain HTTP on %s", listen)
-		return http.ListenAndServe(listen, srv)
+	ln, err := listenUnix(socket)
+	if err != nil {
+		return err
+	}
+	srv := &server.Server{Store: s, RoutesChanged: px.Reload}
+	log.Printf("API on %s", socket)
+	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
+
+	if *email == "" {
+		log.Printf("proxy on %s (plain HTTP)", *listen)
+		return http.ListenAndServe(*listen, px)
 	}
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
-		Email:      email,
-		HostPolicy: srv.HostPolicy,
-		Cache:      autocert.DirCache(filepath.Join(s.Dir, "acme")),
+		Email:      *email,
+		HostPolicy: px.HostPolicy,
+		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
 	}
-	go func() { log.Fatal(http.ListenAndServe(httpAddr, m.HTTPHandler(nil))) }()
-	https := &http.Server{Addr: httpsAddr, Handler: srv, TLSConfig: m.TLSConfig()}
-	log.Printf("serving HTTPS on %s", httpsAddr)
+	go func() { log.Fatal(http.ListenAndServe(*httpAddr, m.HTTPHandler(nil))) }()
+	https := &http.Server{Addr: *httpsAddr, Handler: px, TLSConfig: m.TLSConfig()}
+	log.Printf("proxy on %s (HTTPS)", *httpsAddr)
 	return https.ListenAndServeTLS("", "")
+}
+
+// listenUnix opens the API socket, readable and writable by root only.
+// That is the only access control for now.
+func listenUnix(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	os.Remove(path) // stale socket from an earlier run; the store lock rules out a live one
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	return ln, os.Chmod(path, 0o600)
 }
 
 // parse handles flags before or after positional args and requires exactly n of them.
@@ -289,18 +244,6 @@ func parse(fs *flag.FlagSet, args []string, n int) []string {
 		os.Exit(2)
 	}
 	return pos
-}
-
-func routeOwner(s box.Store, host string) string {
-	boxes, _ := s.List()
-	for _, b := range boxes {
-		for _, r := range b.Routes {
-			if r.Host == host {
-				return b.Name
-			}
-		}
-	}
-	return ""
 }
 
 // parseSize accepts plain bytes or a K/M/G/T suffix (powers of 1024).

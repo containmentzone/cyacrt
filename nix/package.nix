@@ -36,7 +36,7 @@ buildGoModule {
       ../internal
     ];
   };
-  vendorHash = "sha256-CtZGKI3OIIEmA0JnfN+lTWOmZVhQQvNDCZYLsx2oX0I=";
+  vendorHash = "sha256-AOAoiZVtd+ad/YCHX+jb03e3cs09OhZtgCG0RnqHOKM=";
   subPackages = [ "cmd/cyac" ];
 
   nativeBuildInputs = [ makeWrapper ];
