@@ -72,6 +72,45 @@ needs ext4, virtio-blk/net and `CONFIG_IP_PNP`; Firecracker's CI kernels
 should do. If another firewall (Docker, for example) sets the FORWARD policy
 to drop, allow `cyac0`.
 
+## Nix
+
+`nix build` produces `cyac` wrapped with every tool it calls (runc,
+firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
+needs nothing else on PATH. `nix develop` gives you Go plus the same tools.
+
+On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
+and `bridge` modules, enables IP forwarding, creates the state dir and,
+optionally, links a guest kernel and runs the proxy:
+
+```nix
+{
+  inputs.cyacrt.url = "github:containmentzone/cyacrt";
+
+  outputs = { nixpkgs, cyacrt, ... }: {
+    nixosConfigurations.host = nixpkgs.lib.nixosSystem {
+      modules = [
+        cyacrt.nixosModules.default
+        {
+          services.cyac = {
+            enable = true;
+            # kernel = ./vmlinux;   # enables the VM tier on KVM hosts
+            serve = {
+              enable = true;
+              acmeEmail = "you@example.com";
+              openFirewall = true;
+            };
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+If you set `networking.nftables.flushRuleset = true`, every firewall reload
+also drops cyac's table until the next `cyac start`. The module warns about
+this.
+
 ## What has been tested
 
 Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
