@@ -1,7 +1,7 @@
 # Host setup for cyac on NixOS. Import via the flake:
 #
 #   imports = [ cyacrt.nixosModules.default ];
-#   services.cyac = { enable = true; runtime = "runc"; };
+#   services.cyac = { enable = true; kernel = "none"; };
 self:
 {
   config,
@@ -12,7 +12,7 @@ self:
 
 let
   cfg = config.services.cyac;
-  pvm = cfg.runtime == "firecracker-pvm";
+  pvm = cfg.kernel == "pvm";
   vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
 in
 {
@@ -31,40 +31,37 @@ in
       description = "Where box records and disks live (CYAC_DIR).";
     };
 
-    runtime = lib.mkOption {
-      type = lib.types.enum [
-        "firecracker"
-        "firecracker-pvm"
-        "runc"
-      ];
+    kernel = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "kvm"
+          "pvm"
+          "none"
+        ]
+      );
+      default = null;
       description = ''
-        The runtime every box uses. It decides how the host kernel is set
-        up, and cyac is pinned to it through CYAC_RUNTIME instead of
-        detecting one.
+        How the host kernel provides virtualization. Must be set.
 
-        - firecracker: VMs on hardware KVM (kvm-intel/kvm-amd, as your
-          hardware config loads them). Needs a guest kernel in `kernel`.
-        - firecracker-pvm: VMs on hosts without hardware virtualization,
-          such as cloud VMs without nested virt. Boots the host into
-          virt-pvm's kernel with pti=off and loads kvm-pvm instead of
-          kvm-intel/kvm-amd. `kernel` defaults to a PVM guest kernel.
-          x86_64 only.
-        - runc: containers. Not an isolation boundary: trusted boxes only.
+        - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
+          loads them). Pins cyac to the firecracker runtime; needs
+          `guestKernel`.
+        - pvm: no hardware virtualization needed, e.g. a cloud VM without
+          nested virt. Boots the host into virt-pvm's kernel with pti=off,
+          loads kvm-pvm instead of kvm-intel/kvm-amd, and pins cyac to the
+          firecracker-pvm runtime. x86_64 only.
+        - none: leaves the kernel alone and lets cyac pick a runtime itself
+          (firecracker, firecracker-pvm, then runc).
       '';
     };
 
-    kernel = lib.mkOption {
+    guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
-      default =
-        if cfg.runtime == "firecracker-pvm" then
-          self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel
-        else
-          null;
-      defaultText = lib.literalExpression ''if runtime == "firecracker-pvm" then cyacrt.packages.''${system}.pvm-guest-kernel else null'';
+      default = if pvm then self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel else null;
+      defaultText = lib.literalExpression ''if kernel == "pvm" then cyacrt.packages.''${system}.pvm-guest-kernel else null'';
       description = ''
-        Guest kernel (uncompressed vmlinux) for the Firecracker runtimes,
-        linked to stateDir/vmlinux (stateDir/vmlinux-pvm for
-        firecracker-pvm).
+        Guest kernel (uncompressed vmlinux) for Firecracker, linked to
+        stateDir/vmlinux, or stateDir/vmlinux-pvm with kernel = "pvm".
       '';
     };
 
@@ -94,7 +91,9 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
     environment.variables.CYAC_DIR = cfg.stateDir;
-    environment.variables.CYAC_RUNTIME = cfg.runtime;
+    environment.variables.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
+      if pvm then "firecracker-pvm" else "firecracker"
+    );
 
     # loop: container-tier disks; tun: VM taps; bridge: cyac0.
     boot.kernelModules = [
@@ -109,7 +108,7 @@ in
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 root root -"
     ]
-    ++ lib.optional (cfg.kernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.kernel}";
+    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}";
 
     # PVM: virt-pvm's host kernel, without page table isolation (PVM doesn't
     # support it), and kvm-pvm, which can't be loaded alongside kvm-intel or
@@ -124,12 +123,16 @@ in
     ];
     assertions = [
       {
-        assertion = !pvm || pkgs.stdenv.hostPlatform.isx86_64;
-        message = "services.cyac: firecracker-pvm is x86_64-only.";
+        assertion = cfg.kernel != null;
+        message = ''services.cyac.kernel must be set: "kvm", "pvm" or "none".'';
       }
       {
-        assertion = cfg.runtime == "runc" || cfg.kernel != null;
-        message = "services.cyac: runtime ${cfg.runtime} needs a guest kernel in services.cyac.kernel.";
+        assertion = !pvm || pkgs.stdenv.hostPlatform.isx86_64;
+        message = "services.cyac: kernel = \"pvm\" is x86_64-only.";
+      }
+      {
+        assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
+        message = ''services.cyac: kernel = "kvm" needs services.cyac.guestKernel.'';
       }
     ];
 

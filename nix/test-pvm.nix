@@ -23,7 +23,7 @@ pkgs.testers.runNixOSTest {
     imports = [ self.nixosModules.default ];
     services.cyac = {
       enable = true;
-      runtime = "firecracker-pvm";
+      kernel = "pvm";
     };
     environment.systemPackages = [ pkgs.e2fsprogs ];
     virtualisation = {
