@@ -101,8 +101,10 @@ firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
 needs nothing else on PATH. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
-and `bridge` modules, enables IP forwarding, creates the state dir and,
-optionally, links a guest kernel and runs the proxy:
+and `bridge` modules, enables IP forwarding, creates the state dir, links the
+guest kernel and, optionally, runs the proxy. `runtime` is required: it sets
+up the host kernel for that runtime and pins cyac to it with `CYAC_RUNTIME`,
+so NixOS hosts don't rely on detection:
 
 ```nix
 {
@@ -115,7 +117,8 @@ optionally, links a guest kernel and runs the proxy:
         {
           services.cyac = {
             enable = true;
-            # kernel = ./vmlinux;   # enables Firecracker on KVM hosts
+            runtime = "firecracker";   # or "firecracker-pvm", or "runc"
+            kernel = ./vmlinux;
             serve = {
               enable = true;
               acmeEmail = "you@example.com";
@@ -138,7 +141,7 @@ this.
 [PVM](https://github.com/virt-pvm) is an out-of-tree KVM backend that
 virtualizes using page tables rather than VMX/SVM, following
 [this post](https://blog.alexellis.io/how-to-run-firecracker-without-kvm-on-regular-cloud-vms/).
-`services.cyac.pvm.enable = true` switches the host to virt-pvm's 6.12 kernel
+`services.cyac.runtime = "firecracker-pvm"` switches the host to virt-pvm's 6.12 kernel
 with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps `kvm-intel` and
 `kvm-amd` from loading, and links a PVM guest kernel (built from virt-pvm's
 guest config) to `$CYAC_DIR/vmlinux-pvm`. It's x86_64 only. The host kernel
