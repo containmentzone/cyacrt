@@ -57,8 +57,8 @@ func (s Store) recordPath(name string) string { return filepath.Join(s.Dir, "box
 func (s Store) DiskPath(name string) string   { return filepath.Join(s.Dir, "disks", name+".ext4") }
 func (s Store) RunDir(name string) string     { return filepath.Join(s.Dir, "run", name) }
 
-// Lock takes an exclusive lock on the store for the life of the process.
-// Every mutating command calls it first.
+// Lock takes an exclusive lock on the store for the life of the process,
+// so only one daemon owns a state directory.
 func (s Store) Lock() error {
 	for _, d := range []string{"boxes", "disks", "run"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, d), 0o700); err != nil {
@@ -69,7 +69,11 @@ func (s Store) Lock() error {
 	if err != nil {
 		return err
 	}
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX) // released when the process exits
+	// Released when the process exits.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("%s is in use by another cyac daemon", s.Dir)
+	}
+	return nil
 }
 
 func (s Store) Get(name string) (*Box, error) {

@@ -107,10 +107,8 @@ func (Runtime) Grow(m *driver.Machine) error {
 	return sh.Run("resize2fs", dev)
 }
 
-func (Runtime) Exec(m *driver.Machine, args []string) error {
-	cmd := exec.Command("runc", append([]string{"exec", "-t", containerID(m)}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
+	return exec.Command("runc", append([]string{"exec", "-t", containerID(m)}, args...)...), nil
 }
 
 func containerSpec(m *driver.Machine) *specs.Spec {

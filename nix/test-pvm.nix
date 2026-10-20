@@ -34,7 +34,7 @@ pkgs.testers.runNixOSTest {
   };
 
   testScript = ''
-    host.wait_for_unit("multi-user.target")
+    host.wait_for_unit("cyac.service")
     host.fail("grep -qwE 'vmx|svm' /proc/cpuinfo")
     host.succeed("test -c /dev/kvm && test -d /sys/module/kvm_pvm")
 

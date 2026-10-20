@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -149,13 +150,14 @@ func (s Store) Remove(b *Box) error {
 	return s.Delete(b.Name)
 }
 
-// Exec runs a command inside a running box with the caller's terminal.
-func (s Store) Exec(b *Box, args []string) error {
+// Command returns a command that runs args inside a running box; start it
+// with a terminal on its stdio.
+func (s Store) Command(b *Box, args []string) (*exec.Cmd, error) {
 	rt := s.running(b)
 	if rt == nil {
-		return fmt.Errorf("%s is not running", b.Name)
+		return nil, fmt.Errorf("%s is not running", b.Name)
 	}
-	return rt.Exec(s.machine(b), args)
+	return rt.Command(s.machine(b), args)
 }
 
 // IP is the box's address, for the proxy and for display.
