@@ -3,9 +3,11 @@ module github.com/containmentzone/cyacrt
 go 1.26.0
 
 require (
+	github.com/creack/pty v1.1.24
 	github.com/google/go-containerregistry v0.22.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	golang.org/x/crypto v0.58.0
+	golang.org/x/term v0.47.0
 )
 
 require (

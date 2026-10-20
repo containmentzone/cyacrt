@@ -4,7 +4,7 @@ The cyac runtime, a small single-host take on exe.dev. Boxes that act like littl
 from any OCI image, behind an HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~1,300 lines of Go).
+(~1,900 lines of Go).
 
 ## How it works
 
@@ -38,7 +38,7 @@ nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
 
-**Proxy.** `cyac serve` is an `httputil.ReverseProxy`. A request is routed
+**Proxy.** The daemon's proxy is an `httputil.ReverseProxy`. A request is routed
 only if its Host matches a route created with `cyac expose`. Everything
 else gets a 404. Unless a route is `--public`, the request also needs that
 route's token, as `Authorization: Bearer`, as a basic-auth password, or as a
@@ -47,8 +47,16 @@ credentials and any inbound `X-Cyac-*` headers before forwarding. With
 `--acme-email` it gets Let's Encrypt certificates, but only for exposed
 hosts.
 
-There is no daemon besides the proxy. Every other command edits
-`$CYAC_DIR` (default `/var/lib/cyac`) directly under a file lock.
+**Daemon and CLI.** `cyac daemon` owns `$CYAC_DIR` (default
+`/var/lib/cyac`; one daemon per directory) and runs the proxy. Every other
+command is a client that sends JSON over HTTP to the daemon's unix socket,
+`$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac exec` upgrades its
+connection to a raw terminal stream. The endpoints are listed in
+`internal/api`.
+
+**The socket has no authentication yet.** It is created mode 0600 in a
+0700 directory, so only root can use it. This will change before the API is
+reachable from anywhere but the host.
 
 ## Code layout
 
@@ -60,19 +68,22 @@ Two interfaces in `internal/driver` are the seams:
   a netns). Its implementation is `internal/network/bridge`.
 
 `internal/box` keeps box records, seeds disks and drives the lifecycle
-through those interfaces. `internal/proxy` is the front door, and
-`cmd/cyac` wires concrete drivers together. A new runtime or network
+through those interfaces. `internal/proxy` is the front door.
+`internal/server` serves the API in `internal/api` on the socket, and
+`internal/client` calls it. `cmd/cyac` is both the CLI and the daemon,
+and wires concrete drivers together. A new runtime or network
 backend is one package that implements one interface, plus a line in
 `cmd/cyac/main.go`.
 
 ## Usage
 
 ```sh
+cyac daemon --acme-email you@example.com   # or let the NixOS module run it
+
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
 cyac exec web                       # runc only, for now
 cyac expose web 8000 web.example.com   # prints a token
-cyac serve --acme-email you@example.com
 cyac resize web 50G
 cyac stop web && cyac rm web
 ```
@@ -94,8 +105,8 @@ firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
 needs nothing else on PATH. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
-and `bridge` modules, enables IP forwarding, creates the state dir and,
-optionally, links a guest kernel and runs the proxy:
+and `bridge` modules, enables IP forwarding, creates the state dir,
+runs `cyac daemon` as `cyac.service` and, optionally, links a guest kernel:
 
 ```nix
 {
@@ -109,8 +120,7 @@ optionally, links a guest kernel and runs the proxy:
           services.cyac = {
             enable = true;
             # kernel = ./vmlinux;   # enables Firecracker on KVM hosts
-            serve = {
-              enable = true;
+            proxy = {
               acmeEmail = "you@example.com";
               openFirewall = true;
             };
@@ -148,6 +158,8 @@ Not tested yet:
 
 ## Not built yet
 
+- Authentication on the API socket.
+- Terminal resizes after `cyac exec` starts, and passing its exit status back.
 - A shell in VM boxes.
 - An SSH front door.
 - Running Firecracker under its jailer.

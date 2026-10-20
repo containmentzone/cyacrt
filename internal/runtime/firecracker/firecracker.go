@@ -134,8 +134,8 @@ func (Runtime) Grow(m *driver.Machine) error {
 	})
 }
 
-func (Runtime) Exec(m *driver.Machine, _ []string) error {
-	return fmt.Errorf("exec isn't supported for VMs yet; if the image runs sshd, use ssh root@%s", m.Addr.IP)
+func (Runtime) Command(m *driver.Machine, _ []string) (*exec.Cmd, error) {
+	return nil, fmt.Errorf("exec isn't supported for VMs yet; if the image runs sshd, use ssh root@%s", m.Addr.IP)
 }
 
 // pid returns the Firecracker pid if that process is still Firecracker.

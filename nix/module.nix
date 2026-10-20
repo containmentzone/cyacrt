@@ -15,7 +15,7 @@ let
 in
 {
   options.services.cyac = {
-    enable = lib.mkEnableOption "the cyac runtime (CLI, kernel modules, sysctls, state dir)";
+    enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 
     package = lib.mkOption {
       type = lib.types.package;
@@ -38,9 +38,7 @@ in
       '';
     };
 
-    serve = {
-      enable = lib.mkEnableOption "the cyac proxy as a systemd service";
-
+    proxy = {
       listen = lib.mkOption {
         type = lib.types.str;
         default = ":8080";
@@ -79,22 +77,28 @@ in
     ]
     ++ lib.optional (cfg.kernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.kernel}";
 
-    systemd.services.cyac-serve = lib.mkIf cfg.serve.enable {
-      description = "cyac proxy";
+    # The daemon owns stateDir and serves the CLI's API on /run/cyac/cyac.sock
+    # (root only, no other auth for now) and the proxy on the network.
+    systemd.services.cyac = {
+      description = "cyac daemon";
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       serviceConfig = {
         ExecStart =
-          "${lib.getExe cfg.package} serve "
-          + (if cfg.serve.acmeEmail != null then "--acme-email ${cfg.serve.acmeEmail}" else "--listen ${cfg.serve.listen}");
+          "${lib.getExe cfg.package} daemon "
+          + (if cfg.proxy.acmeEmail != null then "--acme-email ${cfg.proxy.acmeEmail}" else "--listen ${cfg.proxy.listen}");
+        RuntimeDirectory = "cyac";
+        RuntimeDirectoryMode = "0700";
+        # Boxes are runc/firecracker children; stopping the daemon must not take them down.
+        KillMode = "process";
         Restart = "on-failure";
       };
     };
 
     networking.firewall.allowedTCPPorts = lib.mkIf (
-      cfg.serve.enable && cfg.serve.openFirewall && cfg.serve.acmeEmail != null
+      cfg.proxy.openFirewall && cfg.proxy.acmeEmail != null
     ) [ 80 443 ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
