@@ -14,6 +14,10 @@ on:
       - .github/workflows/pvm.yml
   workflow_dispatch:
 
+concurrency:
+  group: pvm-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pvm:
     runs-on: ubuntu-latest

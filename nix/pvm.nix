@@ -35,6 +35,8 @@ in
     modDirVersion = version;
     structuredExtraConfig = with lib.kernel; {
       KVM_PVM = module;
+      # This tree's Rust support predates nixpkgs' rustc.
+      RUST = lib.mkForce no;
     };
     # nixpkgs' common config names options this tree doesn't have.
     ignoreConfigErrors = true;
