@@ -3,6 +3,12 @@
 // PID 1. The guest kernel brings eth0 up from the ip= boot argument; the
 // disk's networkd config carries the same address.
 //
+// With PVM set it is the "firecracker-pvm" runtime: the same VMM on a host
+// without hardware virtualization (a cloud VM without nested virt) whose
+// /dev/kvm comes from the out-of-tree kvm-pvm module. PVM needs a PVM guest
+// kernel, and a normal guest kernel won't boot on it, so the two runtimes
+// are mutually exclusive and each has its own kernel.
+//
 // TODO: run Firecracker under its jailer.
 package firecracker
 
@@ -28,18 +34,30 @@ import (
 // Runtime implements driver.Runtime.
 type Runtime struct {
 	Kernel string // uncompressed guest vmlinux
+	PVM    bool
 }
 
 var _ driver.Runtime = Runtime{}
 
-func (Runtime) Name() string                     { return "firecracker" }
 func (Runtime) LinkKind() driver.LinkKind        { return driver.Tap }
 func socket(m *driver.Machine) string            { return filepath.Join(m.RunDir, "fc.sock") }
 func pidFile(m *driver.Machine) string           { return filepath.Join(m.RunDir, "fc.pid") }
 func (Runtime) Cleanup(m *driver.Machine)        {}
 func (r Runtime) Running(m *driver.Machine) bool { return pid(m) > 0 }
 
+func (r Runtime) Name() string {
+	if r.PVM {
+		return "firecracker-pvm"
+	}
+	return "firecracker"
+}
+
 func (r Runtime) Available() error {
+	if pvm := pvmHost(); pvm && !r.PVM {
+		return errors.New("/dev/kvm is kvm-pvm, which needs the PVM guest kernel")
+	} else if !pvm && r.PVM {
+		return errors.New("kvm-pvm is not loaded")
+	}
 	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -136,6 +154,13 @@ func (Runtime) Grow(m *driver.Machine) error {
 
 func (Runtime) Exec(m *driver.Machine, _ []string) error {
 	return fmt.Errorf("exec isn't supported for VMs yet; if the image runs sshd, use ssh root@%s", m.Addr.IP)
+}
+
+// pvmHost reports whether /dev/kvm would be served by kvm-pvm. It can't be
+// loaded alongside kvm-intel or kvm-amd.
+func pvmHost() bool {
+	exists := func(mod string) bool { _, err := os.Stat("/sys/module/" + mod); return err == nil }
+	return exists("kvm_pvm") && !exists("kvm_intel") && !exists("kvm_amd")
 }
 
 // pid returns the Firecracker pid if that process is still Firecracker.

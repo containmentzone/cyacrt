@@ -44,7 +44,7 @@ const usage = `usage: cyac <command> [args]
   serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
 
 State lives in $CYAC_DIR (default /var/lib/cyac).
-CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
+CYAC_RUNTIME=firecracker, firecracker-pvm or runc forces a runtime.
 `
 
 func main() {
@@ -62,6 +62,7 @@ func main() {
 		Net: bridge.Network{DNS: "1.1.1.1"},
 		Runtimes: []driver.Runtime{
 			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), PVM: true},
 			runc.Runtime{},
 		},
 	}

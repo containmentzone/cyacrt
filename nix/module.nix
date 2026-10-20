@@ -38,6 +38,21 @@ in
       '';
     };
 
+    pvm = {
+      enable = lib.mkEnableOption ''
+        Firecracker without hardware virtualization (e.g. on a cloud VM
+        without nested virt) via PVM. This boots the host into virt-pvm's
+        kernel with pti=off and loads kvm-pvm instead of kvm-intel/kvm-amd;
+        cyac then picks the firecracker-pvm runtime on its own'';
+
+      guestKernel = lib.mkOption {
+        type = lib.types.path;
+        default = self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel;
+        defaultText = lib.literalExpression "cyacrt.packages.\${system}.pvm-guest-kernel";
+        description = "PVM guest kernel (uncompressed vmlinux), linked to stateDir/vmlinux-pvm.";
+      };
+    };
+
     serve = {
       enable = lib.mkEnableOption "the cyac proxy as a systemd service";
 
@@ -70,14 +85,34 @@ in
       "loop"
       "tun"
       "bridge"
-    ];
+    ]
+    ++ lib.optional cfg.pvm.enable "kvm-pvm";
     # cyac sets this itself on start; declaring it keeps NixOS from fighting it.
     boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkDefault 1;
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 root root -"
     ]
-    ++ lib.optional (cfg.kernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.kernel}";
+    ++ lib.optional (cfg.kernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.kernel}"
+    ++ lib.optional cfg.pvm.enable "L+ ${cfg.stateDir}/vmlinux-pvm - - - - ${cfg.pvm.guestKernel}";
+
+    # PVM: virt-pvm's host kernel, without page table isolation (PVM doesn't
+    # support it), and kvm-pvm, which can't be loaded alongside kvm-intel or
+    # kvm-amd.
+    boot.kernelPackages = lib.mkIf cfg.pvm.enable (
+      pkgs.linuxPackagesFor self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-host-kernel
+    );
+    boot.kernelParams = lib.mkIf cfg.pvm.enable [ "pti=off" ];
+    boot.blacklistedKernelModules = lib.mkIf cfg.pvm.enable [
+      "kvm-intel"
+      "kvm-amd"
+    ];
+    assertions = [
+      {
+        assertion = !cfg.pvm.enable || pkgs.stdenv.hostPlatform.isx86_64;
+        message = "services.cyac.pvm is x86_64-only.";
+      }
+    ];
 
     systemd.services.cyac-serve = lib.mkIf cfg.serve.enable {
       description = "cyac proxy";
