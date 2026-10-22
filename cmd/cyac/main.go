@@ -40,7 +40,7 @@ const usage = `usage: cyac <command> [args]
   ls
   resize <name> <size>
   exec <name> [cmd...]          (default: bash -l; VMs need sshd in the image)
-  console <name>                attach to the console; Ctrl-] detaches
+  console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> <port> <host> [--public]
   unexpose <host>
 

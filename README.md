@@ -11,7 +11,9 @@ The whole thing is meant to stay small enough to read in one sitting
 **A box is a disk, not a container.** `cyac new` pulls an image once,
 unpacks it into a sparse ext4 file, and adds a few files: the hostname, a
 systemd-networkd config with the box's static IP, an empty machine-id, and
-SSH keys (see *Getting in*).
+SSH keys (see *Getting in*). Every start also rewrites `/etc/resolv.conf`
+to point at the configured resolver (1.1.1.1), replacing a link to
+systemd-resolved's stub, so DNS works whether or not the image runs it.
 From then on the disk *is* the box. apt installs, files in `/root`, and
 everything else survive stop/start and host reboots.
 
@@ -76,7 +78,8 @@ daemon into `/root/.ssh/authorized_keys` and a host key it pins into
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old
 copy past 8 MiB (checked at start). `cyac console <name>` shows its tail,
 follows it, and sends what you type to the serial port, which is how you
-log in to a VM whose image has no sshd. Ctrl-] detaches. For a stopped box
+log in to a VM whose image has no sshd. Ctrl-] or Enter ~ . detaches
+(Ctrl-C and Ctrl-D go to the box). For a stopped box
 it shows the last output, which is where boot failures end up. Under runc
 the log only gets what PID 1 prints before it detaches from its stdio
 (systemd does so right away), so use `cyac exec` there.
@@ -110,7 +113,7 @@ cyac daemon --acme-email you@example.com   # or let the NixOS module run it
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
 cyac exec web                       # a shell
-cyac console web                    # the console; Ctrl-] detaches
+cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
 cyac expose web 8000 web.example.com   # prints a token
 cyac resize web 50G
 cyac stop web && cyac rm web

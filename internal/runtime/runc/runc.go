@@ -42,6 +42,9 @@ func (Runtime) Start(m *driver.Machine) error {
 	if err := sh.Run("mount", "-o", "loop", m.Disk, rootfs(m)); err != nil {
 		return err
 	}
+	if err := driver.WriteResolvConf(rootfs(m), m); err != nil {
+		return err
+	}
 	spec, err := json.MarshalIndent(containerSpec(m), "", "  ")
 	if err != nil {
 		return err

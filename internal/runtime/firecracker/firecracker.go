@@ -71,6 +71,9 @@ func (r Runtime) Available() error {
 }
 
 func (r Runtime) Start(m *driver.Machine) error {
+	if err := writeResolvConf(m); err != nil {
+		return err
+	}
 	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
 	bootArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw ip=%s::%s:%s:%s:eth0:off init=%s",
 		m.Addr.IP, m.Addr.Gateway, mask, m.Name, m.Init[0])
@@ -151,6 +154,23 @@ func (Runtime) Grow(m *driver.Machine) error {
 	return api(m, http.MethodPatch, "/drives/rootfs", map[string]any{
 		"drive_id": "rootfs", "path_on_host": m.Disk,
 	})
+}
+
+// writeResolvConf briefly loop-mounts the stopped VM's disk to write its
+// resolv.conf.
+func writeResolvConf(m *driver.Machine) error {
+	dir := filepath.Join(m.RunDir, "mnt")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return err
+	}
+	if out, err := exec.Command("mount", "-o", "loop", m.Disk, dir).CombinedOutput(); err != nil {
+		return fmt.Errorf("mount %s: %v: %s", m.Disk, err, out)
+	}
+	err := driver.WriteResolvConf(dir, m)
+	if out, uerr := exec.Command("umount", dir).CombinedOutput(); uerr != nil && err == nil {
+		err = fmt.Errorf("umount %s: %v: %s", dir, uerr, out)
+	}
+	return err
 }
 
 // Command reaches the guest over SSH with the key and pinned host key from
