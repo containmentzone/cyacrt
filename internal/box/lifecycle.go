@@ -3,6 +3,7 @@ package box
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -22,7 +23,7 @@ func (s Store) machine(b *Box) *driver.Machine {
 }
 
 // pickRuntime returns the first available runtime, or the one named by
-// CYAC_RUNTIME.
+// CYAC_RUNTIME, and logs why it skipped the others.
 func (s Store) pickRuntime() (driver.Runtime, error) {
 	want := os.Getenv("CYAC_RUNTIME")
 	var reasons []string
@@ -32,6 +33,9 @@ func (s Store) pickRuntime() (driver.Runtime, error) {
 		}
 		err := rt.Available()
 		if err == nil {
+			if len(reasons) > 0 {
+				slog.Info("skipped runtimes", "reasons", strings.Join(reasons, "; "))
+			}
 			return rt, nil
 		}
 		reasons = append(reasons, fmt.Sprintf("%s: %v", rt.Name(), err))
@@ -75,6 +79,7 @@ func (s Store) Start(b *Box) error {
 		return err
 	}
 	m := s.machine(b)
+	slog.Info("starting box", "box", b.Name, "runtime", rt.Name(), "ip", m.Addr.IP, "cpus", b.CPUs, "mem_mib", b.MemMiB)
 	if err := os.MkdirAll(m.RunDir, 0o700); err != nil {
 		return err
 	}
@@ -93,6 +98,7 @@ func (s Store) Start(b *Box) error {
 		s.cleanup(b)
 		return fmt.Errorf("start %s (%s): %w\n%s", b.Name, rt.Name(), err, console)
 	}
+	slog.Info("started box", "box", b.Name, "runtime", rt.Name())
 	return nil
 }
 
@@ -101,8 +107,12 @@ func (s Store) Stop(b *Box) error {
 	if rt == nil {
 		return fmt.Errorf("%s is not running", b.Name)
 	}
+	slog.Info("stopping box", "box", b.Name, "runtime", rt.Name())
 	err := rt.Stop(s.machine(b))
 	s.cleanup(b)
+	if err == nil {
+		slog.Info("stopped box", "box", b.Name)
+	}
 	return err
 }
 
@@ -126,6 +136,7 @@ func (s Store) Resize(b *Box, sizeBytes int64) error {
 	if sizeBytes <= fi.Size() {
 		return errors.New("new size must be larger than the current size")
 	}
+	slog.Info("resizing box", "box", b.Name, "from_bytes", fi.Size(), "to_bytes", sizeBytes)
 	if err := os.Truncate(disk, sizeBytes); err != nil {
 		return err
 	}
@@ -147,7 +158,11 @@ func (s Store) Remove(b *Box) error {
 	if err := os.Remove(s.DiskPath(b.Name)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return s.Delete(b.Name)
+	if err := s.Delete(b.Name); err != nil {
+		return err
+	}
+	slog.Info("removed box", "box", b.Name)
+	return nil
 }
 
 // Command returns a command that runs args inside a running box; start it

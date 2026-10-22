@@ -62,6 +62,42 @@ func (c *Client) Do(method, path string, in, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// Create seeds and starts a box, calling progress for each step the
+// daemon reports.
+func (c *Client) Create(req api.NewBox, progress func(string)) (*api.Box, error) {
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Post("http://cyac/v1/boxes", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		var e api.Error
+		if json.NewDecoder(resp.Body).Decode(&e) != nil || e.Error == "" {
+			return nil, errors.New(resp.Status)
+		}
+		return nil, errors.New(e.Error)
+	}
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var p api.Progress
+		if err := dec.Decode(&p); err != nil {
+			return nil, fmt.Errorf("daemon stopped replying: %w", err)
+		}
+		switch {
+		case p.Error != "":
+			return nil, errors.New(p.Error)
+		case p.Box != nil:
+			return p.Box, nil
+		default:
+			progress(p.Message)
+		}
+	}
+}
+
 // Exec runs args in the box with the local terminal attached.
 func (c *Client) Exec(name string, args []string) error {
 	req := api.Exec{Args: args}

@@ -52,7 +52,10 @@ hosts.
 command is a client that sends JSON over HTTP to the daemon's unix socket,
 `$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac exec` upgrades its
 connection to a raw terminal stream. The endpoints are listed in
-`internal/api`.
+`internal/api`. The daemon logs to stderr (`journalctl -u cyac` under
+the NixOS module): which runtimes it can use and why not, every API call,
+and each box's lifecycle. `cyac new` prints the daemon's progress as it
+pulls, unpacks and boots.
 
 **The socket has no authentication yet.** It is created mode 0600 in a
 0700 directory, so only root can use it. This will change before the API is

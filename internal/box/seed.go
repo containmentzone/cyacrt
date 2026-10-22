@@ -2,11 +2,14 @@ package box
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -18,11 +21,22 @@ import (
 // Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
 // scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it into a sparse
 // file of the requested size. It runs once per box; afterwards the disk is
-// the box and the image is no longer consulted.
-func (s Store) Seed(b *Box, sizeBytes int64) error {
+// the box and the image is no longer consulted. progress gets a line per
+// step and, while unpacking, every few seconds.
+func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
+	progress("resolving " + b.Image)
 	img, err := crane.Pull(b.Image, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", b.Image, err)
+	}
+	if digest, err := img.Digest(); err == nil {
+		layers, _ := img.Layers()
+		var compressed int64
+		for _, l := range layers {
+			n, _ := l.Size()
+			compressed += n
+		}
+		progress(fmt.Sprintf("downloading and unpacking %d layers (%s compressed) of %s", len(layers), mib(compressed), digest))
 	}
 	if len(b.Init) == 0 {
 		cfg, err := img.ConfigFile()
@@ -51,17 +65,35 @@ func (s Store) Seed(b *Box, sizeBytes int64) error {
 	// GNU tar defers symlink creation, so entries can't write outside scratch.
 	layers := mutate.Extract(img)
 	defer layers.Close()
+	counted := &counter{r: layers}
+	done := make(chan struct{})
+	go func() {
+		tick := time.NewTicker(5 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				progress("unpacked " + mib(counted.n.Load()))
+			case <-done:
+				return
+			}
+		}
+	}()
 	untar := exec.Command("tar", "-x", "-p", "--numeric-owner", "--xattrs", "--xattrs-include=*", "-C", scratch)
-	untar.Stdin = layers
-	if out, err := untar.CombinedOutput(); err != nil {
+	untar.Stdin = counted
+	out, err := untar.CombinedOutput()
+	close(done)
+	if err != nil {
 		return fmt.Errorf("unpack image: %v: %s", err, out)
 	}
+	progress("unpacked " + mib(counted.n.Load()))
 
 	if err := writeBoxConfig(scratch, b, s.Net.Addr(b.ID)); err != nil {
 		return err
 	}
 
 	disk := s.DiskPath(b.Name)
+	progress("writing a " + mib(sizeBytes) + " ext4 disk")
 	if err := createSparse(disk, sizeBytes); err != nil {
 		return err
 	}
@@ -118,6 +150,20 @@ func writeBoxConfig(scratch string, b *Box, addr driver.Addr) error {
 	}
 	return nil
 }
+
+// counter counts the bytes read through it.
+type counter struct {
+	r io.Reader
+	n atomic.Int64
+}
+
+func (c *counter) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n.Add(int64(n))
+	return n, err
+}
+
+func mib(n int64) string { return fmt.Sprintf("%d MiB", n>>20) }
 
 func createSparse(path string, size int64) error {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)

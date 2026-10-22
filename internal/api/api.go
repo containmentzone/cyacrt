@@ -6,7 +6,7 @@
 // exposed beyond the host.
 //
 //	GET    /v1/boxes                 → []Box
-//	POST   /v1/boxes                 NewBox → Box
+//	POST   /v1/boxes                 NewBox → a stream of Progress, one JSON object per line
 //	POST   /v1/boxes/{name}/start
 //	POST   /v1/boxes/{name}/stop
 //	POST   /v1/boxes/{name}/resize   Resize
@@ -15,7 +15,8 @@
 //	DELETE /v1/routes/{host}
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
 //
-// Errors come back as a non-2xx status with an Error body.
+// Errors come back as a non-2xx status with an Error body, except inside
+// a Progress stream, where the last object carries them.
 package api
 
 const DefaultSocket = "/run/cyac/cyac.sock"
@@ -41,6 +42,14 @@ type NewBox struct {
 	CPUs      int      `json:"cpus"`
 	MemMiB    int      `json:"mem_mib"`
 	Init      []string `json:"init,omitempty"` // empty: the image's ENTRYPOINT+CMD
+}
+
+// Progress is one line of a streamed reply. The last line has Box or
+// Error set.
+type Progress struct {
+	Message string `json:"message,omitempty"`
+	Box     *Box   `json:"box,omitempty"`
+	Error   string `json:"error,omitempty"`
 }
 
 type Resize struct {

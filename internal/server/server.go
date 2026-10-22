@@ -4,6 +4,7 @@
 package server
 
 import (
+	"bufio"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,10 +12,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/creack/pty"
 
@@ -41,7 +44,36 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/routes", s.expose)
 	mux.HandleFunc("DELETE /v1/routes/{host}", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
-	return mux
+	return logRequests(mux)
+}
+
+// statusWriter records the status code for logRequests. Unwrap keeps
+// Hijack and Flush reachable through http.ResponseController.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack is only used by exec, which then answers 101 itself.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.status = http.StatusSwitchingProtocols
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+func logRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(sw, r)
+		slog.Info("api", "method", r.Method, "path", r.URL.Path, "status", sw.status, "took", time.Since(start).Round(time.Millisecond))
+	})
 }
 
 func reply(w http.ResponseWriter, v any, err error) {
@@ -83,23 +115,39 @@ func (s *Server) withBox(action func(*box.Box) error) http.HandlerFunc {
 	}
 }
 
+// create streams progress while it seeds and starts the box, since that
+// can take minutes for a large image.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var req api.NewBox
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		reply(w, nil, err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	enc := json.NewEncoder(w)
+	rc := http.NewResponseController(w)
+	send := func(p api.Progress) {
+		enc.Encode(p)
+		rc.Flush()
+	}
+	progress := func(msg string) {
+		slog.Info(msg, "box", req.Name)
+		send(api.Progress{Message: msg})
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := s.newBox(req)
+	b, err := s.newBox(req, progress)
 	if err != nil {
-		reply(w, nil, err)
+		slog.Error("create failed", "box", req.Name, "err", err)
+		send(api.Progress{Error: err.Error()})
 		return
 	}
-	reply(w, s.view(b), nil)
+	v := s.view(b)
+	send(api.Progress{Box: &v})
 }
 
-func (s *Server) newBox(req api.NewBox) (*box.Box, error) {
+func (s *Server) newBox(req api.NewBox, progress func(string)) (*box.Box, error) {
 	switch {
 	case !box.ValidName(req.Name):
 		return nil, fmt.Errorf("invalid box name %q (lowercase letters, digits, dashes)", req.Name)
@@ -116,13 +164,13 @@ func (s *Server) newBox(req api.NewBox) (*box.Box, error) {
 		return nil, err
 	}
 	b := &box.Box{Name: req.Name, Image: req.Image, ID: id, CPUs: req.CPUs, MemMiB: req.MemMiB, Init: req.Init}
-	log.Printf("seeding %s from %s", b.Name, b.Image)
-	if err := s.Store.Seed(b, req.SizeBytes); err != nil {
+	if err := s.Store.Seed(b, req.SizeBytes, progress); err != nil {
 		return nil, err
 	}
 	if err := s.Store.Put(b); err != nil {
 		return nil, err
 	}
+	progress("starting")
 	return b, s.Store.Start(b)
 }
 
@@ -184,6 +232,7 @@ func (s *Server) addRoute(name string, req api.Expose) (token string, err error)
 	if err := s.Store.Put(b); err != nil {
 		return "", err
 	}
+	slog.Info("exposed route", "box", b.Name, "host", host, "port", req.Port, "public", req.Public)
 	return token, s.RoutesChanged()
 }
 
@@ -205,6 +254,7 @@ func (s *Server) removeRoute(host string) error {
 				if err := s.Store.Put(b); err != nil {
 					return err
 				}
+				slog.Info("removed route", "box", b.Name, "host", host)
 				return s.RoutesChanged()
 			}
 		}
@@ -237,6 +287,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tty.Close()
+	slog.Info("exec started", "box", b.Name, "args", req.Args, "pid", cmd.Process.Pid)
 
 	conn, buf, err := http.NewResponseController(w).Hijack()
 	if err != nil {
@@ -249,5 +300,6 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 
 	go io.Copy(tty, buf) // client keystrokes; ends when the conn closes
 	io.Copy(conn, tty)   // command output; ends when the command exits
-	cmd.Wait()
+	err = cmd.Wait()
+	slog.Info("exec ended", "box", b.Name, "pid", cmd.Process.Pid, "err", err)
 }
