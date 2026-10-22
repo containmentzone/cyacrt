@@ -62,6 +62,27 @@ func (s Store) running(b *Box) driver.Runtime {
 	return nil
 }
 
+// Exited reports whether b was started and its runtime is gone without a
+// Stop: the guest powered off, rebooted, or crashed.
+func (s Store) Exited(b *Box) bool {
+	_, err := os.Stat(filepath.Join(s.RunDir(b.Name), "runtime"))
+	return err == nil && s.running(b) == nil
+}
+
+// Rebooted reports whether b's last console output is the kernel
+// restarting. Firecracker can't reset a VM, so on a guest reboot it just
+// exits (the kernel runs with reboot=k), and this is how to tell that
+// apart from a poweroff. Under runc systemd's output doesn't reach the
+// console, so this is false there.
+func (s Store) Rebooted(b *Box) bool {
+	out := string(tail(s.ConsoleLog(b.Name), 0, 4096))
+	restart := strings.LastIndex(out, "reboot: Restarting system")
+	return restart >= 0 && restart > strings.LastIndex(out, "reboot: Power down")
+}
+
+// Cleanup removes what a run left behind once its runtime has exited.
+func (s Store) Cleanup(b *Box) { s.cleanup(b) }
+
 // Status is "stopped" or "running (<runtime>)".
 func (s Store) Status(b *Box) string {
 	if rt := s.running(b); rt != nil {
