@@ -44,8 +44,8 @@ in
         How the host kernel provides virtualization. Must be set.
 
         - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
-          loads them). Pins cyac to the firecracker runtime; needs
-          `guestKernel`.
+          loads them). Pins cyac to the firecracker runtime. The guest
+          kernel is built from the host kernel's source by default.
         - pvm: no hardware virtualization needed, e.g. a cloud VM without
           nested virt. Boots the host into virt-pvm's kernel with pti=off,
           loads kvm-pvm instead of kvm-intel/kvm-amd, and pins cyac to the
@@ -57,8 +57,17 @@ in
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
-      default = if pvm then self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel else null;
-      defaultText = lib.literalExpression ''if kernel == "pvm" then cyacrt.packages.''${system}.pvm-guest-kernel else null'';
+      default =
+        if pvm then
+          self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel
+        else if cfg.kernel == "kvm" then
+          pkgs.callPackage ./guest-kernel.nix { inherit (config.boot.kernelPackages.kernel) src version; }
+        else
+          null;
+      defaultText = lib.literalMD ''
+        for "kvm", a guest vmlinux built from the host kernel's source
+        (`boot.kernelPackages.kernel`); for "pvm", the PVM guest kernel
+      '';
       description = ''
         Guest kernel (uncompressed vmlinux) for Firecracker, linked to
         stateDir/vmlinux, or stateDir/vmlinux-pvm with kernel = "pvm".
@@ -127,7 +136,7 @@ in
       }
       {
         assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
-        message = ''services.cyac: kernel = "kvm" needs services.cyac.guestKernel.'';
+        message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
       }
     ];
 

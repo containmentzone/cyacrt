@@ -130,7 +130,7 @@ nothing and leaves the choice to cyac's detection:
           services.cyac = {
             enable = true;
             kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
-            guestKernel = ./vmlinux;
+            # guestKernel = ./vmlinux;   # default: built from the host kernel's source
             proxy = {
               acmeEmail = "you@example.com";
               openFirewall = true;

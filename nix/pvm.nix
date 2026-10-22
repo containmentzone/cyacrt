@@ -6,17 +6,14 @@
 # snapshot support, which cyac doesn't use.
 {
   lib,
-  stdenv,
+  callPackage,
   fetchFromGitHub,
   fetchurl,
   buildLinux,
-  bc,
-  bison,
-  flex,
-  perl,
-  elfutils,
-  openssl,
-  python3,
+  # The VM test builds only the modules it needs: building every driver
+  # takes longer than a CI job may run.
+  autoModules ? true,
+  extraConfig ? { },
 }:
 
 let
@@ -31,45 +28,26 @@ in
 {
   # NixOS's usual kernel config plus kvm-pvm. Boot it with pti=off.
   hostKernel = buildLinux {
-    inherit src version;
+    inherit src version autoModules;
     modDirVersion = version;
     structuredExtraConfig = with lib.kernel; {
       KVM_PVM = module;
       # This tree's Rust support predates nixpkgs' rustc.
       RUST = lib.mkForce no;
-    };
+    }
+    // extraConfig;
     # nixpkgs' common config names options this tree doesn't have.
     ignoreConfigErrors = true;
     extraMeta.platforms = [ "x86_64-linux" ];
   };
 
-  # Uncompressed vmlinux for Firecracker, from virt-pvm's guest config (a
-  # Kata guest config plus PVM) with a few options systemd wants.
-  guestKernel = stdenv.mkDerivation {
-    pname = "pvm-guest-vmlinux";
+  # From virt-pvm's guest config: a Kata guest config plus PVM.
+  guestKernel = callPackage ./guest-kernel.nix {
     inherit src version;
-    config = fetchurl {
+    pname = "pvm-guest-vmlinux";
+    configfile = fetchurl {
       url = "https://raw.githubusercontent.com/virt-pvm/misc/6923f736264d35c971c29e19330673d902f2d924/pvm-guest-6.12.33.config";
       hash = "sha256-oX2HflEXKIp2K8vto4JepdhcY8hUJ1InPsLcLGb5YJs=";
     };
-    nativeBuildInputs = [
-      bc
-      bison
-      flex
-      perl
-      elfutils
-      openssl
-      python3
-    ];
-    postPatch = "patchShebangs scripts";
-    configurePhase = ''
-      cp $config .config
-      scripts/config -e TMPFS_POSIX_ACL -e TMPFS_XATTR -d DEBUG_INFO -e DEBUG_INFO_NONE
-      make olddefconfig
-    '';
-    buildPhase = "make -j$NIX_BUILD_CORES vmlinux";
-    installPhase = "cp vmlinux $out";
-    dontFixup = true;
-    meta.platforms = [ "x86_64-linux" ];
   };
 }

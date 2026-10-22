@@ -15,6 +15,9 @@
         rec {
           cyac = pkgs.callPackage ./nix/package.nix { };
           default = cyac;
+          # A Firecracker guest vmlinux from nixpkgs' default kernel. On NixOS,
+          # services.cyac.kernel = "kvm" builds one from the host's kernel.
+          guest-kernel = pkgs.callPackage ./nix/guest-kernel.nix { inherit (pkgs.linux) src version; };
         }
         # PVM kernels (see nix/pvm.nix); PVM is x86_64-only.
         // nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") (

@@ -25,6 +25,27 @@ pkgs.testers.runNixOSTest {
       enable = true;
       kernel = "pvm";
     };
+    # The module's PVM kernel with only the drivers this VM and cyac use.
+    boot.kernelPackages = pkgs.lib.mkForce (
+      pkgs.linuxPackagesFor
+        (pkgs.callPackage ./pvm.nix {
+          autoModules = false;
+          extraConfig = with pkgs.lib.kernel; {
+            VIRTIO_PCI = yes;
+            VIRTIO_NET = yes;
+            VIRTIO_BLK = yes;
+            VIRTIO_CONSOLE = yes;
+            VIRTIO_BALLOON = yes;
+            HW_RANDOM_VIRTIO = yes;
+            SCSI_VIRTIO = yes;
+            NET_9P = yes;
+            NET_9P_VIRTIO = yes;
+            "9P_FS" = yes;
+            "9P_FS_POSIX_ACL" = yes;
+          };
+        }).hostKernel
+    );
+    boot.initrd.includeDefaultModules = false;
     environment.systemPackages = [ pkgs.e2fsprogs ];
     virtualisation = {
       memorySize = 4096;
