@@ -80,14 +80,15 @@ func (r Runtime) Start(m *driver.Machine) error {
 		return err
 	}
 
-	log, err := os.OpenFile(filepath.Join(m.RunDir, "console.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	log, in, err := driver.OpenConsole(m)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
-	// Firecracker's stdout is the guest serial console.
+	defer in.Close()
+	// Firecracker's stdin and stdout are the guest serial console.
 	cmd := exec.Command("firecracker", "--api-sock", socket(m), "--config-file", cfgPath)
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive the CLI
 	if err := cmd.Start(); err != nil {
 		return err
@@ -134,8 +135,24 @@ func (Runtime) Grow(m *driver.Machine) error {
 	})
 }
 
-func (Runtime) Command(m *driver.Machine, _ []string) (*exec.Cmd, error) {
-	return nil, fmt.Errorf("exec isn't supported for VMs yet; if the image runs sshd, use ssh root@%s", m.Addr.IP)
+// Command reaches the guest over SSH with the key and pinned host key from
+// seed time, so it needs sshd in the image. ssh joins the remote command
+// into one string for the guest's shell, so each argument is quoted.
+func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
+	if _, err := os.Stat(m.SSHKey); err != nil {
+		return nil, fmt.Errorf("%s has no SSH key (seeded before cyac supported exec in VMs): %w", m.Name, err)
+	}
+	sshArgs := []string{
+		"-tt", "-i", m.SSHKey,
+		"-o", "UserKnownHostsFile=" + m.KnownHosts, "-o", "StrictHostKeyChecking=yes",
+		"-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
+		"root@" + m.Addr.IP.String(), "--",
+	}
+	for _, a := range args {
+		sshArgs = append(sshArgs, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
+	}
+	return exec.Command("ssh", sshArgs...), nil
 }
 
 // pid returns the Firecracker pid if that process is still Firecracker.

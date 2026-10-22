@@ -39,7 +39,8 @@ const usage = `usage: cyac <command> [args]
   rm <name>
   ls
   resize <name> <size>
-  exec <name> [cmd...]          (runc only; default: bash -l)
+  exec <name> [cmd...]          (default: bash -l; VMs need sshd in the image)
+  console <name>                attach to the console; Ctrl-] detaches
   expose <name> <port> <host> [--public]
   unexpose <host>
 
@@ -145,6 +146,9 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 			command = []string{"/bin/bash", "-l"}
 		}
 		return c.Exec(args[0], command)
+
+	case "console":
+		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
 		public := fs.Bool("public", false, "no token required")

@@ -14,6 +14,7 @@
 //	POST   /v1/boxes/{name}/routes   Expose → Token
 //	DELETE /v1/routes/{host}
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
+//	POST   /v1/boxes/{name}/console  101, then the console log's tail and new output; input goes to the console
 //
 // Errors come back as a non-2xx status with an Error body, except inside
 // a Progress stream, where the last object carries them.
@@ -77,6 +78,9 @@ type Exec struct {
 
 // ExecUpgrade is the Upgrade token for the exec stream.
 const ExecUpgrade = "cyac-exec"
+
+// ConsoleUpgrade is the Upgrade token for the console stream.
+const ConsoleUpgrade = "cyac-console"
 
 type Error struct {
 	Error string `json:"error"`

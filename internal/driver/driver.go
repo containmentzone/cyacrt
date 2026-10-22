@@ -5,6 +5,7 @@ package driver
 
 import (
 	"net/netip"
+	"os"
 	"os/exec"
 )
 
@@ -13,13 +14,21 @@ type Machine struct {
 	Name   string
 	ID     int    // small integer, unique per host
 	Disk   string // path to the box's ext4 disk
-	RunDir string // private scratch dir; exists only while running. Runtimes
-	//                 write the init's output to RunDir/console.log.
-	Init   []string // PID 1
-	CPUs   int
-	MemMiB int
-	Addr   Addr // from Network.Addr
-	Link   Link // set by Network.Attach before Runtime.Start
+	RunDir string // private scratch dir; exists only while running
+	// The init's console: runtimes append its output to ConsoleLog, which
+	// outlives the run, and feed it input from the FIFO at ConsoleIn.
+	ConsoleLog string
+	ConsoleIn  string
+	// For runtimes that reach the box over SSH: the daemon's private key
+	// and a known_hosts file pinning the box's host key. Both are written
+	// at seed time.
+	SSHKey     string
+	KnownHosts string
+	Init       []string // PID 1
+	CPUs       int
+	MemMiB     int
+	Addr       Addr // from Network.Addr
+	Link       Link // set by Network.Attach before Runtime.Start
 }
 
 // Addr is a box's static network config. It is also written into the disk
@@ -43,6 +52,22 @@ const (
 type Link struct {
 	HostIface string // tap device, or the host end of a veth
 	Netns     string // netns path; empty for Tap
+}
+
+// OpenConsole opens m's console for a runtime to hand to the init: the log
+// for appending output, and the input FIFO read-write, so it never sees EOF
+// while nobody is attached and never blocks on open.
+func OpenConsole(m *Machine) (log, in *os.File, err error) {
+	log, err = os.OpenFile(m.ConsoleLog, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	in, err = os.OpenFile(m.ConsoleIn, os.O_RDWR, 0)
+	if err != nil {
+		log.Close()
+		return nil, nil, err
+	}
+	return log, in, nil
 }
 
 // Runtime boots and stops a box's disk.

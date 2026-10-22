@@ -88,7 +88,7 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	}
 	progress("unpacked " + mib(counted.n.Load()))
 
-	if err := writeBoxConfig(scratch, b, s.Net.Addr(b.ID)); err != nil {
+	if err := writeBoxConfig(scratch, b, s.machine(b)); err != nil {
 		return err
 	}
 
@@ -105,16 +105,18 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 }
 
 // writeBoxConfig drops the only files cyac adds to an image: hostname,
-// a systemd-networkd config with the box's static IP, and an empty
-// machine-id so systemd generates a fresh one on first boot.
+// a systemd-networkd config with the box's static IP, an empty
+// machine-id so systemd generates a fresh one on first boot, and the SSH
+// keys and units from seedSSH.
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
-func writeBoxConfig(scratch string, b *Box, addr driver.Addr) error {
+func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
 	root, err := os.OpenRoot(scratch)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
+	addr := m.Addr
 
 	if _, err := root.Lstat(strings.TrimPrefix(b.Init[0], "/")); err != nil {
 		return fmt.Errorf("init %s not found in image (pass --init to choose one): %w", b.Init[0], err)
@@ -133,22 +135,27 @@ func writeBoxConfig(scratch string, b *Box, addr driver.Addr) error {
 		}
 	}
 	for name, content := range files {
-		if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-		if err != nil {
-			return err
-		}
-		_, err = f.WriteString(content)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
+		if err := writeFile(root, name, []byte(content), 0o644); err != nil {
 			return err
 		}
 	}
-	return nil
+	return seedSSH(root, m)
+}
+
+// writeFile replaces name in root, without following a symlink there.
+func writeFile(root *os.Root, name string, content []byte, mode os.FileMode) error {
+	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write(content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // counter counts the bytes read through it.

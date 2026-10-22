@@ -15,8 +15,10 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/creack/pty"
@@ -44,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/routes", s.expose)
 	mux.HandleFunc("DELETE /v1/routes/{host}", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
+	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
 	return logRequests(mux)
 }
 
@@ -289,17 +292,89 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	defer tty.Close()
 	slog.Info("exec started", "box", b.Name, "args", req.Args, "pid", cmd.Process.Pid)
 
-	conn, buf, err := http.NewResponseController(w).Hijack()
+	conn, buf, err := upgrade(w, api.ExecUpgrade)
 	if err != nil {
 		cmd.Process.Kill()
 		return
 	}
 	defer conn.Close()
-	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", api.ExecUpgrade)
-	buf.Flush()
 
 	go io.Copy(tty, buf) // client keystrokes; ends when the conn closes
 	io.Copy(conn, tty)   // command output; ends when the command exits
 	err = cmd.Wait()
 	slog.Info("exec ended", "box", b.Name, "pid", cmd.Process.Pid, "err", err)
+}
+
+// upgrade takes over the connection and answers 101 with token.
+func upgrade(w http.ResponseWriter, token string) (net.Conn, *bufio.ReadWriter, error) {
+	conn, buf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", token)
+	return conn, buf, buf.Flush()
+}
+
+// console streams the tail of the box's console log, then follows it, and
+// writes what the client types into the console's input FIFO. When
+// nothing reads that FIFO (a stopped box, or an init like systemd under
+// runc that detaches from its stdio) it is output only.
+func (s *Server) console(w http.ResponseWriter, r *http.Request) {
+	b, err := s.Store.Get(r.PathValue("name"))
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	log, err := os.Open(s.Store.ConsoleLog(b.Name))
+	if err != nil {
+		reply(w, nil, fmt.Errorf("%s has no console output yet", b.Name))
+		return
+	}
+	defer log.Close()
+	if fi, err := log.Stat(); err == nil {
+		log.Seek(max(0, fi.Size()-16<<10), io.SeekStart)
+	}
+	// Non-blocking, so this fails instead of hanging when nobody reads the
+	// FIFO or it doesn't exist.
+	var in io.Writer = io.Discard
+	if f, err := os.OpenFile(s.Store.ConsoleIn(b.Name), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		defer f.Close()
+		in = f
+	}
+
+	io.Copy(io.Discard, r.Body) // so a request body isn't taken for keystrokes
+	conn, buf, err := upgrade(w, api.ConsoleUpgrade)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if in == io.Discard {
+		fmt.Fprintf(conn, "[output only: %s is stopped, or its init doesn't read the console]\r\n", b.Name)
+	}
+	slog.Info("console attached", "box", b.Name)
+	defer slog.Info("console detached", "box", b.Name)
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(in, buf) // ends when the client detaches
+		close(done)
+	}()
+	p := make([]byte, 32<<10)
+	for {
+		n, err := log.Read(p)
+		if n > 0 {
+			if _, err := conn.Write(p[:n]); err != nil {
+				return
+			}
+		}
+		if err == io.EOF {
+			select {
+			case <-done:
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		} else if err != nil {
+			return
+		}
+	}
 }
