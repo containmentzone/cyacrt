@@ -9,8 +9,9 @@ The whole thing is meant to stay small enough to read in one sitting
 ## How it works
 
 **A box is a disk, not a container.** `cyac new` pulls an image once,
-unpacks it into a sparse ext4 file, and adds three files: the hostname, a
-systemd-networkd config with the box's static IP, and an empty machine-id.
+unpacks it into a sparse ext4 file, and adds a few files: the hostname, a
+systemd-networkd config with the box's static IP, an empty machine-id, and
+SSH keys (see *Getting in*).
 From then on the disk *is* the box. apt installs, files in `/root`, and
 everything else survive stop/start and host reboots.
 
@@ -52,7 +53,26 @@ hosts.
 command is a client that sends JSON over HTTP to the daemon's unix socket,
 `$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac exec` upgrades its
 connection to a raw terminal stream. The endpoints are listed in
-`internal/api`.
+`internal/api`. The daemon logs to stderr (`journalctl -u cyac` under
+the NixOS module): which runtimes it can use and why not, every API call,
+and each box's lifecycle. `cyac new` prints the daemon's progress as it
+pulls, unpacks and boots.
+
+**Getting in.** `cyac exec` runs a command on a pty in the box. Under runc
+that is `runc exec`. In a VM it is `ssh` from the daemon to the box's IP over
+the bridge, so the image needs sshd. At seed time cyac writes a key for the
+daemon into `/root/.ssh/authorized_keys` and a host key it pins into
+`/etc/ssh`, unmasks the image's ssh units (exeuntu masks them), and enables
+`ssh.service` if nothing starts sshd. Only the host can reach that sshd.
+
+**Console.** A VM's serial console is always appended to
+`$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old
+copy past 8 MiB (checked at start). `cyac console <name>` shows its tail,
+follows it, and sends what you type to the serial port, which is how you
+log in to a VM whose image has no sshd. Ctrl-] detaches. For a stopped box
+it shows the last output, which is where boot failures end up. Under runc
+the log only gets what PID 1 prints before it detaches from its stdio
+(systemd does so right away), so use `cyac exec` there.
 
 **The socket has no authentication yet.** It is created mode 0600 in a
 0700 directory, so only root can use it. This will change before the API is
@@ -82,7 +102,8 @@ cyac daemon --acme-email you@example.com   # or let the NixOS module run it
 
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
-cyac exec web                       # runc only, for now
+cyac exec web                       # a shell
+cyac console web                    # the console; Ctrl-] detaches
 cyac expose web 8000 web.example.com   # prints a token
 cyac resize web 50G
 cyac stop web && cyac rm web
@@ -164,7 +185,6 @@ Not tested yet:
 
 - Authentication on the API socket.
 - Terminal resizes after `cyac exec` starts, and passing its exit status back.
-- A shell in VM boxes.
 - An SSH front door.
 - Running Firecracker under its jailer.
 - Auto-starting a box on request.

@@ -6,7 +6,7 @@
 // exposed beyond the host.
 //
 //	GET    /v1/boxes                 → []Box
-//	POST   /v1/boxes                 NewBox → Box
+//	POST   /v1/boxes                 NewBox → a stream of Progress, one JSON object per line
 //	POST   /v1/boxes/{name}/start
 //	POST   /v1/boxes/{name}/stop
 //	POST   /v1/boxes/{name}/resize   Resize
@@ -14,8 +14,10 @@
 //	POST   /v1/boxes/{name}/routes   Expose → Token
 //	DELETE /v1/routes/{host}
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
+//	POST   /v1/boxes/{name}/console  101, then the console log's tail and new output; input goes to the console
 //
-// Errors come back as a non-2xx status with an Error body.
+// Errors come back as a non-2xx status with an Error body, except inside
+// a Progress stream, where the last object carries them.
 package api
 
 const DefaultSocket = "/run/cyac/cyac.sock"
@@ -43,6 +45,14 @@ type NewBox struct {
 	Init      []string `json:"init,omitempty"` // empty: the image's ENTRYPOINT+CMD
 }
 
+// Progress is one line of a streamed reply. The last line has Box or
+// Error set.
+type Progress struct {
+	Message string `json:"message,omitempty"`
+	Box     *Box   `json:"box,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
 type Resize struct {
 	SizeBytes int64 `json:"size_bytes"`
 }
@@ -68,6 +78,9 @@ type Exec struct {
 
 // ExecUpgrade is the Upgrade token for the exec stream.
 const ExecUpgrade = "cyac-exec"
+
+// ConsoleUpgrade is the Upgrade token for the console stream.
+const ConsoleUpgrade = "cyac-console"
 
 type Error struct {
 	Error string `json:"error"`

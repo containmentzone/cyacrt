@@ -4,6 +4,7 @@
 package server
 
 import (
+	"bufio"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,10 +12,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 
@@ -41,7 +46,37 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/routes", s.expose)
 	mux.HandleFunc("DELETE /v1/routes/{host}", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
-	return mux
+	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
+	return logRequests(mux)
+}
+
+// statusWriter records the status code for logRequests. Unwrap keeps
+// Hijack and Flush reachable through http.ResponseController.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Hijack is only used by exec, which then answers 101 itself.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	w.status = http.StatusSwitchingProtocols
+	return http.NewResponseController(w.ResponseWriter).Hijack()
+}
+
+func logRequests(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		h.ServeHTTP(sw, r)
+		slog.Info("api", "method", r.Method, "path", r.URL.Path, "status", sw.status, "took", time.Since(start).Round(time.Millisecond))
+	})
 }
 
 func reply(w http.ResponseWriter, v any, err error) {
@@ -83,23 +118,39 @@ func (s *Server) withBox(action func(*box.Box) error) http.HandlerFunc {
 	}
 }
 
+// create streams progress while it seeds and starts the box, since that
+// can take minutes for a large image.
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var req api.NewBox
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		reply(w, nil, err)
 		return
 	}
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	enc := json.NewEncoder(w)
+	rc := http.NewResponseController(w)
+	send := func(p api.Progress) {
+		enc.Encode(p)
+		rc.Flush()
+	}
+	progress := func(msg string) {
+		slog.Info(msg, "box", req.Name)
+		send(api.Progress{Message: msg})
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	b, err := s.newBox(req)
+	b, err := s.newBox(req, progress)
 	if err != nil {
-		reply(w, nil, err)
+		slog.Error("create failed", "box", req.Name, "err", err)
+		send(api.Progress{Error: err.Error()})
 		return
 	}
-	reply(w, s.view(b), nil)
+	v := s.view(b)
+	send(api.Progress{Box: &v})
 }
 
-func (s *Server) newBox(req api.NewBox) (*box.Box, error) {
+func (s *Server) newBox(req api.NewBox, progress func(string)) (*box.Box, error) {
 	switch {
 	case !box.ValidName(req.Name):
 		return nil, fmt.Errorf("invalid box name %q (lowercase letters, digits, dashes)", req.Name)
@@ -116,13 +167,13 @@ func (s *Server) newBox(req api.NewBox) (*box.Box, error) {
 		return nil, err
 	}
 	b := &box.Box{Name: req.Name, Image: req.Image, ID: id, CPUs: req.CPUs, MemMiB: req.MemMiB, Init: req.Init}
-	log.Printf("seeding %s from %s", b.Name, b.Image)
-	if err := s.Store.Seed(b, req.SizeBytes); err != nil {
+	if err := s.Store.Seed(b, req.SizeBytes, progress); err != nil {
 		return nil, err
 	}
 	if err := s.Store.Put(b); err != nil {
 		return nil, err
 	}
+	progress("starting")
 	return b, s.Store.Start(b)
 }
 
@@ -184,6 +235,7 @@ func (s *Server) addRoute(name string, req api.Expose) (token string, err error)
 	if err := s.Store.Put(b); err != nil {
 		return "", err
 	}
+	slog.Info("exposed route", "box", b.Name, "host", host, "port", req.Port, "public", req.Public)
 	return token, s.RoutesChanged()
 }
 
@@ -205,6 +257,7 @@ func (s *Server) removeRoute(host string) error {
 				if err := s.Store.Put(b); err != nil {
 					return err
 				}
+				slog.Info("removed route", "box", b.Name, "host", host)
 				return s.RoutesChanged()
 			}
 		}
@@ -237,17 +290,91 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tty.Close()
+	slog.Info("exec started", "box", b.Name, "args", req.Args, "pid", cmd.Process.Pid)
 
-	conn, buf, err := http.NewResponseController(w).Hijack()
+	conn, buf, err := upgrade(w, api.ExecUpgrade)
 	if err != nil {
 		cmd.Process.Kill()
 		return
 	}
 	defer conn.Close()
-	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", api.ExecUpgrade)
-	buf.Flush()
 
 	go io.Copy(tty, buf) // client keystrokes; ends when the conn closes
 	io.Copy(conn, tty)   // command output; ends when the command exits
-	cmd.Wait()
+	err = cmd.Wait()
+	slog.Info("exec ended", "box", b.Name, "pid", cmd.Process.Pid, "err", err)
+}
+
+// upgrade takes over the connection and answers 101 with token.
+func upgrade(w http.ResponseWriter, token string) (net.Conn, *bufio.ReadWriter, error) {
+	conn, buf, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	fmt.Fprintf(buf, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n", token)
+	return conn, buf, buf.Flush()
+}
+
+// console streams the tail of the box's console log, then follows it, and
+// writes what the client types into the console's input FIFO. When
+// nothing reads that FIFO (a stopped box, or an init like systemd under
+// runc that detaches from its stdio) it is output only.
+func (s *Server) console(w http.ResponseWriter, r *http.Request) {
+	b, err := s.Store.Get(r.PathValue("name"))
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	log, err := os.Open(s.Store.ConsoleLog(b.Name))
+	if err != nil {
+		reply(w, nil, fmt.Errorf("%s has no console output yet", b.Name))
+		return
+	}
+	defer log.Close()
+	if fi, err := log.Stat(); err == nil {
+		log.Seek(max(0, fi.Size()-16<<10), io.SeekStart)
+	}
+	// Non-blocking, so this fails instead of hanging when nobody reads the
+	// FIFO or it doesn't exist.
+	var in io.Writer = io.Discard
+	if f, err := os.OpenFile(s.Store.ConsoleIn(b.Name), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+		defer f.Close()
+		in = f
+	}
+
+	io.Copy(io.Discard, r.Body) // so a request body isn't taken for keystrokes
+	conn, buf, err := upgrade(w, api.ConsoleUpgrade)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	if in == io.Discard {
+		fmt.Fprintf(conn, "[output only: %s is stopped, or its init doesn't read the console]\r\n", b.Name)
+	}
+	slog.Info("console attached", "box", b.Name)
+	defer slog.Info("console detached", "box", b.Name)
+
+	done := make(chan struct{})
+	go func() {
+		io.Copy(in, buf) // ends when the client detaches
+		close(done)
+	}()
+	p := make([]byte, 32<<10)
+	for {
+		n, err := log.Read(p)
+		if n > 0 {
+			if _, err := conn.Write(p[:n]); err != nil {
+				return
+			}
+		}
+		if err == io.EOF {
+			select {
+			case <-done:
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		} else if err != nil {
+			return
+		}
+	}
 }

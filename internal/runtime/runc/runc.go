@@ -49,15 +49,16 @@ func (Runtime) Start(m *driver.Machine) error {
 	if err := os.WriteFile(filepath.Join(m.RunDir, "config.json"), spec, 0o600); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(filepath.Join(m.RunDir, "console.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	log, in, err := driver.OpenConsole(m)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
-	// Detached: the container's stdio is the log file, and runc returns once
-	// init is running.
+	defer in.Close()
+	// Detached: the container's stdio is the console log and FIFO, and
+	// runc returns once init is running.
 	cmd := exec.Command("runc", "run", "--detach", "--bundle", m.RunDir, containerID(m))
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	return cmd.Run()
 }
 

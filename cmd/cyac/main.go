@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
@@ -37,7 +39,8 @@ const usage = `usage: cyac <command> [args]
   rm <name>
   ls
   resize <name> <size>
-  exec <name> [cmd...]          (runc only; default: bash -l)
+  exec <name> [cmd...]          (default: bash -l; VMs need sshd in the image)
+  console <name>                attach to the console; Ctrl-] detaches
   expose <name> <port> <host> [--public]
   unexpose <host>
 
@@ -89,7 +92,15 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 			return err
 		}
 		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init)}
-		return c.Do("POST", "/v1/boxes", req, nil)
+		start := time.Now()
+		b, err := c.Create(req, func(msg string) {
+			fmt.Fprintf(os.Stderr, "[%4.0fs] %s\n", time.Since(start).Seconds(), msg)
+		})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "[%4.0fs] %s is %s at %s\n", time.Since(start).Seconds(), b.Name, b.Status, b.IP)
+		return nil
 
 	case "start", "stop":
 		return c.Do("POST", "/v1/boxes/"+parse(fs, args, 1)[0]+"/"+cmd, nil, nil)
@@ -136,6 +147,9 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		}
 		return c.Exec(args[0], command)
 
+	case "console":
+		return c.Console(parse(fs, args, 1)[0])
+
 	case "expose":
 		public := fs.Bool("public", false, "no token required")
 		pos := parse(fs, args, 3)
@@ -173,6 +187,18 @@ func daemon(socket string, args []string) error {
 	httpAddr := fs.String("http", ":80", "proxy: HTTP listen address for ACME challenges (ACME mode)")
 	parse(fs, args, 0)
 
+	// systemd's journal adds its own timestamps.
+	opts := &slog.HandlerOptions{}
+	if os.Getenv("JOURNAL_STREAM") != "" {
+		opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
+
 	dir := env("CYAC_DIR", "/var/lib/cyac")
 	s := box.Store{
 		Dir: dir,
@@ -185,6 +211,21 @@ func daemon(socket string, args []string) error {
 	if err := s.Lock(); err != nil {
 		return err
 	}
+	slog.Info("cyac daemon starting", "state_dir", dir, "socket", socket, "CYAC_RUNTIME", os.Getenv("CYAC_RUNTIME"))
+	for _, rt := range s.Runtimes {
+		if err := rt.Available(); err != nil {
+			slog.Info("runtime unavailable", "runtime", rt.Name(), "reason", err)
+		} else {
+			slog.Info("runtime available", "runtime", rt.Name())
+		}
+	}
+	boxes, err := s.List()
+	if err != nil {
+		return err
+	}
+	for _, b := range boxes {
+		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "routes", len(b.Routes))
+	}
 	px := &proxy.Server{Store: s}
 	if err := px.Reload(); err != nil {
 		return err
@@ -195,11 +236,11 @@ func daemon(socket string, args []string) error {
 		return err
 	}
 	srv := &server.Server{Store: s, RoutesChanged: px.Reload}
-	log.Printf("API on %s", socket)
+	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 
 	if *email == "" {
-		log.Printf("proxy on %s (plain HTTP)", *listen)
+		slog.Info("proxy listening", "addr", *listen, "tls", false)
 		return http.ListenAndServe(*listen, px)
 	}
 	m := &autocert.Manager{
@@ -210,7 +251,7 @@ func daemon(socket string, args []string) error {
 	}
 	go func() { log.Fatal(http.ListenAndServe(*httpAddr, m.HTTPHandler(nil))) }()
 	https := &http.Server{Addr: *httpsAddr, Handler: px, TLSConfig: m.TLSConfig()}
-	log.Printf("proxy on %s (HTTPS)", *httpsAddr)
+	slog.Info("proxy listening", "addr", *httpsAddr, "tls", "acme", "acme_http", *httpAddr)
 	return https.ListenAndServeTLS("", "")
 }
 
