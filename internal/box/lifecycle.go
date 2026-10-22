@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/sh"
@@ -16,8 +17,11 @@ import (
 
 // machine is the driver-facing view of a box.
 func (s Store) machine(b *Box) *driver.Machine {
+	key := s.SSHKey(b.Name)
 	return &driver.Machine{
 		Name: b.Name, ID: b.ID, Disk: s.DiskPath(b.Name), RunDir: s.RunDir(b.Name),
+		ConsoleLog: s.ConsoleLog(b.Name), ConsoleIn: s.ConsoleIn(b.Name),
+		SSHKey: key, KnownHosts: key + ".known_hosts",
 		Init: b.Init, CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: s.Net.Addr(b.ID),
 	}
 }
@@ -86,15 +90,16 @@ func (s Store) Start(b *Box) error {
 	if err := os.WriteFile(filepath.Join(m.RunDir, "runtime"), []byte(rt.Name()), 0o600); err != nil {
 		return err
 	}
+	if err := syscall.Mkfifo(m.ConsoleIn, 0o600); err != nil {
+		return err
+	}
+	logStart := rotate(m.ConsoleLog)
 	err = s.Net.Attach(m, rt.LinkKind())
 	if err == nil {
 		err = rt.Start(m)
 	}
 	if err != nil {
-		console, _ := os.ReadFile(filepath.Join(m.RunDir, "console.log"))
-		if len(console) > 2048 {
-			console = console[len(console)-2048:]
-		}
+		console := tail(m.ConsoleLog, logStart, 2048)
 		s.cleanup(b)
 		return fmt.Errorf("start %s (%s): %w\n%s", b.Name, rt.Name(), err, console)
 	}
@@ -114,6 +119,36 @@ func (s Store) Stop(b *Box) error {
 		slog.Info("stopped box", "box", b.Name)
 	}
 	return err
+}
+
+// rotate keeps one old console log once the current one passes 8 MiB,
+// and returns where this run's output starts.
+func rotate(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if fi.Size() > 8<<20 && os.Rename(path, path+".1") == nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// tail returns up to n bytes from the end of path, starting no earlier than from.
+func tail(path string, from, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	from = min(max(from, fi.Size()-n), fi.Size())
+	buf := make([]byte, fi.Size()-from)
+	f.ReadAt(buf, from)
+	return buf
 }
 
 // cleanup removes everything a run leaves behind. Safe to call when stopped.
@@ -157,6 +192,9 @@ func (s Store) Remove(b *Box) error {
 	s.cleanup(b)
 	if err := os.Remove(s.DiskPath(b.Name)); err != nil && !os.IsNotExist(err) {
 		return err
+	}
+	for _, f := range []string{s.ConsoleLog(b.Name), s.ConsoleLog(b.Name) + ".1", s.SSHKey(b.Name), s.SSHKey(b.Name) + ".known_hosts"} {
+		os.Remove(f)
 	}
 	if err := s.Delete(b.Name); err != nil {
 		return err

@@ -9,10 +9,12 @@
   gnutar,
   runc,
   firecracker,
+  openssh,
 }:
 
 let
-  # Everything cyac execs. firecracker is only used on hosts with KVM.
+  # Everything cyac execs. firecracker is only used on hosts with KVM, and
+  # ssh only to exec into its VMs.
   runtimeTools = [
     iproute2
     nftables
@@ -21,6 +23,7 @@ let
     gnutar
     runc
     firecracker
+    openssh
   ];
 in
 buildGoModule {
@@ -36,7 +39,7 @@ buildGoModule {
       ../internal
     ];
   };
-  vendorHash = "sha256-AOAoiZVtd+ad/YCHX+jb03e3cs09OhZtgCG0RnqHOKM=";
+  vendorHash = "sha256-FWHDt16ywvV53UaOSc6HGylsGVl4jikH2eKgl82xRAE=";
   subPackages = [ "cmd/cyac" ];
 
   nativeBuildInputs = [ makeWrapper ];

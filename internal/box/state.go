@@ -40,7 +40,9 @@ type Route struct {
 //
 //	<dir>/boxes/<name>.json   box record
 //	<dir>/disks/<name>.ext4   box disk
-//	<dir>/run/<name>/         runtime files while running (bundle, sockets, logs)
+//	<dir>/run/<name>/         runtime files while running (bundle, sockets)
+//	<dir>/logs/<name>.console.log  the box's console, across runs
+//	<dir>/keys/<name>[.known_hosts]  SSH key into the box, and its pinned host key
 type Store struct {
 	Dir      string
 	Net      driver.Network
@@ -56,11 +58,16 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 func (s Store) recordPath(name string) string { return filepath.Join(s.Dir, "boxes", name+".json") }
 func (s Store) DiskPath(name string) string   { return filepath.Join(s.Dir, "disks", name+".ext4") }
 func (s Store) RunDir(name string) string     { return filepath.Join(s.Dir, "run", name) }
+func (s Store) ConsoleLog(name string) string {
+	return filepath.Join(s.Dir, "logs", name+".console.log")
+}
+func (s Store) ConsoleIn(name string) string { return filepath.Join(s.RunDir(name), "console.in") }
+func (s Store) SSHKey(name string) string    { return filepath.Join(s.Dir, "keys", name) }
 
 // Lock takes an exclusive lock on the store for the life of the process,
 // so only one daemon owns a state directory.
 func (s Store) Lock() error {
-	for _, d := range []string{"boxes", "disks", "run"} {
+	for _, d := range []string{"boxes", "disks", "run", "logs", "keys"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, d), 0o700); err != nil {
 			return err
 		}
