@@ -121,9 +121,13 @@ runs `cyac daemon` as `cyac.service` and, optionally, links a guest kernel:
             enable = true;
             # kernel = ./vmlinux;   # enables Firecracker on KVM hosts
             proxy = {
-              acmeEmail = "you@example.com";
+              acme = true;
               openFirewall = true;
             };
+          };
+          security.acme = {
+            acceptTerms = true;
+            defaults.email = "you@example.com";
           };
         }
       ];
