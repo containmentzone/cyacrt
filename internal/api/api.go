@@ -69,9 +69,11 @@ type Token struct {
 }
 
 // Exec starts a command on a pty in the box. Rows and Cols set the initial
-// terminal size.
+// terminal size. It runs as the image's login user, if it named one,
+// unless Root is set.
 type Exec struct {
 	Args []string `json:"args"`
+	Root bool     `json:"root,omitempty"`
 	Rows uint16   `json:"rows,omitempty"`
 	Cols uint16   `json:"cols,omitempty"`
 }

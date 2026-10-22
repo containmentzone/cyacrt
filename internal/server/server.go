@@ -279,7 +279,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, err)
 		return
 	}
-	cmd, err := s.Store.Command(b, req.Args)
+	cmd, err := s.Store.Command(b, req.Args, req.Root)
 	if err != nil {
 		reply(w, nil, err)
 		return
@@ -290,7 +290,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tty.Close()
-	slog.Info("exec started", "box", b.Name, "args", req.Args, "pid", cmd.Process.Pid)
+	slog.Info("exec started", "box", b.Name, "args", req.Args, "root", req.Root, "pid", cmd.Process.Pid)
 
 	conn, buf, err := upgrade(w, api.ExecUpgrade)
 	if err != nil {

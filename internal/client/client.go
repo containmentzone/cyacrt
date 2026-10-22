@@ -99,8 +99,8 @@ func (c *Client) Create(req api.NewBox, progress func(string)) (*api.Box, error)
 }
 
 // Exec runs args in the box with the local terminal attached.
-func (c *Client) Exec(name string, args []string) error {
-	req := api.Exec{Args: args}
+func (c *Client) Exec(name string, args []string, root bool) error {
+	req := api.Exec{Args: args, Root: root}
 	fd := int(os.Stdin.Fd())
 	if term.IsTerminal(fd) {
 		if w, h, err := term.GetSize(fd); err == nil {

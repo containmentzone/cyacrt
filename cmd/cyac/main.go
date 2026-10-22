@@ -39,7 +39,7 @@ const usage = `usage: cyac <command> [args]
   rm <name>
   ls
   resize <name> <size>
-  exec <name> [cmd...]          (default: bash -l; VMs need sshd in the image)
+  exec [--root] <name> [cmd...] (default: bash -l, as the image's login user; VMs need sshd)
   console <name>                attach to the console; Ctrl-] detaches
   expose <name> <port> <host> [--public]
   unexpose <host>
@@ -138,14 +138,16 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		return c.Do("POST", "/v1/boxes/"+pos[0]+"/resize", api.Resize{SizeBytes: bytes}, nil)
 
 	case "exec":
-		if len(args) < 1 {
-			return errors.New("usage: cyac exec <name> [cmd...]")
+		root := fs.Bool("root", false, "run as root instead of the image's login user")
+		fs.Parse(args) // flags go before the name; the command is passed through as is
+		if fs.NArg() < 1 {
+			return errors.New("usage: cyac exec [--root] <name> [cmd...]")
 		}
-		command := args[1:]
+		command := fs.Args()[1:]
 		if len(command) == 0 {
 			command = []string{"/bin/bash", "-l"}
 		}
-		return c.Exec(args[0], command)
+		return c.Exec(fs.Arg(0), command, *root)
 
 	case "console":
 		return c.Console(parse(fs, args, 1)[0])

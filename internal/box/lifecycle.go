@@ -204,11 +204,16 @@ func (s Store) Remove(b *Box) error {
 }
 
 // Command returns a command that runs args inside a running box; start it
-// with a terminal on its stdio.
-func (s Store) Command(b *Box, args []string) (*exec.Cmd, error) {
+// with a terminal on its stdio. It runs as the box's login user, if the
+// image named one, unless root is set.
+func (s Store) Command(b *Box, args []string, root bool) (*exec.Cmd, error) {
 	rt := s.running(b)
 	if rt == nil {
 		return nil, fmt.Errorf("%s is not running", b.Name)
+	}
+	if b.User != "" && !root {
+		// A login shell, so the user's HOME, profile and MOTD apply.
+		args = []string{"runuser", "-l", b.User, "-c", sh.Quote(args)}
 	}
 	return rt.Command(s.machine(b), args)
 }
