@@ -10,10 +10,32 @@
     in
     {
       # The cyac binary, wrapped so every tool it shells out to is on its PATH.
-      packages = forAllSystems (pkgs: rec {
-        cyac = pkgs.callPackage ./nix/package.nix { };
-        default = cyac;
-      });
+      packages = forAllSystems (
+        pkgs:
+        rec {
+          cyac = pkgs.callPackage ./nix/package.nix { };
+          default = cyac;
+          # A Firecracker guest vmlinux from nixpkgs' default kernel. On NixOS,
+          # services.cyac.kernel = "kvm" builds one from the host's kernel.
+          guest-kernel = pkgs.callPackage ./nix/guest-kernel.nix { inherit (pkgs.linux) src version; };
+        }
+        # PVM kernels (see nix/pvm.nix); PVM is x86_64-only.
+        // nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") (
+          let
+            pvm = pkgs.callPackage ./nix/pvm.nix { };
+          in
+          {
+            pvm-host-kernel = pvm.hostKernel;
+            pvm-guest-kernel = pvm.guestKernel;
+          }
+        )
+      );
+
+      # Boots a box under firecracker-pvm in a VM with no VMX. Needs KVM.
+      checks.x86_64-linux.pvm = import ./nix/test-pvm.nix {
+        inherit self;
+        pkgs = nixpkgs.legacyPackages.x86_64-linux;
+      };
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {

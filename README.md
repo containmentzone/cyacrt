@@ -33,6 +33,13 @@ writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox. Set `CYAC_RUNTIME=firecracker`
 or `CYAC_RUNTIME=runc` to force one.
 
+On a host without hardware virtualization, such as a cloud VM without nested
+virt, Firecracker can still run on [PVM](#pvm-firecracker-without-hardware-virtualization).
+When the `kvm-pvm` module is loaded, cyac uses a third runtime,
+`firecracker-pvm`, in place of `firecracker`. It's the same VMM with the PVM
+guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
+boot on PVM.
+
 **Networking.** One bridge, `cyac0`, on 10.88.0.0/16 (host is
 10.88.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
 nftables keeps boxes off the host and off private and link-local ranges, and
@@ -126,8 +133,11 @@ firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
 needs nothing else on PATH. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
-and `bridge` modules, enables IP forwarding, creates the state dir,
-runs `cyac daemon` as `cyac.service` and, optionally, links a guest kernel:
+and `bridge` modules, enables IP forwarding, creates the state dir, runs
+`cyac daemon` as `cyac.service` and links the guest kernel. `kernel` must be
+set: `"kvm"` or `"pvm"` sets up the host kernel for that and pins the daemon
+to `firecracker` or `firecracker-pvm` with `CYAC_RUNTIME`; `"none"` changes
+nothing and leaves the choice to cyac's detection:
 
 ```nix
 {
@@ -140,7 +150,8 @@ runs `cyac daemon` as `cyac.service` and, optionally, links a guest kernel:
         {
           services.cyac = {
             enable = true;
-            # kernel = ./vmlinux;   # enables Firecracker on KVM hosts
+            kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
+            # guestKernel = ./vmlinux;   # default: built from the host kernel's source
             proxy = {
               acme = true;
               openFirewall = true;
@@ -160,6 +171,24 @@ runs `cyac daemon` as `cyac.service` and, optionally, links a guest kernel:
 If you set `networking.nftables.flushRuleset = true`, every firewall reload
 also drops cyac's table until the next `cyac start`. The module warns about
 this.
+
+### PVM: Firecracker without hardware virtualization
+
+[PVM](https://github.com/virt-pvm) is an out-of-tree KVM backend that
+virtualizes using page tables rather than VMX/SVM, following
+[this post](https://blog.alexellis.io/how-to-run-firecracker-without-kvm-on-regular-cloud-vms/).
+`services.cyac.kernel = "pvm"` switches the host to virt-pvm's 6.12 kernel
+with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps `kvm-intel` and
+`kvm-amd` from loading, and links a PVM guest kernel (built from virt-pvm's
+guest config) to `$CYAC_DIR/vmlinux-pvm`. It's x86_64 only. The host kernel
+isn't in any binary cache, so the first build compiles it.
+
+Stock Firecracker is enough. The PVM fork that post uses only adds snapshot
+state, which cyac doesn't use.
+
+`nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
+VMX/SVM from the VM's CPU and boots a small box under `firecracker-pvm`.
+CI runs it on GitHub's runners, which have KVM for the outer VM.
 
 ## What has been tested
 

@@ -48,7 +48,7 @@ const usage = `usage: cyac <command> [args]
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
-CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
+CYAC_RUNTIME=firecracker, firecracker-pvm or runc forces a runtime.
 `
 
 func main() {
@@ -205,6 +205,7 @@ func daemon(socket string, args []string) error {
 		Net: bridge.Network{DNS: "1.1.1.1"},
 		Runtimes: []driver.Runtime{
 			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), PVM: true},
 			runc.Runtime{},
 		},
 	}
