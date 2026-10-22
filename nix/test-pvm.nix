@@ -42,6 +42,8 @@ pkgs.testers.runNixOSTest {
             NET_9P_VIRTIO = yes;
             "9P_FS" = yes;
             "9P_FS_POSIX_ACL" = yes;
+            # The test VM's initrd mounts its writable /nix/store as an overlay.
+            OVERLAY_FS = yes;
           };
         }).hostKernel
     );
@@ -66,7 +68,7 @@ pkgs.testers.runNixOSTest {
         """echo '{"name":"t","image":"test","id":2,"cpus":1,"mem_mib":256,"init":["/init"]}' > /var/lib/cyac/boxes/t.json""",
     )
     host.succeed("cyac start t")
-    host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/run/t/console.log", timeout=120)
+    host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
     host.succeed("ping -c1 -W5 10.88.0.2")
     host.succeed("cyac stop t")
