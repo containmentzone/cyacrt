@@ -71,6 +71,9 @@ the bridge, so the image needs sshd. At seed time cyac writes a key for the
 daemon into `/root/.ssh/authorized_keys` and a host key it pins into
 `/etc/ssh`, unmasks the image's ssh units (exeuntu masks them), and enables
 `ssh.service` if nothing starts sshd. Only the host can reach that sshd.
+If the image names a login user, with the label `cyac.nullvoid.space/login-user`
+or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
+command runs as that user through `runuser -l`; `cyac exec --root` skips that.
 
 **Console.** A VM's serial console is always appended to
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old

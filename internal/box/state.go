@@ -24,8 +24,11 @@ type Box struct {
 	MemMiB int    `json:"mem_mib"`
 	// Init is PID 1: the image's ENTRYPOINT+CMD unless overridden, e.g.
 	// /usr/local/bin/init for exeuntu or /lib/systemd/systemd.
-	Init   []string `json:"init"`
-	Routes []Route  `json:"routes,omitempty"`
+	Init []string `json:"init"`
+	// User is who `cyac exec` runs as, from the image's login-user label;
+	// empty means root.
+	User   string  `json:"user,omitempty"`
+	Routes []Route `json:"routes,omitempty"`
 }
 
 // Route is one explicitly exposed hostname. Nothing is reachable without one.
