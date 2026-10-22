@@ -137,6 +137,16 @@ in
         assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
         message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
       }
+    ]
+    ++ lib.optionals cfg.proxy.acme [
+      {
+        assertion = config.security.acme.defaults.email != null;
+        message = "services.cyac.proxy.acme needs security.acme.defaults.email.";
+      }
+      {
+        assertion = config.security.acme.acceptTerms;
+        message = "services.cyac.proxy.acme needs security.acme.acceptTerms = true.";
+      }
     ];
 
     # The daemon owns stateDir and serves the CLI's API on /run/cyac/cyac.sock
@@ -170,17 +180,6 @@ in
     networking.firewall.allowedTCPPorts = lib.mkIf (
       cfg.proxy.openFirewall && cfg.proxy.acme
     ) [ 80 443 ];
-
-    assertions = lib.optionals cfg.proxy.acme [
-      {
-        assertion = config.security.acme.defaults.email != null;
-        message = "services.cyac.proxy.acme needs security.acme.defaults.email.";
-      }
-      {
-        assertion = config.security.acme.acceptTerms;
-        message = "services.cyac.proxy.acme needs security.acme.acceptTerms = true.";
-      }
-    ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
       services.cyac: networking.nftables.flushRuleset wipes cyac's "inet cyac" table on every
