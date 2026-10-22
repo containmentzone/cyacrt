@@ -48,6 +48,27 @@ pkgs.testers.runNixOSTest {
         }).hostKernel
     );
     boot.initrd.includeDefaultModules = false;
+    # The test VM's own module lists, less what this kernel leaves out:
+    # virtio_mmio, virtiofs and virtio_gpu, which a QEMU PCI VM doesn't need.
+    boot.initrd.availableKernelModules = pkgs.lib.mkForce [
+      "9p"
+      "9pnet_virtio"
+      "autofs"
+      "efivarfs"
+      "ext4"
+      "overlay"
+      "tpm-crb"
+      "tpm-tis"
+      "virtio_blk"
+      "virtio_net"
+      "virtio_pci"
+      "virtio_scsi"
+    ];
+    boot.initrd.kernelModules = pkgs.lib.mkForce [
+      "virtio_balloon"
+      "virtio_console"
+      "virtio_rng"
+    ];
     environment.systemPackages = [ pkgs.e2fsprogs ];
     virtualisation = {
       memorySize = 4096;
