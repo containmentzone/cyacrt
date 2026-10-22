@@ -241,6 +241,7 @@ func daemon(socket string, args []string) error {
 	srv := &server.Server{Store: s, RoutesChanged: px.Reload}
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
+	go srv.Watch(2 * time.Second)
 
 	if *email == "" {
 		slog.Info("proxy listening", "addr", *listen, "tls", false)
