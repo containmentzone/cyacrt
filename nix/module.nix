@@ -42,14 +42,13 @@ in
       listen = lib.mkOption {
         type = lib.types.str;
         default = ":8080";
-        description = "Plain HTTP listen address, used when acmeEmail is null.";
+        description = "Plain HTTP listen address, used when acme is off.";
       };
 
-      acmeEmail = lib.mkOption {
-        type = lib.types.nullOr lib.types.str;
-        default = null;
-        description = "Enables Let's Encrypt for exposed hosts and serves on :80 and :443.";
-      };
+      acme = lib.mkEnableOption ''
+        Let's Encrypt for exposed hosts, serving on :80 and :443. Uses
+        security.acme.defaults.email and requires security.acme.acceptTerms
+      '';
 
       openFirewall = lib.mkOption {
         type = lib.types.bool;
@@ -88,7 +87,12 @@ in
       serviceConfig = {
         ExecStart =
           "${lib.getExe cfg.package} daemon "
-          + (if cfg.proxy.acmeEmail != null then "--acme-email ${cfg.proxy.acmeEmail}" else "--listen ${cfg.proxy.listen}");
+          + (
+            if cfg.proxy.acme then
+              "--acme-email ${config.security.acme.defaults.email}"
+            else
+              "--listen ${cfg.proxy.listen}"
+          );
         RuntimeDirectory = "cyac";
         RuntimeDirectoryMode = "0700";
         # Boxes are runc/firecracker children; stopping the daemon must not take them down.
@@ -98,8 +102,19 @@ in
     };
 
     networking.firewall.allowedTCPPorts = lib.mkIf (
-      cfg.proxy.openFirewall && cfg.proxy.acmeEmail != null
+      cfg.proxy.openFirewall && cfg.proxy.acme
     ) [ 80 443 ];
+
+    assertions = lib.optionals cfg.proxy.acme [
+      {
+        assertion = config.security.acme.defaults.email != null;
+        message = "services.cyac.proxy.acme needs security.acme.defaults.email.";
+      }
+      {
+        assertion = config.security.acme.acceptTerms;
+        message = "services.cyac.proxy.acme needs security.acme.acceptTerms = true.";
+      }
+    ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
       services.cyac: networking.nftables.flushRuleset wipes cyac's "inet cyac" table on every
