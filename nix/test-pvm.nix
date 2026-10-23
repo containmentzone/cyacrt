@@ -133,7 +133,9 @@ pkgs.testers.runNixOSTest {
     host.succeed("cyac start t")
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
-    host.succeed("ping -c1 -W5 10.88.0.2")
+    # Box id 2 sits next to the host's bridge address, whatever the subnet.
+    bridge = host.succeed("ip -4 -o addr show cyac0").split()[3].split("/")[0]
+    host.succeed(f"ping -c1 -W5 {bridge.rsplit('.', 1)[0]}.2")
     host.wait_until_succeeds("cyac exec t busybox echo agent-ok | grep agent-ok", timeout=60)
     host.succeed("cyac stop t")
 
