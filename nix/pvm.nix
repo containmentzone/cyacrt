@@ -32,6 +32,8 @@ in
     modDirVersion = version;
     structuredExtraConfig = with lib.kernel; {
       KVM_PVM = module;
+      # kvm-pvm refuses to load when the kernel's memory layout is randomized.
+      RANDOMIZE_MEMORY = lib.mkForce no;
       # This tree's Rust support predates nixpkgs' rustc.
       RUST = lib.mkForce no;
     }
