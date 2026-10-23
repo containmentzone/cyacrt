@@ -1,7 +1,9 @@
 // Package firecracker is the VM runtime: it boots a box's disk as
-// /dev/vda under Firecracker, with the box's init (usually systemd) as
-// PID 1. The guest kernel brings eth0 up from the ip= boot argument; the
-// disk's networkd config carries the same address.
+// /dev/vda under Firecracker. The VM starts in an initramfs holding
+// cyac-init, which mounts the disk, starts an exec agent on vsock, and runs
+// the box's init (usually systemd) or command (see cmd/cyac-init). The
+// guest kernel brings eth0 up from the ip= boot argument; the disk's
+// networkd config carries the same address.
 //
 // With PVM set it is the "firecracker-pvm" runtime: the same VMM on a host
 // without hardware virtualization (a cloud VM without nested virt) whose
@@ -28,13 +30,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
-	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // Runtime implements driver.Runtime.
 type Runtime struct {
 	Kernel string // uncompressed guest vmlinux
+	Init   string // static cyac-init binary
 	PVM    bool
 }
 
@@ -43,6 +46,7 @@ var _ driver.Runtime = Runtime{}
 func (Runtime) LinkKind() driver.LinkKind        { return driver.Tap }
 func socket(m *driver.Machine) string            { return filepath.Join(m.RunDir, "fc.sock") }
 func pidFile(m *driver.Machine) string           { return filepath.Join(m.RunDir, "fc.pid") }
+func vsock(m *driver.Machine) string             { return filepath.Join(m.RunDir, "v.sock") }
 func (Runtime) Cleanup(m *driver.Machine)        {}
 func (r Runtime) Running(m *driver.Machine) bool { return pid(m) > 0 }
 
@@ -67,20 +71,32 @@ func (r Runtime) Available() error {
 	if _, err := exec.LookPath("firecracker"); err != nil {
 		return err
 	}
+	if _, err = os.Stat(r.Init); err != nil {
+		return err
+	}
 	_, err = os.Stat(r.Kernel)
 	return err
 }
 
 func (r Runtime) Start(m *driver.Machine) error {
-	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
-	bootArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw ip=%s::%s:%s:%s:eth0:off init=%s",
-		m.Addr.IP, m.Addr.Gateway, mask, m.Name, m.Init[0])
-	if len(m.Init) > 1 {
-		bootArgs += " -- " + strings.Join(m.Init[1:], " ") // the kernel hands these to init as argv
+	initrd := filepath.Join(m.RunDir, "initrd")
+	f, err := os.OpenFile(initrd, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
 	}
+	err = agent.WriteInitrd(f, r.Init, m.Init)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
+	bootArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off ip=%s::%s:%s:%s:eth0:off",
+		m.Addr.IP, m.Addr.Gateway, mask, m.Name)
 	ip := m.Addr.IP.As4()
 	cfg := map[string]any{
-		"boot-source": map[string]any{"kernel_image_path": r.Kernel, "boot_args": bootArgs},
+		"boot-source": map[string]any{"kernel_image_path": r.Kernel, "initrd_path": initrd, "boot_args": bootArgs},
 		"drives": []map[string]any{{
 			"drive_id": "rootfs", "path_on_host": m.Disk, "is_root_device": true, "is_read_only": false,
 		}},
@@ -89,6 +105,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 			"iface_id": "eth0", "host_dev_name": m.Link.HostIface,
 			"guest_mac": fmt.Sprintf("06:00:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3]),
 		}},
+		"vsock": map[string]any{"guest_cid": 3, "uds_path": vsock(m)},
 	}
 	cfgPath := filepath.Join(m.RunDir, "vm.json")
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -131,7 +148,8 @@ func (r Runtime) Start(m *driver.Machine) error {
 }
 
 func (Runtime) Stop(m *driver.Machine) error {
-	// Ctrl-Alt-Del makes systemd reboot, and Firecracker exits on guest reboot.
+	// Ctrl-Alt-Del makes systemd (or cyac-init) reboot, and Firecracker
+	// exits on guest reboot.
 	if err := api(m, http.MethodPut, "/actions", map[string]any{"action_type": "SendCtrlAltDel"}); err == nil {
 		for range 60 {
 			if pid(m) == 0 {
@@ -154,21 +172,14 @@ func (Runtime) Grow(m *driver.Machine) error {
 	})
 }
 
-// Command reaches the guest over SSH with the key and pinned host key from
-// seed time, so it needs sshd in the image. ssh joins the remote command
-// into one string for the guest's shell, so each argument is quoted.
+// Command runs args through the guest's agent, by running "cyac
+// agent-exec" (agent.Run) on the daemon's pty.
 func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
-	if _, err := os.Stat(m.SSHKey); err != nil {
-		return nil, fmt.Errorf("%s has no SSH key (seeded before cyac supported exec in VMs): %w", m.Name, err)
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
 	}
-	sshArgs := []string{
-		"-tt", "-i", m.SSHKey,
-		"-o", "UserKnownHostsFile=" + m.KnownHosts, "-o", "StrictHostKeyChecking=yes",
-		"-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "BatchMode=yes",
-		"-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
-		"root@" + m.Addr.IP.String(), "--", sh.Quote(args),
-	}
-	return exec.Command("ssh", sshArgs...), nil
+	return exec.Command(self, append([]string{"agent-exec", vsock(m)}, args...)...), nil
 }
 
 // pvmHost reports whether /dev/kvm would be served by kvm-pvm. It can't be

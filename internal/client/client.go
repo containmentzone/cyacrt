@@ -106,6 +106,7 @@ func (c *Client) Exec(name string, args []string, root bool) error {
 		if w, h, err := term.GetSize(fd); err == nil {
 			req.Cols, req.Rows = uint16(w), uint16(h)
 		}
+		req.Term = os.Getenv("TERM")
 	}
 	conn, br, err := c.upgrade("/v1/boxes/"+name+"/exec", api.ExecUpgrade, req)
 	if err != nil {
@@ -118,32 +119,34 @@ func (c *Client) Exec(name string, args []string, root bool) error {
 	return err
 }
 
-// DetachKey ends a console session: Ctrl-], as in telnet.
+// DetachKey ends a console session: Ctrl-], as in telnet. So does ~. at
+// the start of a line, as in ssh, for keyboards where Ctrl-] is awkward.
+// Ctrl-C and Ctrl-D go to the box.
 const DetachKey = 0x1d
 
 // Console attaches the local terminal to the box's console until the user
-// presses DetachKey.
+// detaches.
 func (c *Client) Console(name string) error {
 	conn, br, err := c.upgrade("/v1/boxes/"+name+"/console", api.ConsoleUpgrade, nil)
 	if err != nil {
 		return fmt.Errorf("console: %w", err)
 	}
 	defer conn.Close()
-	fmt.Fprintf(os.Stderr, "attached to %s's console; Ctrl-] detaches\n", name)
+	fmt.Fprintf(os.Stderr, "attached to %s's console; Ctrl-] or Enter ~ . detaches\n", name)
 	defer rawTerminal()()
 
 	detached := make(chan struct{})
 	go func() {
 		p := make([]byte, 1024)
+		esc := escaper{lineStart: true}
 		for {
 			n, err := os.Stdin.Read(p)
-			if i := bytes.IndexByte(p[:n], DetachKey); i >= 0 {
-				conn.Write(p[:i])
+			out, detach := esc.filter(p[:n])
+			if _, werr := conn.Write(out); detach {
 				close(detached)
 				conn.Close()
 				return
-			}
-			if _, werr := conn.Write(p[:n]); err != nil || werr != nil {
+			} else if err != nil || werr != nil {
 				return
 			}
 		}
@@ -155,6 +158,37 @@ func (c *Client) Console(name string) error {
 	default:
 		return err
 	}
+}
+
+// escaper finds the detach sequences in console input.
+type escaper struct {
+	lineStart bool // the last byte ended a line
+	tilde     bool // holding a ~ typed at the start of a line
+}
+
+// filter returns the bytes to send and whether the user asked to detach.
+// After a held ~, . detaches, ~ sends one ~, and anything else sends both.
+func (e *escaper) filter(in []byte) (out []byte, detach bool) {
+	for _, b := range in {
+		switch {
+		case b == DetachKey:
+			return out, true
+		case e.tilde:
+			e.tilde = false
+			if b == '.' {
+				return out, true
+			}
+			if b != '~' {
+				out = append(out, '~')
+			}
+		case e.lineStart && b == '~':
+			e.tilde = true
+			continue
+		}
+		out = append(out, b)
+		e.lineStart = b == '\r' || b == '\n'
+	}
+	return out, false
 }
 
 // rawTerminal puts stdin in raw mode if it is a terminal and returns the

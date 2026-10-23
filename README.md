@@ -4,19 +4,35 @@ The cyac runtime, a small single-host take on exe.dev. Boxes that act like littl
 from any OCI image, behind an HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~1,900 lines of Go).
+(~3,300 lines of Go).
 
 ## How it works
 
 **A box is a disk, not a container.** `cyac new` pulls an image once,
-unpacks it into a sparse ext4 file, and adds a few files: the hostname, a
-systemd-networkd config with the box's static IP, an empty machine-id, and
-SSH keys (see *Getting in*).
+unpacks it into a sparse ext4 file, and adds a few files: the hostname, an
+`/etc/hosts` that resolves it, a systemd-networkd config with the box's
+static IP, and an empty machine-id.
+Every start also rewrites `/etc/resolv.conf`
+to point at the configured resolver (1.1.1.1), replacing a link to
+systemd-resolved's stub, so DNS works whether or not the image runs it.
 From then on the disk *is* the box. apt installs, files in `/root`, and
 everything else survive stop/start and host reboots.
 
-PID 1 is the image's own `ENTRYPOINT`+`CMD` (for exeuntu that's
-`/usr/local/bin/init`, which starts systemd). Override it with `--init`.
+**What runs in it** depends on the image's `ENTRYPOINT`+`CMD` (override
+it with `--init`). cyac picks one of three modes at seed time; `--mode`
+picks one by hand:
+
+- **init**: the command is named `init` or `systemd` (exeuntu's is
+  `/usr/local/bin/init`, which starts systemd; a NixOS disk's `/sbin/init`
+  is its stage 2), or the image has no command but has `/sbin/init`. It
+  becomes PID 1, and the box behaves like a VM.
+- **command**: any other command, such as nginx. cyac-init is PID 1, like a
+  container runtime plus tini: it reaps orphans and runs the command with the
+  image's `Env`, `WorkingDir` and `USER`, sending its output to the console.
+  When the command exits, the box stops.
+- **pause**: no command and no `/sbin/init`. cyac-init is PID 1 and runs
+  nothing, like Kubernetes' pause container, so the box stays up for
+  `cyac exec`.
 
 The same disk boots under one of two runtime drivers. At start, cyac uses the first one this host can run:
 
@@ -24,7 +40,7 @@ The same disk boots under one of two runtime drivers. At start, cyac uses the fi
 |---|---|---|
 | When | `/dev/kvm` usable, `firecracker` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
 | Runs under | Firecracker | runc |
-| Root | disk as `/dev/vda` | disk loop-mounted on the host |
+| Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | disk loop-mounted on the host |
 | Growing the disk | host extends the file, the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | host extends the file and runs online `resize2fs` |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
 
@@ -65,21 +81,31 @@ the NixOS module): which runtimes it can use and why not, every API call,
 and each box's lifecycle. `cyac new` prints the daemon's progress as it
 pulls, unpacks and boots.
 
+**cyac-init.** Every VM boots into a small initramfs the daemon writes at
+each start, holding a static Go binary, `cyac-init`, and the box's config.
+As `/init` it mounts `/dev/vda`, mounts `/dev`, `/dev/pts`, `/proc`, `/sys`
+and a `/run` tmpfs into it (systemd and NixOS's stage 2 take these over),
+writes `resolv.conf`, copies itself to `/run/cyac`, and switches root. Then
+it starts the exec agent and runs the box's init or command, or nothing.
+Nothing of cyac's lives on the disk, so it can't go stale or be deleted by
+the box. Under runc, cyac-init is bind-mounted in as PID 1 for command and
+pause mode only.
+
 **Getting in.** `cyac exec` runs a command on a pty in the box. Under runc
-that is `runc exec`. In a VM it is `ssh` from the daemon to the box's IP over
-the bridge, so the image needs sshd. At seed time cyac writes a key for the
-daemon into `/root/.ssh/authorized_keys` and a host key it pins into
-`/etc/ssh`, unmasks the image's ssh units (exeuntu masks them), and enables
-`ssh.service` if nothing starts sshd. Only the host can reach that sshd.
+that is `runc exec`. In a VM the daemon reaches cyac-init's agent over
+Firecracker's vsock device, which only the host can reach, so it needs no
+sshd, keys or guest network. The image can still run sshd for its own users.
 If the image names a login user, with the label `cyac.nullvoid.space/login-user`
 or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
-command runs as that user through `runuser -l`; `cyac exec --root` skips that.
+command runs as that user through `runuser --pty -l`; `cyac exec --root`
+skips that. Either way the command gets your `TERM`.
 
 **Console.** A VM's serial console is always appended to
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old
 copy past 8 MiB (checked at start). `cyac console <name>` shows its tail,
-follows it, and sends what you type to the serial port, which is how you
-log in to a VM whose image has no sshd. Ctrl-] detaches. For a stopped box
+follows it, and sends what you type to the serial port, where a getty or a
+command reading stdin gets it. Ctrl-] or Enter ~ . detaches
+(Ctrl-C and Ctrl-D go to the box). For a stopped box
 it shows the last output, which is where boot failures end up. Under runc
 the log only gets what PID 1 prints before it detaches from its stdio
 (systemd does so right away), so use `cyac exec` there.
@@ -88,8 +114,11 @@ the log only gets what PID 1 prints before it detaches from its stdio
 The daemon checks every 2 seconds for boxes whose runtime exited without
 `cyac stop`. If the console log ends with the kernel's `reboot: Restarting
 system`, it starts the box again, up to 3 times a minute. Anything else
-(a poweroff, a crash, or any exit under runc, where systemd's output
-doesn't reach the console) leaves the box stopped.
+(a poweroff, a crash, a command-mode box whose command exited, or any exit
+under runc, where systemd's output doesn't reach the console) leaves the box
+stopped. cyac-init ends a VM with a reset too, since that's the one thing
+that stops Firecracker, but it prints `cyac-init: powering off` first, so
+the daemon doesn't restart it.
 
 **The socket has no authentication yet.** It is created mode 0600 in a
 0700 directory, so only root can use it. This will change before the API is
@@ -108,7 +137,9 @@ Two interfaces in `internal/driver` are the seams:
 through those interfaces. `internal/proxy` is the front door.
 `internal/server` serves the API in `internal/api` on the socket, and
 `internal/client` calls it. `cmd/cyac` is both the CLI and the daemon,
-and wires concrete drivers together. A new runtime or network
+and wires concrete drivers together. `cmd/cyac-init` is the static PID 1
+and exec agent described above; `internal/agent` holds what it shares with
+the daemon (its config, the initramfs, the exec protocol). A new runtime or network
 backend is one package that implements one interface, plus a line in
 `cmd/cyac/main.go`.
 
@@ -120,7 +151,7 @@ cyac daemon --acme-email you@example.com   # or let the NixOS module run it
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
 cyac exec web                       # a shell
-cyac console web                    # the console; Ctrl-] detaches
+cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
 cyac expose web 8000 web.example.com   # prints a token
 cyac resize web 50G
 cyac stop web && cyac rm web
@@ -132,15 +163,17 @@ Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
 `losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
 `runc` for the runc runtime (on a cgroup v2 host), or `firecracker`, KVM
 and a guest kernel at `$CYAC_DIR/vmlinux` for the Firecracker runtime. The guest kernel
-needs ext4, virtio-blk/net and `CONFIG_IP_PNP`; Firecracker's CI kernels
-should do. If another firewall (Docker, for example) sets the FORWARD policy
+needs ext4, virtio-blk/net, `CONFIG_IP_PNP`, initramfs support
+(`CONFIG_BLK_DEV_INITRD`) and vsock (`CONFIG_VIRTIO_VSOCKETS`); the guest
+kernels the flake builds have them all. The daemon finds `cyac-init` next to
+its own binary, or at `$CYAC_INIT`. If another firewall (Docker, for example) sets the FORWARD policy
 to drop, allow `cyac0`.
 
 ## Nix
 
 `nix build` produces `cyac` wrapped with every tool it calls (runc,
 firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
-needs nothing else on PATH. `nix develop` gives you Go plus the same tools.
+needs nothing else on PATH, and a static `cyac-init` in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
 and `bridge` modules, enables IP forwarding, creates the state dir, runs
@@ -213,12 +246,19 @@ Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
 - persistence across stop/start
 - offline resize
 - `rm`
+- command and pause mode under runc, including an image `USER`
+  (`nginxinc/nginx-unprivileged`) and stopping each
+- cyac-init's initramfs under qemu (TCG) with the flake's guest kernel: a
+  busybox disk in init, command and pause mode (stopped by Ctrl-Alt-Del),
+  and a NixOS disk booting to its login prompt and shutting down cleanly
+- the exec agent's protocol, over a pipe
 
 Not tested yet:
 
-- **The Firecracker runtime.** There was no KVM in the sandbox.
+- **The Firecracker runtime, and exec over vsock.** There was no KVM in the
+  sandbox; the PVM VM test covers both in CI.
 - **Online resize under runc.** The sandbox lacked `CAP_SYS_RESOURCE`.
-- **exeuntu itself.** Its layer blobs weren't reachable from the sandbox. Two things to check: that its `/etc/fstab` root entry matches a bare ext4 filesystem on `/dev/vda`, and how it behaves with the image's own SSH units masked.
+- **exeuntu itself.** Its layer blobs weren't reachable from the sandbox. Check that its `/etc/fstab` root entry matches a bare ext4 filesystem on `/dev/vda`.
 
 ## Not built yet
 

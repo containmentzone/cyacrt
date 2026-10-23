@@ -1,6 +1,7 @@
 package box
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -30,6 +31,9 @@ var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 // file of the requested size. It runs once per box; afterwards the disk is
 // the box and the image is no longer consulted. progress gets a line per
 // step and, while unpacking, every few seconds.
+//
+// b.Mode asks for a mode ("init", "command" or "pause"); empty picks one
+// from the image (see pickMode). Seed replaces it with the mode picked.
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
 	img, err := crane.Pull(b.Image, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
@@ -52,6 +56,7 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	if len(b.Init) == 0 {
 		b.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
 	}
+	b.Env, b.Cwd, b.RunAs = cfg.Config.Env, cfg.Config.WorkingDir, cfg.Config.User
 	for _, label := range loginUserLabels {
 		if u := cfg.Config.Labels[label]; u != "" {
 			if !validUser.MatchString(u) {
@@ -59,15 +64,6 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 			}
 			b.User = u
 			break
-		}
-	}
-	if len(b.Init) == 0 {
-		b.Init = []string{"/sbin/init"}
-	}
-	for _, arg := range b.Init {
-		// The VM tier passes these on the kernel command line.
-		if arg == "" || strings.ContainsAny(arg, " \t\n\"") {
-			return fmt.Errorf("init argument %q can't contain whitespace or quotes", arg)
 		}
 	}
 
@@ -120,10 +116,10 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	return nil
 }
 
-// writeBoxConfig drops the only files cyac adds to an image: hostname,
-// a systemd-networkd config with the box's static IP, an empty
-// machine-id so systemd generates a fresh one on first boot, and the SSH
-// keys and units from seedSSH.
+// writeBoxConfig picks the box's mode and drops the only files cyac adds
+// to an image: hostname, hosts (so `hostname -f` resolves), a
+// systemd-networkd config with the box's static IP, and an empty
+// machine-id so systemd generates a fresh one on first boot.
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
 func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
@@ -134,14 +130,15 @@ func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
 	defer root.Close()
 	addr := m.Addr
 
-	if _, err := root.Lstat(strings.TrimPrefix(b.Init[0], "/")); err != nil {
-		return fmt.Errorf("init %s not found in image (pass --init to choose one): %w", b.Init[0], err)
+	if err := pickMode(root, b); err != nil {
+		return err
 	}
 
 	network := fmt.Sprintf("[Match]\nName=eth0\n\n[Network]\nAddress=%s/%d\nGateway=%s\nDNS=%s\n",
 		addr.IP, addr.Prefix, addr.Gateway, addr.DNS)
 	files := map[string]string{
 		"etc/hostname":                        b.Name + "\n",
+		"etc/hosts":                           "127.0.0.1 localhost\n127.0.1.1 " + b.Name + "\n::1 localhost ip6-localhost ip6-loopback\n",
 		"etc/machine-id":                      "",
 		"etc/systemd/network/10-cyac.network": network,
 	}
@@ -155,7 +152,40 @@ func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
 			return err
 		}
 	}
-	return seedSSH(root, m)
+	return nil
+}
+
+// pickMode settles what runs b.Init, unless b.Mode already asks: an init
+// (named init or systemd, like exeuntu's /usr/local/bin/init) becomes PID
+// 1, any other command runs under cyac-init, like a container, and an
+// image with neither a command nor /sbin/init gets pause mode.
+func pickMode(root *os.Root, b *Box) error {
+	want := b.Mode
+	b.Mode = ""
+	switch {
+	case want == "pause":
+		b.Mode, b.Init = "pause", nil
+		return nil
+	case len(b.Init) == 0 && want == "command":
+		return errors.New("the image has no command (pass --init to give one)")
+	case len(b.Init) == 0:
+		if _, err := root.Lstat("sbin/init"); err != nil {
+			if want == "init" {
+				return errors.New("the image has no command or /sbin/init (pass --init to give one)")
+			}
+			b.Mode = "pause"
+			return nil
+		}
+		b.Init = []string{"/sbin/init"}
+	}
+	if base := filepath.Base(b.Init[0]); want == "command" || want == "" && base != "init" && base != "systemd" {
+		b.Mode = "command"
+		return nil
+	}
+	if _, err := root.Lstat(strings.TrimPrefix(b.Init[0], "/")); err != nil {
+		return fmt.Errorf("init %s not found in image (pass --init to choose one): %w", b.Init[0], err)
+	}
+	return nil
 }
 
 // writeFile replaces name in root, without following a symlink there.

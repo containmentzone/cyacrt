@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+
+	"github.com/containmentzone/cyacrt/internal/agent"
 )
 
 // Machine is everything a driver needs to know about one box.
@@ -19,12 +21,7 @@ type Machine struct {
 	// outlives the run, and feed it input from the FIFO at ConsoleIn.
 	ConsoleLog string
 	ConsoleIn  string
-	// For runtimes that reach the box over SSH: the daemon's private key
-	// and a known_hosts file pinning the box's host key. Both are written
-	// at seed time.
-	SSHKey     string
-	KnownHosts string
-	Init       []string // PID 1
+	Init       agent.Config // what runs as PID 1
 	CPUs       int
 	MemMiB     int
 	Addr       Addr // from Network.Addr
@@ -68,6 +65,34 @@ func OpenConsole(m *Machine) (log, in *os.File, err error) {
 		return nil, nil, err
 	}
 	return log, in, nil
+}
+
+// WriteResolvConf points the box at m.Addr.DNS by writing /etc/resolv.conf
+// into its root filesystem, mounted at dir. It replaces whatever the image
+// has there, including a symlink to systemd-resolved's stub, which isn't
+// running yet (or at all) when the box needs DNS. Runtimes call it on every
+// start. dir is untrusted image content, so the write goes through os.Root.
+func WriteResolvConf(dir string, m *Machine) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.MkdirAll("etc", 0o755); err != nil {
+		return err
+	}
+	if err := root.Remove("etc/resolv.conf"); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := root.OpenFile("etc/resolv.conf", os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString("# written by cyac on every start\nnameserver " + m.Addr.DNS + "\n")
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // Runtime boots and stops a box's disk.

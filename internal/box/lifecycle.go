@@ -11,18 +11,19 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // machine is the driver-facing view of a box.
 func (s Store) machine(b *Box) *driver.Machine {
-	key := s.SSHKey(b.Name)
+	addr := s.Net.Addr(b.ID)
 	return &driver.Machine{
 		Name: b.Name, ID: b.ID, Disk: s.DiskPath(b.Name), RunDir: s.RunDir(b.Name),
 		ConsoleLog: s.ConsoleLog(b.Name), ConsoleIn: s.ConsoleIn(b.Name),
-		SSHKey: key, KnownHosts: key + ".known_hosts",
-		Init: b.Init, CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: s.Net.Addr(b.ID),
+		Init: agent.Config{Mode: b.Mode, Args: b.Init, Env: b.Env, Cwd: b.Cwd, User: b.RunAs, DNS: addr.DNS},
+		CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: addr,
 	}
 }
 
@@ -72,12 +73,14 @@ func (s Store) Exited(b *Box) bool {
 // Rebooted reports whether b's last console output is the kernel
 // restarting. Firecracker can't reset a VM, so on a guest reboot it just
 // exits (the kernel runs with reboot=k), and this is how to tell that
-// apart from a poweroff. Under runc systemd's output doesn't reach the
-// console, so this is false there.
+// apart from a poweroff, including cyac-init's, which ends in a reset too.
+// Under runc systemd's output doesn't reach the console, so this is false
+// there.
 func (s Store) Rebooted(b *Box) bool {
 	out := string(tail(s.ConsoleLog(b.Name), 0, 4096))
 	restart := strings.LastIndex(out, "reboot: Restarting system")
-	return restart >= 0 && restart > strings.LastIndex(out, "reboot: Power down")
+	return restart >= 0 && restart > strings.LastIndex(out, "reboot: Power down") &&
+		restart > strings.LastIndex(out, agent.PoweringOff)
 }
 
 // Cleanup removes what a run left behind once its runtime has exited.
@@ -214,7 +217,7 @@ func (s Store) Remove(b *Box) error {
 	if err := os.Remove(s.DiskPath(b.Name)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	for _, f := range []string{s.ConsoleLog(b.Name), s.ConsoleLog(b.Name) + ".1", s.SSHKey(b.Name), s.SSHKey(b.Name) + ".known_hosts"} {
+	for _, f := range []string{s.ConsoleLog(b.Name), s.ConsoleLog(b.Name) + ".1"} {
 		os.Remove(f)
 	}
 	if err := s.Delete(b.Name); err != nil {
@@ -226,15 +229,21 @@ func (s Store) Remove(b *Box) error {
 
 // Command returns a command that runs args inside a running box; start it
 // with a terminal on its stdio. It runs as the box's login user, if the
-// image named one, unless root is set.
-func (s Store) Command(b *Box, args []string, root bool) (*exec.Cmd, error) {
+// image named one, unless root is set, with TERM set to term if given.
+func (s Store) Command(b *Box, args []string, root bool, term string) (*exec.Cmd, error) {
 	rt := s.running(b)
 	if rt == nil {
 		return nil, fmt.Errorf("%s is not running", b.Name)
 	}
 	if b.User != "" && !root {
-		// A login shell, so the user's HOME, profile and MOTD apply.
-		args = []string{"runuser", "-l", b.User, "-c", sh.Quote(args)}
+		// A login shell, so the user's HOME, profile and MOTD apply. With
+		// -c, runuser starts a new session, which would leave the shell
+		// without a controlling terminal (no job control); --pty gives it one.
+		args = []string{"runuser", "--pty", "-l", b.User, "-c", sh.Quote(args)}
+	}
+	if term != "" {
+		// runuser -l keeps TERM.
+		args = append([]string{"env", "TERM=" + term}, args...)
 	}
 	return rt.Command(s.machine(b), args)
 }

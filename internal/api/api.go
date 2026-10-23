@@ -43,6 +43,7 @@ type NewBox struct {
 	CPUs      int      `json:"cpus"`
 	MemMiB    int      `json:"mem_mib"`
 	Init      []string `json:"init,omitempty"` // empty: the image's ENTRYPOINT+CMD
+	Mode      string   `json:"mode,omitempty"` // "init", "command", "pause", or empty to pick from the image
 }
 
 // Progress is one line of a streamed reply. The last line has Box or
@@ -76,6 +77,7 @@ type Exec struct {
 	Root bool     `json:"root,omitempty"`
 	Rows uint16   `json:"rows,omitempty"`
 	Cols uint16   `json:"cols,omitempty"`
+	Term string   `json:"term,omitempty"` // the client's $TERM
 }
 
 // ExecUpgrade is the Upgrade token for the exec stream.

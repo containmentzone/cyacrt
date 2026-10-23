@@ -20,6 +20,7 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/box"
 	"github.com/containmentzone/cyacrt/internal/client"
@@ -33,14 +34,15 @@ import (
 
 const usage = `usage: cyac <command> [args]
 
-  new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024] [--init cmd]
+  new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024]
+      [--init cmd] [--mode init|command|pause]
   start <name>
   stop <name>
   rm <name>
   ls
   resize <name> <size>
-  exec [--root] <name> [cmd...] (default: bash -l, as the image's login user; VMs need sshd)
-  console <name>                attach to the console; Ctrl-] detaches
+  exec [--root] <name> [cmd...] (default: bash -l, as the image's login user)
+  console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> <port> <host> [--public]
   unexpose <host>
 
@@ -60,9 +62,19 @@ func main() {
 	socket := env("CYAC_SOCKET", api.DefaultSocket)
 	cmd, args := os.Args[1], os.Args[2:]
 	var err error
-	if cmd == "daemon" {
+	switch cmd {
+	case "daemon":
 		err = daemon(socket, args)
-	} else {
+	case "agent-exec":
+		// Internal: the daemon runs this on a pty to exec into a VM.
+		if len(args) < 2 {
+			log.Fatal("usage: cyac agent-exec <vsock socket> <cmd...>")
+		}
+		var status int
+		if status, err = agent.Run(args[0], args[1:]); err == nil {
+			os.Exit(status)
+		}
+	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
 	if err != nil {
@@ -85,13 +97,14 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		size := fs.String("size", "10G", "disk size")
 		cpus := fs.Int("cpus", 1, "vCPUs")
 		mem := fs.Int("mem", 1024, "memory in MiB")
-		init := fs.String("init", "", "PID 1 command, space-separated (default: the image's ENTRYPOINT+CMD)")
+		init := fs.String("init", "", "command, space-separated (default: the image's ENTRYPOINT+CMD)")
+		mode := fs.String("mode", "", "init (the command is PID 1), command (run it like a container) or pause (run nothing); default: init if it's named init or systemd")
 		pos := parse(fs, args, 1)
 		bytes, err := parseSize(*size)
 		if err != nil {
 			return err
 		}
-		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init)}
+		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init), Mode: *mode}
 		start := time.Now()
 		b, err := c.Create(req, func(msg string) {
 			fmt.Fprintf(os.Stderr, "[%4.0fs] %s\n", time.Since(start).Seconds(), msg)
@@ -202,13 +215,19 @@ func daemon(socket string, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
 
 	dir := env("CYAC_DIR", "/var/lib/cyac")
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
+	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
 	s := box.Store{
 		Dir: dir,
 		Net: bridge.Network{DNS: "1.1.1.1"},
 		Runtimes: []driver.Runtime{
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), PVM: true},
-			runc.Runtime{},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
+			runc.Runtime{Init: init},
 		},
 	}
 	if err := s.Lock(); err != nil {
