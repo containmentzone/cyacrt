@@ -20,7 +20,8 @@
 
 let
   # Firecracker devices and boot (virtio-mmio from the command line, ip=,
-  # serial console), the root fs, and what systemd wants.
+  # serial console), cyac-init's initramfs and vsock, the root fs, and what
+  # systemd wants.
   needed = [
     "VIRTIO_MMIO"
     "VIRTIO_MMIO_CMDLINE_DEVICES"
@@ -29,6 +30,10 @@ let
     "SERIAL_8250"
     "SERIAL_8250_CONSOLE"
     "IP_PNP"
+    "BLK_DEV_INITRD"
+    "VSOCKETS"
+    "VIRTIO_VSOCKETS"
+    "UNIX98_PTYS"
     "EXT4_FS"
     "DEVTMPFS"
     "DEVTMPFS_MOUNT"

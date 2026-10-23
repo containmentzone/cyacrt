@@ -1,6 +1,7 @@
 # A VM whose CPU has no VMX/SVM, like a cloud VM without nested virt, boots
-# the PVM host kernel; cyac must pick firecracker-pvm and boot a box under
-# it. The box is a hand-made busybox disk, since the test has no registry.
+# the PVM host kernel; cyac must pick firecracker-pvm and boot boxes under
+# it, through cyac-init: a busybox disk in init and command mode, and a
+# NixOS disk. The disks are hand-made, since the test has no registry.
 # Run with `nix build .#checks.x86_64-linux.pvm -L` on a host with KVM.
 { pkgs, self }:
 
@@ -16,6 +17,31 @@ let
     EOS
     chmod +x $out/init
   '';
+
+  # A NixOS root disk: no kernel, initrd or boot loader, since cyac brings
+  # the kernel and cyac-init stands in for stage 1.
+  nixos =
+    (pkgs.nixos {
+      boot.loader.grub.enable = false;
+      boot.kernel.enable = false;
+      boot.initrd.enable = false;
+      fileSystems."/" = {
+        device = "/dev/vda";
+        fsType = "ext4";
+      };
+      networking.useDHCP = false; # the kernel's ip= argument sets up eth0
+      documentation.enable = false;
+      nix.enable = false;
+      system.stateVersion = pkgs.lib.trivial.release;
+    }).config.system.build.toplevel;
+  nixosDisk = pkgs.callPackage "${pkgs.path}/nixos/lib/make-ext4-fs.nix" {
+    storePaths = [ nixos ];
+    volumeLabel = "nixos";
+    populateImageCommands = ''
+      mkdir -p ./files/sbin
+      ln -s ${nixos}/init ./files/sbin/init
+    '';
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "cyac-pvm";
@@ -108,6 +134,31 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
     host.succeed("ping -c1 -W5 10.88.0.2")
+    host.wait_until_succeeds("cyac exec t busybox echo agent-ok | grep agent-ok", timeout=60)
     host.succeed("cyac stop t")
+
+    # Command mode: the box stops, rather than restarts, when its command exits.
+    host.succeed(
+        "cp /var/lib/cyac/disks/t.ext4 /var/lib/cyac/disks/c.ext4",
+        """echo '{"name":"c","image":"test","id":3,"cpus":1,"mem_mib":256,"init":["/bin/sh","-c","echo cmd-ok; exit 3"],"mode":"command"}' > /var/lib/cyac/boxes/c.json""",
+        "cyac start c",
+    )
+    host.wait_until_succeeds("cyac ls | grep -E '^c .* stopped'", timeout=120)
+    host.succeed(
+        "grep cmd-ok /var/lib/cyac/logs/c.console.log",
+        "grep -F 'cyac-init: powering off: /bin/sh exited (status 3)' /var/lib/cyac/logs/c.console.log",
+        "journalctl -u cyac | grep -F 'box exited on its own; marking it stopped' | grep -F box=c",
+    )
+
+    # NixOS boots with cyac-init as its stage 1.
+    host.succeed(
+        "cp ${nixosDisk} /var/lib/cyac/disks/n.ext4 && chmod 600 /var/lib/cyac/disks/n.ext4",
+        "truncate -s 2G /var/lib/cyac/disks/n.ext4 && e2fsck -fy /var/lib/cyac/disks/n.ext4; resize2fs /var/lib/cyac/disks/n.ext4",
+        """echo '{"name":"n","image":"nixos","id":4,"cpus":1,"mem_mib":1024,"init":["/sbin/init"]}' > /var/lib/cyac/boxes/n.json""",
+        "cyac start n",
+    )
+    host.wait_until_succeeds("cyac exec n systemctl is-system-running | grep -E 'running|degraded'", timeout=300)
+    host.succeed("cyac exec n cat /etc/os-release | grep -F 'ID=nixos'")
+    host.succeed("cyac stop n")
   '';
 }

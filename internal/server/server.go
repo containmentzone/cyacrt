@@ -201,6 +201,8 @@ func (s *Server) newBox(req api.NewBox, progress func(string)) (*box.Box, error)
 		return nil, errors.New("image is required")
 	case req.SizeBytes <= 0 || req.CPUs <= 0 || req.MemMiB <= 0:
 		return nil, errors.New("size, cpus and mem must be positive")
+	case req.Mode != "" && req.Mode != "init" && req.Mode != "command" && req.Mode != "pause":
+		return nil, fmt.Errorf("mode %q is not init, command or pause", req.Mode)
 	}
 	if _, err := s.Store.Get(req.Name); err == nil {
 		return nil, fmt.Errorf("box %q already exists", req.Name)
@@ -209,7 +211,7 @@ func (s *Server) newBox(req api.NewBox, progress func(string)) (*box.Box, error)
 	if err != nil {
 		return nil, err
 	}
-	b := &box.Box{Name: req.Name, Image: req.Image, ID: id, CPUs: req.CPUs, MemMiB: req.MemMiB, Init: req.Init}
+	b := &box.Box{Name: req.Name, Image: req.Image, ID: id, CPUs: req.CPUs, MemMiB: req.MemMiB, Init: req.Init, Mode: req.Mode}
 	if err := s.Store.Seed(b, req.SizeBytes, progress); err != nil {
 		return nil, err
 	}
