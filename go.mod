@@ -1,6 +1,6 @@
 module github.com/containmentzone/cyacrt
 
-// Keep this at or below the Go in NixOS stable (26.05 ships 1.26.8).
+// Any 1.26 release builds this; NixOS stable (26.05) ships 1.26.8.
 go 1.26.0
 
 require (

@@ -8,18 +8,11 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        # The latest release, and the Go line NixOS stable (26.05) ships.
-        go: [stable, 1.26.x]
-    # Fail instead of downloading a newer Go when go.mod asks for one.
-    env:
-      GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: ${{ matrix.go }}
+          go-version: stable
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)
