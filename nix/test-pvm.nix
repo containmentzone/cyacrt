@@ -44,10 +44,47 @@ pkgs.testers.runNixOSTest {
             "9P_FS_POSIX_ACL" = yes;
             # The test VM's initrd mounts its writable /nix/store as an overlay.
             OVERLAY_FS = yes;
+            # What cyac needs: kvm-pvm, tap devices on a bridge, and the
+            # nftables NAT in internal/network/bridge.
+            VIRTUALIZATION = yes;
+            KVM = module;
+            TUN = yes;
+            BRIDGE = yes;
+            NETFILTER = yes;
+            NF_CONNTRACK = yes;
+            NF_NAT = yes;
+            NF_TABLES = yes;
+            NF_TABLES_INET = yes;
+            NFT_CT = yes;
+            NFT_NAT = yes;
+            NFT_MASQ = yes;
           };
         }).hostKernel
     );
     boot.initrd.includeDefaultModules = false;
+    # The test VM's own module lists, less what this kernel leaves out:
+    # virtio_mmio, virtiofs and virtio_gpu, which a QEMU PCI VM doesn't need.
+    boot.initrd.availableKernelModules = pkgs.lib.mkForce [
+      "9p"
+      "9pnet_virtio"
+      "autofs"
+      "efivarfs"
+      "ext4"
+      "overlay"
+      "tpm-crb"
+      "tpm-tis"
+      "virtio_blk"
+      "virtio_net"
+      "virtio_pci"
+      "virtio_scsi"
+    ];
+    boot.initrd.kernelModules = pkgs.lib.mkForce [
+      "virtio_balloon"
+      "virtio_console"
+      "virtio_rng"
+    ];
+    # The NixOS firewall wants iptables modules this kernel leaves out.
+    networking.firewall.enable = false;
     environment.systemPackages = [ pkgs.e2fsprogs ];
     virtualisation = {
       memorySize = 4096;
