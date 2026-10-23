@@ -16,6 +16,15 @@ let
   vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "listen" ]
+      "The proxy always serves :80 and :443 now; set services.cyac.proxy.domain."
+    )
+    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "acme" ]
+      "The proxy always uses Let's Encrypt now; set services.cyac.proxy.domain."
+    )
+  ];
+
   options.services.cyac = {
     enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 
@@ -75,21 +84,22 @@ in
     };
 
     proxy = {
-      listen = lib.mkOption {
+      domain = lib.mkOption {
         type = lib.types.str;
-        default = ":8080";
-        description = "Plain HTTP listen address, used when acme is off.";
+        example = "boxes.example.com";
+        description = ''
+          Root domain for exposed boxes: `cyac expose web 8000` serves
+          https://web.<domain>. Point a wildcard DNS record for it at this
+          host. The proxy always serves :80 and :443 and gets Let's Encrypt
+          certificates on demand, using security.acme.defaults.email when
+          set; it requires security.acme.acceptTerms.
+        '';
       };
-
-      acme = lib.mkEnableOption ''
-        Let's Encrypt for exposed hosts, serving on :80 and :443. Uses
-        security.acme.defaults.email and requires security.acme.acceptTerms
-      '';
 
       openFirewall = lib.mkOption {
         type = lib.types.bool;
         default = false;
-        description = "Open TCP 80 and 443 (ACME mode only).";
+        description = "Open TCP 80 and 443.";
       };
     };
   };
@@ -138,14 +148,10 @@ in
         message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
       }
     ]
-    ++ lib.optionals cfg.proxy.acme [
-      {
-        assertion = config.security.acme.defaults.email != null;
-        message = "services.cyac.proxy.acme needs security.acme.defaults.email.";
-      }
+    ++ [
       {
         assertion = config.security.acme.acceptTerms;
-        message = "services.cyac.proxy.acme needs security.acme.acceptTerms = true.";
+        message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
       }
     ];
 
@@ -161,14 +167,18 @@ in
         if pvm then "firecracker-pvm" else "firecracker"
       );
       serviceConfig = {
-        ExecStart =
-          "${lib.getExe cfg.package} daemon "
-          + (
-            if cfg.proxy.acme then
-              "--acme-email ${config.security.acme.defaults.email}"
-            else
-              "--listen ${cfg.proxy.listen}"
-          );
+        ExecStart = lib.escapeShellArgs (
+          [
+            (lib.getExe cfg.package)
+            "daemon"
+            "--domain"
+            cfg.proxy.domain
+          ]
+          ++ lib.optionals (config.security.acme.defaults.email != null) [
+            "--acme-email"
+            config.security.acme.defaults.email
+          ]
+        );
         RuntimeDirectory = "cyac";
         RuntimeDirectoryMode = "0700";
         # Boxes are runc/firecracker children; stopping the daemon must not take them down.
@@ -177,9 +187,10 @@ in
       };
     };
 
-    networking.firewall.allowedTCPPorts = lib.mkIf (
-      cfg.proxy.openFirewall && cfg.proxy.acme
-    ) [ 80 443 ];
+    networking.firewall.allowedTCPPorts = lib.mkIf cfg.proxy.openFirewall [
+      80
+      443
+    ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
       services.cyac: networking.nftables.flushRuleset wipes cyac's "inet cyac" table on every

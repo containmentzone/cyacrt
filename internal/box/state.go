@@ -34,13 +34,13 @@ type Box struct {
 	RunAs string   `json:"run_as,omitempty"`
 	// User is who `cyac shell` runs as, from the image's login-user label;
 	// empty means root.
-	User   string  `json:"user,omitempty"`
-	Routes []Route `json:"routes,omitempty"`
+	User  string `json:"user,omitempty"`
+	Route *Route `json:"route,omitempty"`
 }
 
-// Route is one explicitly exposed hostname. Nothing is reachable without one.
+// Route exposes one port of a box at <name>.<root domain>. Nothing is
+// reachable without one.
 type Route struct {
-	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	Public    bool   `json:"public,omitempty"`
 	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token

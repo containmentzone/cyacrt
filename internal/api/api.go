@@ -11,8 +11,8 @@
 //	POST   /v1/boxes/{name}/stop
 //	POST   /v1/boxes/{name}/resize   Resize
 //	DELETE /v1/boxes/{name}
-//	POST   /v1/boxes/{name}/routes   Expose → Token
-//	DELETE /v1/routes/{host}
+//	PUT    /v1/boxes/{name}/route    Expose → Exposed
+//	DELETE /v1/boxes/{name}/route
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
 //	POST   /v1/boxes/{name}/console  101, then the console log's tail and new output; input goes to the console
 //
@@ -23,15 +23,15 @@ package api
 const DefaultSocket = "/run/cyac/cyac.sock"
 
 type Box struct {
-	Name   string  `json:"name"`
-	Image  string  `json:"image"`
-	IP     string  `json:"ip"`
-	Status string  `json:"status"` // "stopped" or "running (<runtime>)"
-	Routes []Route `json:"routes,omitempty"`
+	Name   string `json:"name"`
+	Image  string `json:"image"`
+	IP     string `json:"ip"`
+	Status string `json:"status"` // "stopped" or "running (<runtime>)"
+	Route  *Route `json:"route,omitempty"`
 }
 
 type Route struct {
-	Host   string `json:"host"`
+	Host   string `json:"host"` // always <box>.<root domain>
 	Port   int    `json:"port"`
 	Public bool   `json:"public,omitempty"`
 }
@@ -59,13 +59,14 @@ type Resize struct {
 }
 
 type Expose struct {
-	Host   string `json:"host"`
-	Port   int    `json:"port"`
-	Public bool   `json:"public,omitempty"`
+	Port   int  `json:"port"`
+	Public bool `json:"public,omitempty"`
 }
 
-// Token is returned once, when a non-public route is created.
-type Token struct {
+// Exposed answers Expose. Token is only set, and only ever shown, when a
+// non-public route is created.
+type Exposed struct {
+	Host  string `json:"host"`
 	Token string `json:"token,omitempty"`
 }
 

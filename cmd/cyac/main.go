@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -43,10 +44,11 @@ const usage = `usage: cyac <command> [args]
   resize <name> <size>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
-  expose <name> <port> <host> [--public]
-  unexpose <host>
+  expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
+  unexpose <name>
 
-  daemon [--listen :8080] | [--acme-email <e> --https :443 --http :80]
+  daemon --domain <root domain> [--acme-email <e>]
+                                the proxy serves :80 and :443 with Let's Encrypt
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
@@ -128,17 +130,17 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tIP\tSTATUS\tIMAGE\tROUTES")
+		fmt.Fprintln(w, "NAME\tIP\tSTATUS\tIMAGE\tROUTE")
 		for _, b := range boxes {
-			var routes []string
-			for _, r := range b.Routes {
+			route := ""
+			if r := b.Route; r != nil {
 				vis := "token"
 				if r.Public {
 					vis = "public"
 				}
-				routes = append(routes, fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis))
+				route = fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP, b.Status, b.Image, strings.Join(routes, ", "))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP, b.Status, b.Image, route)
 		}
 		return w.Flush()
 
@@ -167,23 +169,23 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 
 	case "expose":
 		public := fs.Bool("public", false, "no token required")
-		pos := parse(fs, args, 3)
+		pos := parse(fs, args, 2)
 		port, err := strconv.Atoi(pos[1])
 		if err != nil {
 			return fmt.Errorf("bad port %q", pos[1])
 		}
-		var tok api.Token
-		if err := c.Do("POST", "/v1/boxes/"+pos[0]+"/routes", api.Expose{Host: pos[2], Port: port, Public: *public}, &tok); err != nil {
+		var e api.Exposed
+		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Port: port, Public: *public}, &e); err != nil {
 			return err
 		}
-		if tok.Token != "" {
-			host := strings.ToLower(pos[2])
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", tok.Token, host, tok.Token)
+		fmt.Printf("https://%s\n", e.Host)
+		if e.Token != "" {
+			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", e.Token, e.Host, e.Token)
 		}
 		return nil
 
 	case "unexpose":
-		return c.Do("DELETE", "/v1/routes/"+parse(fs, args, 1)[0], nil, nil)
+		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0]+"/route", nil, nil)
 
 	default:
 		fmt.Fprint(os.Stderr, usage)
@@ -196,11 +198,13 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 // and the proxy on the network.
 func daemon(socket string, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	listen := fs.String("listen", ":8080", "proxy: plain HTTP listen address (when not using ACME)")
-	email := fs.String("acme-email", "", "proxy: enable Let's Encrypt for exposed hosts")
-	httpsAddr := fs.String("https", ":443", "proxy: HTTPS listen address (ACME mode)")
-	httpAddr := fs.String("http", ":80", "proxy: HTTP listen address for ACME challenges (ACME mode)")
+	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
+	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
 	parse(fs, args, 0)
+	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
+	if !validDomain.MatchString(*domain) {
+		return fmt.Errorf("--domain must be a domain name like boxes.example.com, not %q", *domain)
+	}
 
 	// systemd's journal adds its own timestamps.
 	opts := &slog.HandlerOptions{}
@@ -246,9 +250,9 @@ func daemon(socket string, args []string) error {
 		return err
 	}
 	for _, b := range boxes {
-		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "routes", len(b.Routes))
+		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "exposed", b.Route != nil)
 	}
-	px := &proxy.Server{Store: s}
+	px := &proxy.Server{Store: s, Domain: *domain}
 	if err := px.Reload(); err != nil {
 		return err
 	}
@@ -257,25 +261,39 @@ func daemon(socket string, args []string) error {
 	if err != nil {
 		return err
 	}
-	srv := &server.Server{Store: s, RoutesChanged: px.Reload}
+	srv := &server.Server{Store: s, Domain: *domain, RoutesChanged: px.Reload}
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 	go srv.Watch(2 * time.Second)
 
-	if *email == "" {
-		slog.Info("proxy listening", "addr", *listen, "tls", false)
-		return http.ListenAndServe(*listen, px)
-	}
+	// Certificates are only requested on demand, during the first TLS
+	// handshake for an exposed host; HostPolicy refuses every other name.
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
 		Email:      *email,
 		HostPolicy: px.HostPolicy,
 		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
 	}
-	go func() { log.Fatal(http.ListenAndServe(*httpAddr, m.HTTPHandler(nil))) }()
-	https := &http.Server{Addr: *httpsAddr, Handler: px, TLSConfig: m.TLSConfig()}
-	slog.Info("proxy listening", "addr", *httpsAddr, "tls", "acme", "acme_http", *httpAddr)
+	// :80 answers ACME challenges and redirects everything else to HTTPS.
+	go func() { log.Fatal(proxyServer(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
+	https := proxyServer(":443", px)
+	https.TLSConfig = m.TLSConfig()
+	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
 	return https.ListenAndServeTLS("", "")
+}
+
+var validDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// proxyServer has timeouts for slow or idle clients, but none on reading
+// or writing bodies, which would cut off uploads, streams and websockets.
+func proxyServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
 }
 
 // listenUnix opens the API socket, readable and writable by root only.
