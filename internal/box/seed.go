@@ -117,9 +117,9 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 }
 
 // writeBoxConfig picks the box's mode and drops the only files cyac adds
-// to an image: hostname, a systemd-networkd config with the box's static
-// IP, and an empty machine-id so systemd generates a fresh one on first
-// boot.
+// to an image: hostname, hosts (so `hostname -f` resolves), a
+// systemd-networkd config with the box's static IP, and an empty
+// machine-id so systemd generates a fresh one on first boot.
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
 func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
@@ -138,6 +138,7 @@ func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
 		addr.IP, addr.Prefix, addr.Gateway, addr.DNS)
 	files := map[string]string{
 		"etc/hostname":                        b.Name + "\n",
+		"etc/hosts":                           "127.0.0.1 localhost\n127.0.1.1 " + b.Name + "\n::1 localhost ip6-localhost ip6-loopback\n",
 		"etc/machine-id":                      "",
 		"etc/systemd/network/10-cyac.network": network,
 	}

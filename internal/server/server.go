@@ -324,7 +324,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, err)
 		return
 	}
-	cmd, err := s.Store.Command(b, req.Args, req.Root)
+	cmd, err := s.Store.Command(b, req.Args, req.Root, req.Term)
 	if err != nil {
 		reply(w, nil, err)
 		return

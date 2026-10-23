@@ -77,6 +77,7 @@ type Exec struct {
 	Root bool     `json:"root,omitempty"`
 	Rows uint16   `json:"rows,omitempty"`
 	Cols uint16   `json:"cols,omitempty"`
+	Term string   `json:"term,omitempty"` // the client's $TERM
 }
 
 // ExecUpgrade is the Upgrade token for the exec stream.

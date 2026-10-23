@@ -9,8 +9,9 @@ The whole thing is meant to stay small enough to read in one sitting
 ## How it works
 
 **A box is a disk, not a container.** `cyac new` pulls an image once,
-unpacks it into a sparse ext4 file, and adds a few files: the hostname, a
-systemd-networkd config with the box's static IP, and an empty machine-id.
+unpacks it into a sparse ext4 file, and adds a few files: the hostname, an
+`/etc/hosts` that resolves it, a systemd-networkd config with the box's
+static IP, and an empty machine-id.
 Every start also rewrites `/etc/resolv.conf`
 to point at the configured resolver (1.1.1.1), replacing a link to
 systemd-resolved's stub, so DNS works whether or not the image runs it.
@@ -96,7 +97,8 @@ Firecracker's vsock device, which only the host can reach, so it needs no
 sshd, keys or guest network. The image can still run sshd for its own users.
 If the image names a login user, with the label `cyac.nullvoid.space/login-user`
 or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
-command runs as that user through `runuser -l`; `cyac exec --root` skips that.
+command runs as that user through `runuser --pty -l`; `cyac exec --root`
+skips that. Either way the command gets your `TERM`.
 
 **Console.** A VM's serial console is always appended to
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old

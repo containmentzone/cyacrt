@@ -106,6 +106,7 @@ func (c *Client) Exec(name string, args []string, root bool) error {
 		if w, h, err := term.GetSize(fd); err == nil {
 			req.Cols, req.Rows = uint16(w), uint16(h)
 		}
+		req.Term = os.Getenv("TERM")
 	}
 	conn, br, err := c.upgrade("/v1/boxes/"+name+"/exec", api.ExecUpgrade, req)
 	if err != nil {
