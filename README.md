@@ -73,6 +73,9 @@ the bridge, so the image needs sshd. At seed time cyac writes a key for the
 daemon into `/root/.ssh/authorized_keys` and a host key it pins into
 `/etc/ssh`, unmasks the image's ssh units (exeuntu masks them), and enables
 `ssh.service` if nothing starts sshd. Only the host can reach that sshd.
+If the image names a login user, with the label `cyac.nullvoid.space/login-user`
+or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
+command runs as that user through `runuser -l`; `cyac exec --root` skips that.
 
 **Console.** A VM's serial console is always appended to
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old
@@ -83,6 +86,13 @@ log in to a VM whose image has no sshd. Ctrl-] or Enter ~ . detaches
 it shows the last output, which is where boot failures end up. Under runc
 the log only gets what PID 1 prints before it detaches from its stdio
 (systemd does so right away), so use `cyac exec` there.
+
+**Reboots.** Firecracker can't reset a VM, so a guest reboot makes it exit.
+The daemon checks every 2 seconds for boxes whose runtime exited without
+`cyac stop`. If the console log ends with the kernel's `reboot: Restarting
+system`, it starts the box again, up to 3 times a minute. Anything else
+(a poweroff, a crash, or any exit under runc, where systemd's output
+doesn't reach the console) leaves the box stopped.
 
 **The socket has no authentication yet.** It is created mode 0600 in a
 0700 directory, so only root can use it. This will change before the API is

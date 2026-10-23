@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync/atomic"
@@ -17,6 +18,12 @@ import (
 
 	"github.com/containmentzone/cyacrt/internal/driver"
 )
+
+// loginUserLabels name the user `cyac exec` logs in as, in order of
+// precedence. exe.dev's label makes exeuntu land as exedev, as it does there.
+var loginUserLabels = []string{"cyac.nullvoid.space/login-user", "exe.dev/login-user"}
+
+var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 // Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
 // scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it into a sparse
@@ -38,12 +45,21 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 		}
 		progress(fmt.Sprintf("downloading and unpacking %d layers (%s compressed) of %s", len(layers), mib(compressed), digest))
 	}
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return err
+	}
 	if len(b.Init) == 0 {
-		cfg, err := img.ConfigFile()
-		if err != nil {
-			return err
-		}
 		b.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
+	}
+	for _, label := range loginUserLabels {
+		if u := cfg.Config.Labels[label]; u != "" {
+			if !validUser.MatchString(u) {
+				return fmt.Errorf("label %s=%q is not a valid user name", label, u)
+			}
+			b.User = u
+			break
+		}
 	}
 	if len(b.Init) == 0 {
 		b.Init = []string{"/sbin/init"}

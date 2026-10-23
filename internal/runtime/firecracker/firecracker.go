@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/containmentzone/cyacrt/internal/driver"
+	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // Runtime implements driver.Runtime.
@@ -185,10 +186,7 @@ func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
 		"-o", "UserKnownHostsFile=" + m.KnownHosts, "-o", "StrictHostKeyChecking=yes",
 		"-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "BatchMode=yes",
 		"-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
-		"root@" + m.Addr.IP.String(), "--",
-	}
-	for _, a := range args {
-		sshArgs = append(sshArgs, "'"+strings.ReplaceAll(a, "'", `'\''`)+"'")
+		"root@" + m.Addr.IP.String(), "--", sh.Quote(args),
 	}
 	return exec.Command("ssh", sshArgs...), nil
 }

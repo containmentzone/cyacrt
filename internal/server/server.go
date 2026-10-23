@@ -79,6 +79,49 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
+// Watch notices boxes whose runtime exited without a stop, every interval,
+// for the life of the daemon. It starts a VM that rebooted itself again,
+// unless it already did so maxRestarts times in the last minute, and
+// cleans up after anything else, which then shows as stopped.
+func (s *Server) Watch(interval time.Duration) {
+	const maxRestarts = 3
+	restarts := map[string][]time.Time{}
+	for range time.Tick(interval) {
+		s.mu.Lock()
+		boxes, err := s.Store.List()
+		if err != nil {
+			slog.Error("watch", "err", err)
+		}
+		for _, b := range boxes {
+			if !s.Store.Exited(b) {
+				continue
+			}
+			recent := restarts[b.Name][:0]
+			for _, t := range restarts[b.Name] {
+				if time.Since(t) < time.Minute {
+					recent = append(recent, t)
+				}
+			}
+			restarts[b.Name] = recent
+			switch {
+			case !s.Store.Rebooted(b):
+				slog.Info("box exited on its own; marking it stopped", "box", b.Name)
+				s.Store.Cleanup(b)
+			case len(recent) >= maxRestarts:
+				slog.Error("box keeps rebooting; leaving it stopped", "box", b.Name, "restarts", len(recent))
+				s.Store.Cleanup(b)
+			default:
+				slog.Info("box rebooted; starting it again", "box", b.Name)
+				restarts[b.Name] = append(recent, time.Now())
+				if err := s.Store.Start(b); err != nil {
+					slog.Error("restart failed", "box", b.Name, "err", err)
+				}
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 func reply(w http.ResponseWriter, v any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -279,7 +322,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, err)
 		return
 	}
-	cmd, err := s.Store.Command(b, req.Args)
+	cmd, err := s.Store.Command(b, req.Args, req.Root)
 	if err != nil {
 		reply(w, nil, err)
 		return
@@ -290,7 +333,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tty.Close()
-	slog.Info("exec started", "box", b.Name, "args", req.Args, "pid", cmd.Process.Pid)
+	slog.Info("exec started", "box", b.Name, "args", req.Args, "root", req.Root, "pid", cmd.Process.Pid)
 
 	conn, buf, err := upgrade(w, api.ExecUpgrade)
 	if err != nil {
