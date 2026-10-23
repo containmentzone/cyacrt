@@ -231,7 +231,9 @@ state, which cyac doesn't use.
 
 `nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
 VMX/SVM from the VM's CPU and boots a small box under `firecracker-pvm`.
-CI runs it on GitHub's runners, which have KVM for the outer VM.
+The `pvm` workflow runs it on GitHub's runners, which have KVM for the
+outer VM, but only when started by hand, since building the kernel takes
+over an hour. Every PR runs gofmt, `go vet`, `go test` and staticcheck.
 
 ## What has been tested
 
