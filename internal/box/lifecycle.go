@@ -22,7 +22,8 @@ func (s Store) machine(b *Box) *driver.Machine {
 	return &driver.Machine{
 		Name: b.Name, ID: b.ID, Disk: s.DiskPath(b.Name), RunDir: s.RunDir(b.Name),
 		ConsoleLog: s.ConsoleLog(b.Name), ConsoleIn: s.ConsoleIn(b.Name),
-		Init: agent.Config{Mode: b.Mode, Args: b.Init, Env: b.Env, Cwd: b.Cwd, User: b.RunAs, DNS: addr.DNS},
+		Init: agent.Config{Mode: b.Mode, Args: b.Init, Env: b.Env, Cwd: b.Cwd, User: b.RunAs,
+			DNS: addr.DNS, Network: addr.Networkd()},
 		CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: addr,
 	}
 }

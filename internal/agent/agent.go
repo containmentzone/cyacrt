@@ -29,8 +29,48 @@ type Config struct {
 	Env  []string `json:"env,omitempty"`
 	Cwd  string   `json:"cwd,omitempty"`
 	User string   `json:"user,omitempty"`
-	// DNS is written to the VM's /etc/resolv.conf before its init runs.
-	DNS string `json:"dns,omitempty"`
+	// DNS and Network (a systemd-networkd config for eth0) are written
+	// into the box on every start, see WriteNetConfig.
+	DNS     string `json:"dns,omitempty"`
+	Network string `json:"network,omitempty"`
+}
+
+// WriteNetConfig writes c's resolver to /etc/resolv.conf and c.Network to
+// /etc/systemd/network/10-cyac.network in the root filesystem at dir,
+// before the box's init runs. Doing it on every start keeps a box in step
+// with the host when cyac's subnet changes. resolv.conf replaces whatever
+// the image has there, including a symlink to systemd-resolved's stub,
+// which isn't running yet (or at all) when the box needs DNS. dir is
+// untrusted image content, so the writes go through os.Root.
+func WriteNetConfig(dir string, c Config) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.MkdirAll("etc/systemd/network", 0o755); err != nil {
+		return err
+	}
+	if err := replaceFile(root, "etc/resolv.conf", "# written by cyac on every start\nnameserver "+c.DNS+"\n"); err != nil {
+		return err
+	}
+	return replaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)
+}
+
+// replaceFile replaces name in root, without following a symlink there.
+func replaceFile(root *os.Root, name, content string) error {
+	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(content)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // PoweringOff starts the console line cyac-init writes before it ends a VM.

@@ -16,8 +16,6 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
-
-	"github.com/containmentzone/cyacrt/internal/driver"
 )
 
 // loginUserLabels name the user `cyac shell` logs in as, in order of
@@ -100,7 +98,7 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	}
 	progress("unpacked " + mib(counted.n.Load()))
 
-	if err := writeBoxConfig(scratch, b, s.machine(b)); err != nil {
+	if err := writeBoxConfig(scratch, b); err != nil {
 		return err
 	}
 
@@ -117,35 +115,28 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 }
 
 // writeBoxConfig picks the box's mode and drops the only files cyac adds
-// to an image: hostname, hosts (so `hostname -f` resolves), a
-// systemd-networkd config with the box's static IP, and an empty
-// machine-id so systemd generates a fresh one on first boot.
+// to an image: hostname, hosts (so `hostname -f` resolves), and an empty
+// machine-id so systemd generates a fresh one on first boot. The network
+// config is written on every start instead (agent.WriteNetConfig).
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
-func writeBoxConfig(scratch string, b *Box, m *driver.Machine) error {
+func writeBoxConfig(scratch string, b *Box) error {
 	root, err := os.OpenRoot(scratch)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	addr := m.Addr
-
 	if err := pickMode(root, b); err != nil {
 		return err
 	}
 
-	network := fmt.Sprintf("[Match]\nName=eth0\n\n[Network]\nAddress=%s/%d\nGateway=%s\nDNS=%s\n",
-		addr.IP, addr.Prefix, addr.Gateway, addr.DNS)
 	files := map[string]string{
-		"etc/hostname":                        b.Name + "\n",
-		"etc/hosts":                           "127.0.0.1 localhost\n127.0.1.1 " + b.Name + "\n::1 localhost ip6-localhost ip6-loopback\n",
-		"etc/machine-id":                      "",
-		"etc/systemd/network/10-cyac.network": network,
+		"etc/hostname":   b.Name + "\n",
+		"etc/hosts":      "127.0.0.1 localhost\n127.0.1.1 " + b.Name + "\n::1 localhost ip6-localhost ip6-loopback\n",
+		"etc/machine-id": "",
 	}
-	for _, dir := range []string{"etc", "etc/systemd", "etc/systemd/network"} {
-		if err := root.Mkdir(dir, 0o755); err != nil && !os.IsExist(err) {
-			return err
-		}
+	if err := root.Mkdir("etc", 0o755); err != nil && !os.IsExist(err) {
+		return err
 	}
 	for name, content := range files {
 		if err := writeFile(root, name, []byte(content), 0o644); err != nil {

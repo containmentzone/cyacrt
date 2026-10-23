@@ -17,6 +17,7 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
@@ -46,7 +47,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 	if err := sh.Run("mount", "-o", "loop", m.Disk, rootfs(m)); err != nil {
 		return err
 	}
-	if err := driver.WriteResolvConf(rootfs(m), m); err != nil {
+	if err := agent.WriteNetConfig(rootfs(m), m.Init); err != nil {
 		return err
 	}
 	if m.Init.Mode != "" {

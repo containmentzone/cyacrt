@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -69,6 +70,18 @@ func (Network) Setup() error {
 		if err := sh.Run("ip", "link", "add", bridgeName, "type", "bridge"); err != nil {
 			return err
 		}
+	}
+	// An existing bridge can carry an address from an older layout (cyac
+	// used 10.88.0.0/16 before), and then the host has no route to its
+	// boxes. Make hostIP/16 its only IPv4 address.
+	ok, err := hasOnlyHostAddr()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if err := sh.Run("ip", "-4", "addr", "flush", "dev", bridgeName); err != nil {
+			return err
+		}
 		if err := sh.Run("ip", "addr", "add", fmt.Sprintf("%s/%d", hostIP, prefixLen), "dev", bridgeName); err != nil {
 			return err
 		}
@@ -85,6 +98,31 @@ func (Network) Setup() error {
 		return fmt.Errorf("nft: %v: %s", err, out)
 	}
 	return nil
+}
+
+// hasOnlyHostAddr reports whether hostIP/16 is the bridge's only IPv4
+// address.
+func hasOnlyHostAddr() (bool, error) {
+	iface, err := net.InterfaceByName(bridgeName)
+	if err != nil {
+		return false, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, a := range addrs {
+		p, err := netip.ParsePrefix(a.String())
+		if err != nil || !p.Addr().Is4() {
+			continue
+		}
+		if p != netip.PrefixFrom(hostIP, prefixLen) {
+			return false, nil
+		}
+		found = true
+	}
+	return found, nil
 }
 
 func (n Network) Attach(m *driver.Machine, kind driver.LinkKind) error {

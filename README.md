@@ -10,9 +10,10 @@ The whole thing is meant to stay small enough to read in one sitting
 
 **A box is a disk, not a container.** `cyac new` pulls an image once,
 unpacks it into a sparse ext4 file, and adds a few files: the hostname, an
-`/etc/hosts` that resolves it, a systemd-networkd config with the box's
-static IP, and an empty machine-id.
-Every start also rewrites `/etc/resolv.conf`
+`/etc/hosts` that resolves it, and an empty machine-id.
+Every start also writes a systemd-networkd config with the box's static IP
+(`/etc/systemd/network/10-cyac.network`), so the box follows cyac's subnet,
+and rewrites `/etc/resolv.conf`
 to point at the configured resolver (1.1.1.1), replacing a link to
 systemd-resolved's stub, so DNS works whether or not the image runs it.
 From then on the disk *is* the box. apt installs, files in `/root`, and
@@ -57,7 +58,8 @@ guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
 boot on PVM.
 
 **Networking.** One bridge, `cyac0`, on 10.42.0.0/16 (host is
-10.42.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
+10.42.0.1; each box start resets the bridge to that address if it has
+another). Box ports are bridge-isolated, so boxes can't reach each other.
 nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
@@ -91,7 +93,7 @@ pulls, unpacks and boots.
 each start, holding a static Go binary, `cyac-init`, and the box's config.
 As `/init` it mounts `/dev/vda`, mounts `/dev`, `/dev/pts`, `/proc`, `/sys`
 and a `/run` tmpfs into it (systemd and NixOS's stage 2 take these over),
-writes `resolv.conf`, copies itself to `/run/cyac`, and switches root. Then
+writes `resolv.conf` and the networkd config, copies itself to `/run/cyac`, and switches root. Then
 it starts the exec agent and runs the box's init or command, or nothing.
 Nothing of cyac's lives on the disk, so it can't go stale or be deleted by
 the box. Under runc, cyac-init is bind-mounted in as PID 1 for command and
