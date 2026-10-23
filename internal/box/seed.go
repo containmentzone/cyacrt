@@ -20,7 +20,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/driver"
 )
 
-// loginUserLabels name the user `cyac exec` logs in as, in order of
+// loginUserLabels name the user `cyac shell` logs in as, in order of
 // precedence. exe.dev's label makes exeuntu land as exedev, as it does there.
 var loginUserLabels = []string{"cyac.nullvoid.space/login-user", "exe.dev/login-user"}
 
