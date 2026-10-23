@@ -55,8 +55,8 @@ When the `kvm-pvm` module is loaded, cyac uses a third runtime,
 guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
 boot on PVM.
 
-**Networking.** One bridge, `cyac0`, on 10.88.0.0/16 (host is
-10.88.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
+**Networking.** One bridge, `cyac0`, on 10.42.0.0/16 (host is
+10.42.0.1). Box ports are bridge-isolated, so boxes can't reach each other.
 nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
