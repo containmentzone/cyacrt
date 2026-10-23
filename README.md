@@ -62,14 +62,20 @@ nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
 
-**Proxy.** The daemon's proxy is an `httputil.ReverseProxy`. A request is routed
-only if its Host matches a route created with `cyac expose`. Everything
-else gets a 404. Unless a route is `--public`, the request also needs that
-route's token, as `Authorization: Bearer`, as a basic-auth password, or as a
-cookie set by visiting `/__cyac/login?token=…`. The proxy strips its own
-credentials and any inbound `X-Cyac-*` headers before forwarding. With
-`--acme-email` it gets Let's Encrypt certificates, but only for exposed
-hosts.
+**Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
+:443. `cyac expose <box> <port>` exposes one port of a box, always at
+`<box>.<root domain>`; the root domain is the daemon's required
+`--domain`. A request for any other host gets a 404. Unless a route is
+`--public`, the request also needs that route's token, as
+`Authorization: Bearer`, as a basic-auth password, or as a cookie set by
+visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
+any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
+certificates are requested on demand, at the first TLS handshake for an
+exposed host and never for anything else; :80 only answers ACME challenges
+and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
+idle; a box gets 5s to accept a connection and a minute to start
+answering. Bodies have no deadline, so uploads, streams and websockets
+work.
 
 **Daemon and CLI.** `cyac daemon` owns `$CYAC_DIR` (default
 `/var/lib/cyac`; one daemon per directory) and runs the proxy. Every other
@@ -146,13 +152,13 @@ backend is one package that implements one interface, plus a line in
 ## Usage
 
 ```sh
-cyac daemon --acme-email you@example.com   # or let the NixOS module run it
+cyac daemon --domain boxes.example.com --acme-email you@example.com   # or let the NixOS module run it
 
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
 cyac exec web                       # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
-cyac expose web 8000 web.example.com   # prints a token
+cyac expose web 8000                # https://web.boxes.example.com, prints a token
 cyac resize web 50G
 cyac stop web && cyac rm web
 ```
@@ -196,7 +202,7 @@ nothing and leaves the choice to cyac's detection:
             kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
             # guestKernel = ./vmlinux;   # default: built from the host kernel's source
             proxy = {
-              acme = true;
+              domain = "boxes.example.com";   # with a wildcard DNS record pointing here
               openFirewall = true;
             };
           };

@@ -16,7 +16,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -29,6 +28,8 @@ import (
 
 type Server struct {
 	Store box.Store
+	// Domain is the root domain: a box's route is always <name>.<Domain>.
+	Domain string
 	// RoutesChanged is called after every route change (the proxy's Reload).
 	RoutesChanged func() error
 
@@ -43,8 +44,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/stop", s.withBox(s.Store.Stop))
 	mux.HandleFunc("DELETE /v1/boxes/{name}", s.withBox(s.remove))
 	mux.HandleFunc("POST /v1/boxes/{name}/resize", s.resize)
-	mux.HandleFunc("POST /v1/boxes/{name}/routes", s.expose)
-	mux.HandleFunc("DELETE /v1/routes/{host}", s.unexpose)
+	mux.HandleFunc("PUT /v1/boxes/{name}/route", s.expose)
+	mux.HandleFunc("DELETE /v1/boxes/{name}/route", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
 	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
 	return logRequests(mux)
@@ -133,8 +134,8 @@ func reply(w http.ResponseWriter, v any, err error) {
 
 func (s *Server) view(b *box.Box) api.Box {
 	out := api.Box{Name: b.Name, Image: b.Image, IP: s.Store.IP(b).String(), Status: s.Store.Status(b)}
-	for _, r := range b.Routes {
-		out.Routes = append(out.Routes, api.Route{Host: r.Host, Port: r.Port, Public: r.Public})
+	if r := b.Route; r != nil {
+		out.Route = &api.Route{Host: b.Name + "." + s.Domain, Port: r.Port, Public: r.Public}
 	}
 	return out
 }
@@ -246,68 +247,55 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tok, err := s.addRoute(r.PathValue("name"), req)
-	reply(w, api.Token{Token: tok}, err)
+	name := r.PathValue("name")
+	tok, err := s.addRoute(name, req)
+	reply(w, api.Exposed{Host: name + "." + s.Domain, Token: tok}, err)
 }
 
+// addRoute exposes one port of the box at <name>.<Domain>, replacing any
+// earlier route and its token.
 func (s *Server) addRoute(name string, req api.Expose) (token string, err error) {
 	b, err := s.Store.Get(name)
 	if err != nil {
 		return "", err
 	}
-	host := strings.ToLower(req.Host)
-	if req.Port < 1 || req.Port > 65535 || host == "" {
-		return "", errors.New("need a host and a port between 1 and 65535")
+	if req.Port < 1 || req.Port > 65535 {
+		return "", errors.New("need a port between 1 and 65535")
 	}
-	boxes, err := s.Store.List()
-	if err != nil {
-		return "", err
-	}
-	for _, other := range boxes {
-		for _, rt := range other.Routes {
-			if rt.Host == host {
-				return "", fmt.Errorf("%s is already exposed by %s", host, other.Name)
-			}
-		}
-	}
-	route := box.Route{Host: host, Port: req.Port, Public: req.Public}
+	route := &box.Route{Port: req.Port, Public: req.Public}
 	if !req.Public {
 		token = rand.Text()
 		sum := sha256.Sum256([]byte(token))
 		route.TokenHash = hex.EncodeToString(sum[:])
 	}
-	b.Routes = append(b.Routes, route)
+	b.Route = route
 	if err := s.Store.Put(b); err != nil {
 		return "", err
 	}
-	slog.Info("exposed route", "box", b.Name, "host", host, "port", req.Port, "public", req.Public)
+	slog.Info("exposed route", "box", b.Name, "host", b.Name+"."+s.Domain, "port", req.Port, "public", req.Public)
 	return token, s.RoutesChanged()
 }
 
 func (s *Server) unexpose(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	reply(w, struct{}{}, s.removeRoute(strings.ToLower(r.PathValue("host"))))
+	reply(w, struct{}{}, s.removeRoute(r.PathValue("name")))
 }
 
-func (s *Server) removeRoute(host string) error {
-	boxes, err := s.Store.List()
+func (s *Server) removeRoute(name string) error {
+	b, err := s.Store.Get(name)
 	if err != nil {
 		return err
 	}
-	for _, b := range boxes {
-		for i, rt := range b.Routes {
-			if rt.Host == host {
-				b.Routes = append(b.Routes[:i], b.Routes[i+1:]...)
-				if err := s.Store.Put(b); err != nil {
-					return err
-				}
-				slog.Info("removed route", "box", b.Name, "host", host)
-				return s.RoutesChanged()
-			}
-		}
+	if b.Route == nil {
+		return fmt.Errorf("%s is not exposed", name)
 	}
-	return fmt.Errorf("%s is not exposed", host)
+	b.Route = nil
+	if err := s.Store.Put(b); err != nil {
+		return err
+	}
+	slog.Info("removed route", "box", b.Name)
+	return s.RoutesChanged()
 }
 
 // exec runs a command on a pty in the box, then switches the connection to

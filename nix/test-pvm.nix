@@ -50,7 +50,9 @@ pkgs.testers.runNixOSTest {
     services.cyac = {
       enable = true;
       kernel = "pvm";
+      proxy.domain = "boxes.test";
     };
+    security.acme.acceptTerms = true;
     # The module's PVM kernel with only the drivers this VM and cyac use.
     boot.kernelPackages = pkgs.lib.mkForce (
       pkgs.linuxPackagesFor
@@ -111,7 +113,10 @@ pkgs.testers.runNixOSTest {
     ];
     # The NixOS firewall wants iptables modules this kernel leaves out.
     networking.firewall.enable = false;
-    environment.systemPackages = [ pkgs.e2fsprogs ];
+    environment.systemPackages = [
+      pkgs.e2fsprogs
+      pkgs.curl
+    ];
     virtualisation = {
       memorySize = 4096;
       cores = 2;
@@ -130,6 +135,9 @@ pkgs.testers.runNixOSTest {
         "mkfs.ext4 -q -d ${rootfs} /var/lib/cyac/disks/t.ext4",
         """echo '{"name":"t","image":"test","id":2,"cpus":1,"mem_mib":256,"init":["/init"]}' > /var/lib/cyac/boxes/t.json""",
     )
+    # The proxy always listens on :80, which only redirects to HTTPS.
+    host.succeed("curl -sI http://t.boxes.test/ --resolve t.boxes.test:80:127.0.0.1 | grep -i '^location: https://t.boxes.test/'")
+
     host.succeed("cyac start t")
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
