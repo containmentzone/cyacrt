@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+
+	"github.com/containmentzone/cyacrt/internal/agent"
 )
 
 // Machine is everything a driver needs to know about one box.
@@ -19,12 +21,7 @@ type Machine struct {
 	// outlives the run, and feed it input from the FIFO at ConsoleIn.
 	ConsoleLog string
 	ConsoleIn  string
-	// For runtimes that reach the box over SSH: the daemon's private key
-	// and a known_hosts file pinning the box's host key. Both are written
-	// at seed time.
-	SSHKey     string
-	KnownHosts string
-	Init       []string // PID 1
+	Init       agent.Config // what runs as PID 1
 	CPUs       int
 	MemMiB     int
 	Addr       Addr // from Network.Addr

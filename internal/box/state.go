@@ -22,9 +22,16 @@ type Box struct {
 	ID     int    `json:"id"` // small integer; derives the IP and interface names
 	CPUs   int    `json:"cpus"`
 	MemMiB int    `json:"mem_mib"`
-	// Init is PID 1: the image's ENTRYPOINT+CMD unless overridden, e.g.
-	// /usr/local/bin/init for exeuntu or /lib/systemd/systemd.
+	// Init is the image's ENTRYPOINT+CMD unless overridden, e.g.
+	// /usr/local/bin/init for exeuntu, or /sbin/init if the image has
+	// neither. Mode says what runs it (see agent.Config.Mode): "" makes it
+	// PID 1, "command" runs it under cyac-init, and "pause" runs nothing.
 	Init []string `json:"init"`
+	Mode string   `json:"mode,omitempty"`
+	// The image's environment, working directory and USER, for commands.
+	Env   []string `json:"env,omitempty"`
+	Cwd   string   `json:"cwd,omitempty"`
+	RunAs string   `json:"run_as,omitempty"`
 	// User is who `cyac exec` runs as, from the image's login-user label;
 	// empty means root.
 	User   string  `json:"user,omitempty"`
@@ -45,7 +52,6 @@ type Route struct {
 //	<dir>/disks/<name>.ext4   box disk
 //	<dir>/run/<name>/         runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  the box's console, across runs
-//	<dir>/keys/<name>[.known_hosts]  SSH key into the box, and its pinned host key
 type Store struct {
 	Dir      string
 	Net      driver.Network
@@ -65,12 +71,11 @@ func (s Store) ConsoleLog(name string) string {
 	return filepath.Join(s.Dir, "logs", name+".console.log")
 }
 func (s Store) ConsoleIn(name string) string { return filepath.Join(s.RunDir(name), "console.in") }
-func (s Store) SSHKey(name string) string    { return filepath.Join(s.Dir, "keys", name) }
 
 // Lock takes an exclusive lock on the store for the life of the process,
 // so only one daemon owns a state directory.
 func (s Store) Lock() error {
-	for _, d := range []string{"boxes", "disks", "run", "logs", "keys"} {
+	for _, d := range []string{"boxes", "disks", "run", "logs"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, d), 0o700); err != nil {
 			return err
 		}

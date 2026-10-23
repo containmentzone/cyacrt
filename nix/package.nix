@@ -9,12 +9,10 @@
   gnutar,
   runc,
   firecracker,
-  openssh,
 }:
 
 let
-  # Everything cyac execs. firecracker is only used on hosts with KVM, and
-  # ssh only to exec into its VMs.
+  # Everything cyac execs. firecracker is only used on hosts with KVM.
   runtimeTools = [
     iproute2
     nftables
@@ -23,7 +21,6 @@ let
     gnutar
     runc
     firecracker
-    openssh
   ];
 in
 buildGoModule {
@@ -39,12 +36,20 @@ buildGoModule {
       ../internal
     ];
   };
-  vendorHash = "sha256-FWHDt16ywvV53UaOSc6HGylsGVl4jikH2eKgl82xRAE=";
-  subPackages = [ "cmd/cyac" ];
+  vendorHash = "sha256-AOAoiZVtd+ad/YCHX+jb03e3cs09OhZtgCG0RnqHOKM=";
+  subPackages = [
+    "cmd/cyac"
+    "cmd/cyac-init"
+  ];
+  # cyac-init runs in VMs and images, so it must be static.
+  env.CGO_ENABLED = 0;
 
   nativeBuildInputs = [ makeWrapper ];
   postInstall = ''
-    wrapProgram $out/bin/cyac --prefix PATH : ${lib.makeBinPath runtimeTools}
+    mkdir -p $out/libexec/cyac
+    mv $out/bin/cyac-init $out/libexec/cyac/
+    wrapProgram $out/bin/cyac --prefix PATH : ${lib.makeBinPath runtimeTools} \
+      --set-default CYAC_INIT $out/libexec/cyac/cyac-init
   '';
 
   passthru = { inherit runtimeTools; };
