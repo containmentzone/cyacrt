@@ -34,18 +34,35 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
-      # Anonymous GitHub archive downloads get 429s on shared runners, so
-      # fetch the PVM kernel source with the job's token and put it in the
-      # store under the same fixed-output path fetchFromGitHub would make.
+      # GitHub's archive downloads of the PVM kernel source get 429s on
+      # shared runners, with or without a token. Fetch the one commit over
+      # git instead, keep it in the Actions cache, and put it in the store
+      # under the fixed-output path fetchFromGitHub would make, so nix skips
+      # its own download. If the path ever doesn't match, nix fetches as before.
+      - name: Find the PVM kernel revision
+        id: pvm
+        run: echo "rev=$(sed -n 's/.*rev = "\([0-9a-f]*\)";.*/\1/p' nix/pvm.nix)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        id: pvm-cache
+        with:
+          path: ~/pvm-src.tar.gz
+          key: pvm-src-${{ steps.pvm.outputs.rev }}
       - name: Fetch the PVM kernel source
-        env:
-          GH_TOKEN: ${{ github.token }}
+        if: steps.pvm-cache.outputs.cache-hit != 'true'
         run: |
-          rev=$(sed -n 's/.*rev = "\([0-9a-f]*\)";.*/\1/p' nix/pvm.nix)
-          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" \
-            -o "$RUNNER_TEMP/pvm.tar.gz" "https://api.github.com/repos/virt-pvm/linux/tarball/$rev"
+          git init -q ~/pvm-git
+          git -C ~/pvm-git fetch -q --depth 1 https://github.com/virt-pvm/linux ${{ steps.pvm.outputs.rev }}
+          git -C ~/pvm-git archive --format=tar.gz -o ~/pvm-src.tar.gz FETCH_HEAD
+          rm -rf ~/pvm-git
+      - uses: actions/cache/save@v4
+        if: steps.pvm-cache.outputs.cache-hit != 'true'
+        with:
+          path: ~/pvm-src.tar.gz
+          key: pvm-src-${{ steps.pvm.outputs.rev }}
+      - name: Add the PVM kernel source to the store
+        run: |
           mkdir "$RUNNER_TEMP/source"
-          tar -C "$RUNNER_TEMP/source" --strip-components=1 -xzf "$RUNNER_TEMP/pvm.tar.gz"
+          tar -C "$RUNNER_TEMP/source" -xzf ~/pvm-src.tar.gz
           nix-store --add-fixed --recursive sha256 "$RUNNER_TEMP/source"
-          rm -rf "$RUNNER_TEMP/source" "$RUNNER_TEMP/pvm.tar.gz"
+          rm -rf "$RUNNER_TEMP/source" ~/pvm-src.tar.gz
       - run: nix build .#checks.x86_64-linux.pvm -L
