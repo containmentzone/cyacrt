@@ -70,7 +70,7 @@ pkgs.testers.runNixOSTest {
     host.succeed("cyac start t")
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
-    host.succeed("ping -c1 -W5 10.88.0.2")
+    host.succeed("ping -c1 -W5 10.42.0.2")
     host.succeed("cyac stop t")
   '';
 }

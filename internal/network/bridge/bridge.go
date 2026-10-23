@@ -13,14 +13,14 @@ import (
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
-// Layout: bridge cyac0 on 10.88.0.0/16, host at 10.88.0.1, box id N at
-// 10.88.N/256.N%256.
+// Layout: bridge cyac0 on 10.42.0.0/16, host at 10.42.0.1, box id N at
+// 10.42.N/256.N%256.
 const (
 	bridgeName = "cyac0"
 	prefixLen  = 16
 )
 
-var hostIP = netip.MustParseAddr("10.88.0.1")
+var hostIP = netip.MustParseAddr("10.42.0.1")
 
 // rules is replaced atomically on every Setup. Boxes can reach the internet
 // through NAT and nothing else: not the host, not each other (bridge port
@@ -43,7 +43,7 @@ table inet cyac {
 	}
 	chain postrouting {
 		type nat hook postrouting priority 100;
-		ip saddr 10.88.0.0/16 oifname != "cyac0" masquerade
+		ip saddr 10.42.0.0/16 oifname != "cyac0" masquerade
 	}
 }
 `
@@ -57,7 +57,7 @@ var _ driver.Network = Network{}
 
 func (n Network) Addr(id int) driver.Addr {
 	return driver.Addr{
-		IP:      netip.AddrFrom4([4]byte{10, 88, byte(id >> 8), byte(id)}),
+		IP:      netip.AddrFrom4([4]byte{10, 42, byte(id >> 8), byte(id)}),
 		Prefix:  prefixLen,
 		Gateway: hostIP,
 		DNS:     n.DNS,
