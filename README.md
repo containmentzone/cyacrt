@@ -32,7 +32,7 @@ picks one by hand:
   When the command exits, the box stops.
 - **pause**: no command and no `/sbin/init`. cyac-init is PID 1 and runs
   nothing, like Kubernetes' pause container, so the box stays up for
-  `cyac exec`.
+  `cyac shell`.
 
 The same disk boots under one of two runtime drivers. At start, cyac uses the first one this host can run:
 
@@ -80,7 +80,7 @@ work.
 **Daemon and CLI.** `cyac daemon` owns `$CYAC_DIR` (default
 `/var/lib/cyac`; one daemon per directory) and runs the proxy. Every other
 command is a client that sends JSON over HTTP to the daemon's unix socket,
-`$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac exec` upgrades its
+`$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac shell` upgrades its
 connection to a raw terminal stream. The endpoints are listed in
 `internal/api`. The daemon logs to stderr (`journalctl -u cyac` under
 the NixOS module): which runtimes it can use and why not, every API call,
@@ -97,13 +97,13 @@ Nothing of cyac's lives on the disk, so it can't go stale or be deleted by
 the box. Under runc, cyac-init is bind-mounted in as PID 1 for command and
 pause mode only.
 
-**Getting in.** `cyac exec` runs a command on a pty in the box. Under runc
+**Getting in.** `cyac shell` runs a command on a pty in the box. Under runc
 that is `runc exec`. In a VM the daemon reaches cyac-init's agent over
 Firecracker's vsock device, which only the host can reach, so it needs no
 sshd, keys or guest network. The image can still run sshd for its own users.
 If the image names a login user, with the label `cyac.nullvoid.space/login-user`
 or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
-command runs as that user through `runuser --pty -l`; `cyac exec --root`
+command runs as that user through `runuser --pty -l`; `cyac shell --root`
 skips that. Either way the command gets your `TERM`.
 
 **Console.** A VM's serial console is always appended to
@@ -114,7 +114,7 @@ command reading stdin gets it. Ctrl-] or Enter ~ . detaches
 (Ctrl-C and Ctrl-D go to the box). For a stopped box
 it shows the last output, which is where boot failures end up. Under runc
 the log only gets what PID 1 prints before it detaches from its stdio
-(systemd does so right away), so use `cyac exec` there.
+(systemd does so right away), so use `cyac shell` there.
 
 **Reboots.** Firecracker can't reset a VM, so a guest reboot makes it exit.
 The daemon checks every 2 seconds for boxes whose runtime exited without
@@ -156,7 +156,7 @@ cyac daemon --domain boxes.example.com --acme-email you@example.com   # or let t
 
 cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
 cyac ls
-cyac exec web                       # a shell
+cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
 cyac expose web 8000                # https://web.boxes.example.com, prints a token
 cyac resize web 50G
@@ -237,7 +237,9 @@ state, which cyac doesn't use.
 
 `nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
 VMX/SVM from the VM's CPU and boots a small box under `firecracker-pvm`.
-CI runs it on GitHub's runners, which have KVM for the outer VM.
+The `pvm` workflow runs it on GitHub's runners, which have KVM for the
+outer VM, but only when started by hand, since building the kernel takes
+over an hour. Every PR runs gofmt, `go vet`, `go test` and staticcheck.
 
 ## What has been tested
 
@@ -269,7 +271,7 @@ Not tested yet:
 ## Not built yet
 
 - Authentication on the API socket.
-- Terminal resizes after `cyac exec` starts, and passing its exit status back.
+- Terminal resizes after `cyac shell` starts, and passing its exit status back.
 - An SSH front door.
 - Running Firecracker under its jailer.
 - Auto-starting a box on request.

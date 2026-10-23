@@ -1,17 +1,9 @@
 # Boots a box under firecracker-pvm inside a VM with VMX hidden (see
-# nix/test-pvm.nix). Builds the PVM host kernel, so it's slow; it only runs
-# when something PVM depends on changes.
+# nix/test-pvm.nix). Builds the PVM host kernel, which takes over an hour,
+# so it only runs when started by hand from the Actions tab.
 name: pvm
 
 on:
-  pull_request:
-    paths:
-      - flake.nix
-      - nix/**
-      - cmd/**
-      - internal/**
-      - go.*
-      - .github/workflows/pvm.yml
   workflow_dispatch:
 
 concurrency:

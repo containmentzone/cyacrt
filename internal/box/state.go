@@ -32,7 +32,7 @@ type Box struct {
 	Env   []string `json:"env,omitempty"`
 	Cwd   string   `json:"cwd,omitempty"`
 	RunAs string   `json:"run_as,omitempty"`
-	// User is who `cyac exec` runs as, from the image's login-user label;
+	// User is who `cyac shell` runs as, from the image's login-user label;
 	// empty means root.
 	User  string `json:"user,omitempty"`
 	Route *Route `json:"route,omitempty"`

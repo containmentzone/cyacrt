@@ -142,7 +142,7 @@ pkgs.testers.runNixOSTest {
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
     host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
     host.succeed("ping -c1 -W5 10.42.0.2")
-    host.wait_until_succeeds("cyac exec t busybox echo agent-ok | grep agent-ok", timeout=60)
+    host.wait_until_succeeds("cyac shell t busybox echo agent-ok | grep agent-ok", timeout=60)
     host.succeed("cyac stop t")
 
     # Command mode: the box stops, rather than restarts, when its command exits.
@@ -165,8 +165,8 @@ pkgs.testers.runNixOSTest {
         """echo '{"name":"n","image":"nixos","id":4,"cpus":1,"mem_mib":1024,"init":["/sbin/init"]}' > /var/lib/cyac/boxes/n.json""",
         "cyac start n",
     )
-    host.wait_until_succeeds("cyac exec n systemctl is-system-running | grep -E 'running|degraded'", timeout=300)
-    host.succeed("cyac exec n cat /etc/os-release | grep -F 'ID=nixos'")
+    host.wait_until_succeeds("cyac shell n systemctl is-system-running | grep -E 'running|degraded'", timeout=300)
+    host.succeed("cyac shell n cat /etc/os-release | grep -F 'ID=nixos'")
     host.succeed("cyac stop n")
   '';
 }
