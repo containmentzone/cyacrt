@@ -1,9 +1,10 @@
 // Command cyac-init is PID 1 wherever cyac supplies one:
 //
 //   - In a Firecracker VM it is the initramfs's /init. It mounts the box's
-//     disk, writes its resolv.conf, switches root to it, and starts the
-//     exec agent ("cyac-init agent", see agent.go). Then it runs the box's
-//     init, its command, or nothing (see agent.Config.Mode).
+//     disk, writes its resolv.conf and networkd config, switches root to
+//     it, and starts the exec agent ("cyac-init agent", see agent.go).
+//     Then it runs the box's init, its command, or nothing (see
+//     agent.Config.Mode).
 //   - Under runc it is PID 1 of boxes in command or pause mode, so their
 //     orphans are reaped and a stop signal stops them.
 //
@@ -112,7 +113,7 @@ func switchRoot() error {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
-	if err := writeResolvConf("/newroot", cfg.DNS); err != nil {
+	if err := agent.WriteNetConfig("/newroot", cfg); err != nil {
 		return err
 	}
 	if err := os.Chdir("/newroot"); err != nil {
@@ -125,19 +126,6 @@ func switchRoot() error {
 		return err
 	}
 	return os.Chdir("/")
-}
-
-// writeResolvConf replaces /etc/resolv.conf, including a symlink to
-// systemd-resolved's stub, which isn't running yet (or at all).
-func writeResolvConf(root, dns string) error {
-	path := root + "/etc/resolv.conf"
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return os.WriteFile(path, []byte("# written by cyac on every start\nnameserver "+dns+"\n"), 0o644)
 }
 
 var agentPid int
