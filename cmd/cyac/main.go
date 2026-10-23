@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -47,8 +48,9 @@ const usage = `usage: cyac <command> [args]
   expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
   unexpose <name>
 
-  daemon --domain <root domain> [--acme-email <e>]
-                                the proxy serves :80 and :443 with Let's Encrypt
+  daemon --domain <root domain> [--acme-email <e>] [--group <g>]
+                                the proxy serves :80 and :443 with Let's Encrypt;
+                                --group lets that group use the socket, like docker's
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
@@ -200,6 +202,7 @@ func daemon(socket string, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
 	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
+	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
 	parse(fs, args, 0)
 	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
 	if !validDomain.MatchString(*domain) {
@@ -257,7 +260,7 @@ func daemon(socket string, args []string) error {
 		return err
 	}
 
-	ln, err := listenUnix(socket)
+	ln, err := listenUnix(socket, *group)
 	if err != nil {
 		return err
 	}
@@ -296,10 +299,11 @@ func proxyServer(addr string, h http.Handler) *http.Server {
 	}
 }
 
-// listenUnix opens the API socket, readable and writable by root only.
-// That is the only access control for now.
-func listenUnix(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+// listenUnix opens the API socket, readable and writable by root only, or
+// also by group if one is given. That is the only access control, so the
+// group is as good as root, as with docker's.
+func listenUnix(path, group string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
 	os.Remove(path) // stale socket from an earlier run; the store lock rules out a live one
@@ -307,7 +311,20 @@ func listenUnix(path string) (net.Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return ln, os.Chmod(path, 0o600)
+	if group == "" {
+		return ln, os.Chmod(path, 0o600)
+	}
+	g, err := user.LookupGroup(group)
+	if err != nil {
+		ln.Close()
+		return nil, err
+	}
+	gid, _ := strconv.Atoi(g.Gid)
+	if err := os.Chown(path, 0, gid); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, os.Chmod(path, 0o660)
 }
 
 // parse handles flags before or after positional args and requires exactly n of them.

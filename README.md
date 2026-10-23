@@ -126,9 +126,12 @@ stopped. cyac-init ends a VM with a reset too, since that's the one thing
 that stops Firecracker, but it prints `cyac-init: powering off` first, so
 the daemon doesn't restart it.
 
-**The socket has no authentication yet.** It is created mode 0600 in a
-0700 directory, so only root can use it. This will change before the API is
-reachable from anywhere but the host.
+**The socket has no authentication yet.** It is created mode 0600, so only
+root can use it, unless the daemon runs with `--group <g>`: then it is 0660
+and owned by that group, like docker's. The NixOS module creates a `cyac`
+group for this; add users to it with `extraGroups = [ "cyac" ]`. Members
+can do anything the daemon can, so the group is as good as root. This will
+change before the API is reachable from anywhere but the host.
 
 ## Code layout
 
