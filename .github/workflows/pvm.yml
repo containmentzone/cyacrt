@@ -34,4 +34,18 @@ jobs:
       - uses: cachix/install-nix-action@v31
         with:
           extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
+      # Anonymous GitHub archive downloads get 429s on shared runners, so
+      # fetch the PVM kernel source with the job's token and put it in the
+      # store under the same fixed-output path fetchFromGitHub would make.
+      - name: Fetch the PVM kernel source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          rev=$(sed -n 's/.*rev = "\([0-9a-f]*\)";.*/\1/p' nix/pvm.nix)
+          curl -fsSL --retry 5 -H "Authorization: Bearer $GH_TOKEN" \
+            -o "$RUNNER_TEMP/pvm.tar.gz" "https://api.github.com/repos/virt-pvm/linux/tarball/$rev"
+          mkdir "$RUNNER_TEMP/source"
+          tar -C "$RUNNER_TEMP/source" --strip-components=1 -xzf "$RUNNER_TEMP/pvm.tar.gz"
+          nix-store --add-fixed --recursive sha256 "$RUNNER_TEMP/source"
+          rm -rf "$RUNNER_TEMP/source" "$RUNNER_TEMP/pvm.tar.gz"
       - run: nix build .#checks.x86_64-linux.pvm -L
