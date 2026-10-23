@@ -156,7 +156,11 @@ in
     ];
 
     # The daemon owns stateDir and serves the CLI's API on /run/cyac/cyac.sock
-    # (root only, no other auth for now) and the proxy on the network.
+    # (root and the cyac group, no other auth for now) and the proxy on the
+    # network.
+    # Like the docker group: members can drive the daemon, which is as good as
+    # root. Add users with users.users.<name>.extraGroups = [ "cyac" ].
+    users.groups.cyac = { };
     systemd.services.cyac = {
       description = "cyac daemon";
       wantedBy = [ "multi-user.target" ];
@@ -173,6 +177,8 @@ in
             "daemon"
             "--domain"
             cfg.proxy.domain
+            "--group"
+            "cyac"
           ]
           ++ lib.optionals (config.security.acme.defaults.email != null) [
             "--acme-email"
@@ -180,7 +186,8 @@ in
           ]
         );
         RuntimeDirectory = "cyac";
-        RuntimeDirectoryMode = "0700";
+        # The socket inside is 0660 root:cyac.
+        RuntimeDirectoryMode = "0755";
         # Boxes are runc/firecracker children; stopping the daemon must not take them down.
         KillMode = "process";
         Restart = "on-failure";

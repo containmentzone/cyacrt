@@ -2,8 +2,8 @@
 // JSON over HTTP on a unix socket.
 //
 // There is no authentication beyond the socket's file permissions (root
-// only by default). Expect that to change before the socket is ever
-// exposed beyond the host.
+// only by default, or root and the daemon's --group). Expect that to
+// change before the socket is ever exposed beyond the host.
 //
 //	GET    /v1/boxes                 → []Box
 //	POST   /v1/boxes                 NewBox → a stream of Progress, one JSON object per line
