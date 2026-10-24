@@ -36,6 +36,10 @@ type Box struct {
 	// empty means root.
 	User  string `json:"user,omitempty"`
 	Route *Route `json:"route,omitempty"`
+	// Up says the box should be running: start sets it, and stop or the
+	// box exiting on its own clears it. The daemon stops every box when it
+	// exits and starts the ones that are up again when it starts.
+	Up bool `json:"up,omitempty"`
 }
 
 // Route exposes one port of a box at <name>.<root domain>. Nothing is

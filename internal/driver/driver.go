@@ -100,6 +100,8 @@ type Runtime interface {
 type Network interface {
 	// Setup prepares host-wide state (bridges, firewall). Idempotent.
 	Setup() error
+	// Teardown removes what Setup made, once no box is attached.
+	Teardown()
 	// Addr returns the static address for box id.
 	Addr(id int) Addr
 	// Attach creates m's link of the given kind and sets m.Link.

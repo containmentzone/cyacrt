@@ -125,12 +125,16 @@ func (r Runtime) Start(m *driver.Machine) error {
 	// Firecracker's stdin and stdout are the guest serial console.
 	cmd := exec.Command("firecracker", "--api-sock", socket(m), "--config-file", cfgPath)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive the CLI
+	// Its own session, so a signal to the daemon's process group (Ctrl-C
+	// on a foreground daemon) doesn't reach it; the daemon stops it.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return err
 	}
 	p := cmd.Process.Pid
-	cmd.Process.Release()
+	// Reap it when it exits; a zombie still has /proc/<pid>/comm, so pid()
+	// would report it running.
+	go cmd.Wait()
 	if err := os.WriteFile(pidFile(m), []byte(strconv.Itoa(p)), 0o600); err != nil {
 		return err
 	}

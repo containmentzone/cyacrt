@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/containmentzone/cyacrt/internal/agent"
@@ -84,8 +85,20 @@ func (s Store) Rebooted(b *Box) bool {
 		restart > strings.LastIndex(out, agent.PoweringOff)
 }
 
-// Cleanup removes what a run left behind once its runtime has exited.
-func (s Store) Cleanup(b *Box) { s.cleanup(b) }
+// Exit cleans up after a box whose runtime exited on its own, and marks it
+// down so the daemon doesn't start it again.
+func (s Store) Exit(b *Box) error {
+	s.cleanup(b)
+	return s.setUp(b, false)
+}
+
+func (s Store) setUp(b *Box, up bool) error {
+	if b.Up == up {
+		return nil
+	}
+	b.Up = up
+	return s.Put(b)
+}
 
 // Status is "stopped" or "running (<runtime>)".
 func (s Store) Status(b *Box) string {
@@ -129,10 +142,18 @@ func (s Store) Start(b *Box) error {
 		return fmt.Errorf("start %s (%s): %w\n%s", b.Name, rt.Name(), err, console)
 	}
 	slog.Info("started box", "box", b.Name, "runtime", rt.Name())
-	return nil
+	return s.setUp(b, true)
 }
 
 func (s Store) Stop(b *Box) error {
+	if err := s.halt(b); err != nil {
+		return err
+	}
+	return s.setUp(b, false)
+}
+
+// halt stops b and cleans up after it, leaving b.Up as it is.
+func (s Store) halt(b *Box) error {
 	rt := s.running(b)
 	if rt == nil {
 		return fmt.Errorf("%s is not running", b.Name)
@@ -144,6 +165,54 @@ func (s Store) Stop(b *Box) error {
 		slog.Info("stopped box", "box", b.Name)
 	}
 	return err
+}
+
+// Boot is the daemon's start: it stops whatever a previous daemon left
+// running, rebuilds host networking from scratch, and starts the boxes
+// that were up when the daemon last exited.
+func (s Store) Boot() error {
+	boxes, err := s.List()
+	if err != nil {
+		return err
+	}
+	for _, b := range boxes {
+		if s.running(b) != nil {
+			// It was up, whatever its record says (a daemon before
+			// Up existed left boxes running on purpose).
+			slog.Info("restarting a box left over from a previous daemon", "box", b.Name)
+			s.halt(b)
+			s.setUp(b, true)
+		}
+		s.cleanup(b)
+	}
+	s.Net.Teardown()
+	if err := s.Net.Setup(); err != nil {
+		return err
+	}
+	for _, b := range boxes {
+		if !b.Up {
+			continue
+		}
+		if err := s.Start(b); err != nil {
+			slog.Error("start failed", "box", b.Name, "err", err)
+		}
+	}
+	return nil
+}
+
+// Shutdown is the daemon's exit: it stops every running box, all at once,
+// and removes host networking. Boxes stay marked up, so the next Boot
+// starts them again.
+func (s Store) Shutdown() {
+	boxes, _ := s.List()
+	var wg sync.WaitGroup
+	for _, b := range boxes {
+		if s.running(b) != nil {
+			wg.Go(func() { s.halt(b) })
+		}
+	}
+	wg.Wait()
+	s.Net.Teardown()
 }
 
 // rotate keeps one old console log once the current one passes 8 MiB,

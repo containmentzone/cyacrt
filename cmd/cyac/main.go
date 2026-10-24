@@ -12,11 +12,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -248,6 +250,9 @@ func daemon(socket string, args []string) error {
 			slog.Info("runtime available", "runtime", rt.Name())
 		}
 	}
+	if err := s.Boot(); err != nil {
+		return err
+	}
 	boxes, err := s.List()
 	if err != nil {
 		return err
@@ -282,7 +287,14 @@ func daemon(socket string, args []string) error {
 	https := proxyServer(":443", px)
 	https.TLSConfig = m.TLSConfig()
 	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
-	return https.ListenAndServeTLS("", "")
+	go func() { log.Fatal(https.ListenAndServeTLS("", "")) }()
+
+	// Boxes don't outlive the daemon; the next start brings them back.
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
+	slog.Info("stopping boxes before exiting", "signal", <-sigs)
+	srv.Shutdown()
+	return nil
 }
 
 var validDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
