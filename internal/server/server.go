@@ -80,6 +80,13 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
+// Shutdown stops every box and takes the store's lock for good, so no
+// request or Watch changes anything while the daemon exits.
+func (s *Server) Shutdown() {
+	s.mu.Lock()
+	s.Store.Shutdown()
+}
+
 // Watch notices boxes whose runtime exited without a stop, every interval,
 // for the life of the daemon. It starts a VM that rebooted itself again,
 // unless it already did so maxRestarts times in the last minute, and
@@ -107,10 +114,10 @@ func (s *Server) Watch(interval time.Duration) {
 			switch {
 			case !s.Store.Rebooted(b):
 				slog.Info("box exited on its own; marking it stopped", "box", b.Name)
-				s.Store.Cleanup(b)
+				s.Store.Exit(b)
 			case len(recent) >= maxRestarts:
 				slog.Error("box keeps rebooting; leaving it stopped", "box", b.Name, "restarts", len(recent))
-				s.Store.Cleanup(b)
+				s.Store.Exit(b)
 			default:
 				slog.Info("box rebooted; starting it again", "box", b.Name)
 				restarts[b.Name] = append(recent, time.Now())

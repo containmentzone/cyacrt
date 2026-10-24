@@ -58,8 +58,8 @@ guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
 boot on PVM.
 
 **Networking.** One bridge, `cyac0`, on 10.42.0.0/16 (host is
-10.42.0.1; each box start resets the bridge to that address if it has
-another). Box ports are bridge-isolated, so boxes can't reach each other.
+10.42.0.1), which the daemon creates when it starts and deletes when it
+exits. Box ports are bridge-isolated, so boxes can't reach each other.
 nftables keeps boxes off the host and off private and link-local ranges, and
 NATs everything else out. No ports are published. The proxy is the only way
 in.
@@ -127,6 +127,14 @@ under runc, where systemd's output doesn't reach the console) leaves the box
 stopped. cyac-init ends a VM with a reset too, since that's the one thing
 that stops Firecracker, but it prints `cyac-init: powering off` first, so
 the daemon doesn't restart it.
+
+**Boxes live with the daemon.** When the daemon gets SIGTERM it stops every
+box, all at once, and deletes their interfaces, the bridge and its nftables
+table. Each box record remembers whether the box was up (`cyac start` sets
+that, while `cyac stop` or the box exiting on its own clears it), so the
+next daemon start, including after a host reboot, starts those boxes again.
+It also stops anything a crashed daemon left running first, so it always
+starts from a clean slate.
 
 **The socket has no authentication yet.** It is created mode 0600, so only
 root can use it, unless the daemon runs with `--group <g>`: then it is 0660

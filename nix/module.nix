@@ -188,8 +188,9 @@ in
         RuntimeDirectory = "cyac";
         # The socket inside is 0660 root:cyac.
         RuntimeDirectoryMode = "0755";
-        # Boxes are runc/firecracker children; stopping the daemon must not take them down.
-        KillMode = "process";
+        # The daemon stops its boxes on SIGTERM (each gets up to 30s for a
+        # clean shutdown, all at once); whatever is left after that is killed.
+        KillMode = "mixed";
         Restart = "on-failure";
       };
     };
