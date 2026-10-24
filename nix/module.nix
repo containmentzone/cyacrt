@@ -12,6 +12,7 @@ self:
 
 let
   cfg = config.services.cyac;
+  oidc = cfg.proxy.oidc;
   pvm = cfg.kernel == "pvm";
   vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
 in
@@ -101,6 +102,52 @@ in
         default = false;
         description = "Open TCP 80 and 443.";
       };
+
+      oidc = lib.mkOption {
+        default = null;
+        description = ''
+          Optional OIDC sign-in for non-public routes. Allowed users sign in
+          with the provider; route tokens keep working alongside it.
+        '';
+        type = lib.types.nullOr (
+          lib.types.submodule {
+            options = {
+              issuer = lib.mkOption {
+                type = lib.types.str;
+                example = "https://id.example.com";
+                description = "OIDC issuer URL.";
+              };
+              clientId = lib.mkOption {
+                type = lib.types.str;
+                description = "OIDC client ID.";
+              };
+              clientSecretFile = lib.mkOption {
+                # A string, not a path, so the secret is never copied into the store.
+                type = lib.types.str;
+                example = "/run/secrets/cyac-oidc";
+                description = ''
+                  Absolute path to a file holding the client secret, e.g. from
+                  agenix or sops-nix. systemd reads it at service start
+                  (LoadCredential); it never enters the Nix store.
+                '';
+              };
+              redirectUrl = lib.mkOption {
+                type = lib.types.str;
+                example = "https://auth.example.com/__cyac/oidc/callback";
+                description = ''
+                  The one redirect URI to register with the provider. Its host
+                  doesn't have to be a box; pick a name no box will take.
+                '';
+              };
+              allow = lib.mkOption {
+                type = lib.types.nonEmptyListOf lib.types.str;
+                example = [ "you@example.com" ];
+                description = "Subjects or verified emails allowed to sign in.";
+              };
+            };
+          }
+        );
+      };
     };
   };
 
@@ -150,6 +197,10 @@ in
     ]
     ++ [
       {
+        assertion = oidc == null || (lib.hasPrefix "/" oidc.clientSecretFile && !lib.hasPrefix builtins.storeDir oidc.clientSecretFile);
+        message = "services.cyac.proxy.oidc.clientSecretFile must be an absolute path outside the Nix store.";
+      }
+      {
         assertion = config.security.acme.acceptTerms;
         message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
       }
@@ -184,7 +235,20 @@ in
             "--acme-email"
             config.security.acme.defaults.email
           ]
+          ++ lib.optionals (oidc != null) [
+            "--oidc-issuer"
+            oidc.issuer
+            "--oidc-client-id"
+            oidc.clientId
+            "--oidc-client-secret-file"
+            "%d/oidc-client-secret"
+            "--oidc-redirect-url"
+            oidc.redirectUrl
+            "--oidc-allow"
+            (lib.concatStringsSep "," oidc.allow)
+          ]
         );
+        LoadCredential = lib.mkIf (oidc != null) "oidc-client-secret:${oidc.clientSecretFile}";
         RuntimeDirectory = "cyac";
         # The socket inside is 0660 root:cyac.
         RuntimeDirectoryMode = "0755";

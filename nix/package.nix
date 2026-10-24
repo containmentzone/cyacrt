@@ -36,7 +36,7 @@ buildGoModule {
       ../internal
     ];
   };
-  vendorHash = "sha256-AOAoiZVtd+ad/YCHX+jb03e3cs09OhZtgCG0RnqHOKM=";
+  vendorHash = "sha256-mcolkUjJ7EkkfCY4zLVoAu/rP9tdJVI6kDKSDszMxOs=";
   subPackages = [
     "cmd/cyac"
     "cmd/cyac-init"

@@ -4,6 +4,8 @@
 package main
 
 import (
+	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -50,9 +52,12 @@ const usage = `usage: cyac <command> [args]
   expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
   unexpose <name>
 
-  daemon --domain <root domain> [--acme-email <e>] [--group <g>]
+  daemon --domain <root domain> [--acme-email <e>] [--group <g>] [OIDC flags]
                                 the proxy serves :80 and :443 with Let's Encrypt;
                                 --group lets that group use the socket, like docker's
+         OIDC flags: --oidc-issuer <url> --oidc-client-id <id> --oidc-client-secret-file <f>
+                     --oidc-redirect-url https://<auth host>/__cyac/oidc/callback
+                     --oidc-allow <sub|email>,...
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
@@ -205,6 +210,11 @@ func daemon(socket string, args []string) error {
 	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
 	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
 	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
+	issuer := fs.String("oidc-issuer", "", "proxy: enable OIDC sign-in with this issuer")
+	clientID := fs.String("oidc-client-id", "", "proxy: OIDC client ID")
+	secretFile := fs.String("oidc-client-secret-file", "", "proxy: file holding the OIDC client secret, read at startup")
+	redirect := fs.String("oidc-redirect-url", "", "proxy: OIDC callback, https://<auth host>/__cyac/oidc/callback")
+	allow := fs.String("oidc-allow", "", "proxy: comma-separated subjects or verified emails allowed to sign in")
 	parse(fs, args, 0)
 	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
 	if !validDomain.MatchString(*domain) {
@@ -261,6 +271,27 @@ func daemon(socket string, args []string) error {
 		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "exposed", b.Route != nil)
 	}
 	px := &proxy.Server{Store: s, Domain: *domain}
+	if *issuer != "" {
+		secret, err := os.ReadFile(*secretFile)
+		if err != nil {
+			return err
+		}
+		key, err := oidcKey(dir)
+		if err != nil {
+			return err
+		}
+		var users []string
+		for _, u := range strings.Split(*allow, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				users = append(users, u)
+			}
+		}
+		px.OIDC, err = proxy.NewOIDC(context.Background(), *issuer, *clientID, strings.TrimSpace(string(secret)), *redirect, users, key)
+		if err != nil {
+			return err
+		}
+		slog.Info("proxy OIDC enabled", "issuer", *issuer, "redirect", *redirect)
+	}
 	if err := px.Reload(); err != nil {
 		return err
 	}
@@ -337,6 +368,18 @@ func listenUnix(path, group string) (net.Listener, error) {
 		return nil, err
 	}
 	return ln, os.Chmod(path, 0o660)
+}
+
+// oidcKey signs OIDC sessions. It lives in the state dir so a restart
+// doesn't sign everyone out; delete it to revoke every session.
+func oidcKey(dir string) ([]byte, error) {
+	path := filepath.Join(dir, "oidc.key")
+	if k, err := os.ReadFile(path); err == nil && len(k) >= 32 {
+		return k, nil
+	}
+	k := make([]byte, 32)
+	rand.Read(k)
+	return k, os.WriteFile(path, k, 0o600)
 }
 
 // parse handles flags before or after positional args and requires exactly n of them.

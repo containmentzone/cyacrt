@@ -70,8 +70,12 @@ in.
 `--domain`. A request for any other host gets a 404. Unless a route is
 `--public`, the request also needs that route's token, as
 `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
-visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
-any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
+visiting `/__cyac/login?token=…`. With `--oidc-issuer`, browsers can
+instead sign in with an OpenID Connect provider, and only the subjects or
+verified emails in `--oidc-allow` get in. Every box shares one callback
+(`--oidc-redirect-url`), so the provider needs a single redirect URI. The
+proxy strips its own credentials and any inbound `X-Cyac-*` headers before
+forwarding, then sets `X-Cyac-User` and `X-Cyac-Email` for OIDC users. Let's Encrypt
 certificates are requested on demand, at the first TLS handshake for an
 exposed host and never for anything else; :80 only answers ACME challenges
 and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
@@ -217,6 +221,13 @@ nothing and leaves the choice to cyac's detection:
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here
               openFirewall = true;
+              # oidc = {
+              #   issuer = "https://id.example.com";
+              #   clientId = "cyac";
+              #   clientSecretFile = "/run/secrets/cyac-oidc";   # read at service start, never in the store
+              #   redirectUrl = "https://auth.example.com/__cyac/oidc/callback";
+              #   allow = [ "you@example.com" ];
+              # };
             };
           };
           security.acme = {
