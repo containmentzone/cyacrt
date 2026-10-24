@@ -3,25 +3,33 @@ package box
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // machine is the driver-facing view of a box.
 func (s Store) machine(b *Box) *driver.Machine {
+	addr := s.Net.Addr(b.ID)
 	return &driver.Machine{
 		Name: b.Name, ID: b.ID, Disk: s.DiskPath(b.Name), RunDir: s.RunDir(b.Name),
-		Init: b.Init, CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: s.Net.Addr(b.ID),
+		ConsoleLog: s.ConsoleLog(b.Name), ConsoleIn: s.ConsoleIn(b.Name),
+		Init: agent.Config{Mode: b.Mode, Args: b.Init, Env: b.Env, Cwd: b.Cwd, User: b.RunAs,
+			DNS: addr.DNS, Network: addr.Networkd()},
+		CPUs: b.CPUs, MemMiB: b.MemMiB, Addr: addr,
 	}
 }
 
 // pickRuntime returns the first available runtime, or the one named by
-// CYAC_RUNTIME.
+// CYAC_RUNTIME, and logs why it skipped the others.
 func (s Store) pickRuntime() (driver.Runtime, error) {
 	want := os.Getenv("CYAC_RUNTIME")
 	var reasons []string
@@ -31,6 +39,9 @@ func (s Store) pickRuntime() (driver.Runtime, error) {
 		}
 		err := rt.Available()
 		if err == nil {
+			if len(reasons) > 0 {
+				slog.Info("skipped runtimes", "reasons", strings.Join(reasons, "; "))
+			}
 			return rt, nil
 		}
 		reasons = append(reasons, fmt.Sprintf("%s: %v", rt.Name(), err))
@@ -53,6 +64,29 @@ func (s Store) running(b *Box) driver.Runtime {
 	return nil
 }
 
+// Exited reports whether b was started and its runtime is gone without a
+// Stop: the guest powered off, rebooted, or crashed.
+func (s Store) Exited(b *Box) bool {
+	_, err := os.Stat(filepath.Join(s.RunDir(b.Name), "runtime"))
+	return err == nil && s.running(b) == nil
+}
+
+// Rebooted reports whether b's last console output is the kernel
+// restarting. Firecracker can't reset a VM, so on a guest reboot it just
+// exits (the kernel runs with reboot=k), and this is how to tell that
+// apart from a poweroff, including cyac-init's, which ends in a reset too.
+// Under runc systemd's output doesn't reach the console, so this is false
+// there.
+func (s Store) Rebooted(b *Box) bool {
+	out := string(tail(s.ConsoleLog(b.Name), 0, 4096))
+	restart := strings.LastIndex(out, "reboot: Restarting system")
+	return restart >= 0 && restart > strings.LastIndex(out, "reboot: Power down") &&
+		restart > strings.LastIndex(out, agent.PoweringOff)
+}
+
+// Cleanup removes what a run left behind once its runtime has exited.
+func (s Store) Cleanup(b *Box) { s.cleanup(b) }
+
 // Status is "stopped" or "running (<runtime>)".
 func (s Store) Status(b *Box) string {
 	if rt := s.running(b); rt != nil {
@@ -74,24 +108,27 @@ func (s Store) Start(b *Box) error {
 		return err
 	}
 	m := s.machine(b)
+	slog.Info("starting box", "box", b.Name, "runtime", rt.Name(), "ip", m.Addr.IP, "cpus", b.CPUs, "mem_mib", b.MemMiB)
 	if err := os.MkdirAll(m.RunDir, 0o700); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(m.RunDir, "runtime"), []byte(rt.Name()), 0o600); err != nil {
 		return err
 	}
+	if err := syscall.Mkfifo(m.ConsoleIn, 0o600); err != nil {
+		return err
+	}
+	logStart := rotate(m.ConsoleLog)
 	err = s.Net.Attach(m, rt.LinkKind())
 	if err == nil {
 		err = rt.Start(m)
 	}
 	if err != nil {
-		console, _ := os.ReadFile(filepath.Join(m.RunDir, "console.log"))
-		if len(console) > 2048 {
-			console = console[len(console)-2048:]
-		}
+		console := tail(m.ConsoleLog, logStart, 2048)
 		s.cleanup(b)
 		return fmt.Errorf("start %s (%s): %w\n%s", b.Name, rt.Name(), err, console)
 	}
+	slog.Info("started box", "box", b.Name, "runtime", rt.Name())
 	return nil
 }
 
@@ -100,9 +137,43 @@ func (s Store) Stop(b *Box) error {
 	if rt == nil {
 		return fmt.Errorf("%s is not running", b.Name)
 	}
+	slog.Info("stopping box", "box", b.Name, "runtime", rt.Name())
 	err := rt.Stop(s.machine(b))
 	s.cleanup(b)
+	if err == nil {
+		slog.Info("stopped box", "box", b.Name)
+	}
 	return err
+}
+
+// rotate keeps one old console log once the current one passes 8 MiB,
+// and returns where this run's output starts.
+func rotate(path string) int64 {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0
+	}
+	if fi.Size() > 8<<20 && os.Rename(path, path+".1") == nil {
+		return 0
+	}
+	return fi.Size()
+}
+
+// tail returns up to n bytes from the end of path, starting no earlier than from.
+func tail(path string, from, n int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil
+	}
+	from = min(max(from, fi.Size()-n), fi.Size())
+	buf := make([]byte, fi.Size()-from)
+	f.ReadAt(buf, from)
+	return buf
 }
 
 // cleanup removes everything a run leaves behind. Safe to call when stopped.
@@ -125,6 +196,7 @@ func (s Store) Resize(b *Box, sizeBytes int64) error {
 	if sizeBytes <= fi.Size() {
 		return errors.New("new size must be larger than the current size")
 	}
+	slog.Info("resizing box", "box", b.Name, "from_bytes", fi.Size(), "to_bytes", sizeBytes)
 	if err := os.Truncate(disk, sizeBytes); err != nil {
 		return err
 	}
@@ -146,16 +218,35 @@ func (s Store) Remove(b *Box) error {
 	if err := os.Remove(s.DiskPath(b.Name)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return s.Delete(b.Name)
+	for _, f := range []string{s.ConsoleLog(b.Name), s.ConsoleLog(b.Name) + ".1"} {
+		os.Remove(f)
+	}
+	if err := s.Delete(b.Name); err != nil {
+		return err
+	}
+	slog.Info("removed box", "box", b.Name)
+	return nil
 }
 
-// Exec runs a command inside a running box with the caller's terminal.
-func (s Store) Exec(b *Box, args []string) error {
+// Command returns a command that runs args inside a running box; start it
+// with a terminal on its stdio. It runs as the box's login user, if the
+// image named one, unless root is set, with TERM set to term if given.
+func (s Store) Command(b *Box, args []string, root bool, term string) (*exec.Cmd, error) {
 	rt := s.running(b)
 	if rt == nil {
-		return fmt.Errorf("%s is not running", b.Name)
+		return nil, fmt.Errorf("%s is not running", b.Name)
 	}
-	return rt.Exec(s.machine(b), args)
+	if b.User != "" && !root {
+		// A login shell, so the user's HOME, profile and MOTD apply. With
+		// -c, runuser starts a new session, which would leave the shell
+		// without a controlling terminal (no job control); --pty gives it one.
+		args = []string{"runuser", "--pty", "-l", b.User, "-c", sh.Quote(args)}
+	}
+	if term != "" {
+		// runuser -l keeps TERM.
+		args = append([]string{"env", "TERM=" + term}, args...)
+	}
+	return rt.Command(s.machine(b), args)
 }
 
 // IP is the box's address, for the proxy and for display.

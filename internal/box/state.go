@@ -22,15 +22,25 @@ type Box struct {
 	ID     int    `json:"id"` // small integer; derives the IP and interface names
 	CPUs   int    `json:"cpus"`
 	MemMiB int    `json:"mem_mib"`
-	// Init is PID 1: the image's ENTRYPOINT+CMD unless overridden, e.g.
-	// /usr/local/bin/init for exeuntu or /lib/systemd/systemd.
-	Init   []string `json:"init"`
-	Routes []Route  `json:"routes,omitempty"`
+	// Init is the image's ENTRYPOINT+CMD unless overridden, e.g.
+	// /usr/local/bin/init for exeuntu, or /sbin/init if the image has
+	// neither. Mode says what runs it (see agent.Config.Mode): "" makes it
+	// PID 1, "command" runs it under cyac-init, and "pause" runs nothing.
+	Init []string `json:"init"`
+	Mode string   `json:"mode,omitempty"`
+	// The image's environment, working directory and USER, for commands.
+	Env   []string `json:"env,omitempty"`
+	Cwd   string   `json:"cwd,omitempty"`
+	RunAs string   `json:"run_as,omitempty"`
+	// User is who `cyac shell` runs as, from the image's login-user label;
+	// empty means root.
+	User  string `json:"user,omitempty"`
+	Route *Route `json:"route,omitempty"`
 }
 
-// Route is one explicitly exposed hostname. Nothing is reachable without one.
+// Route exposes one port of a box at <name>.<root domain>. Nothing is
+// reachable without one.
 type Route struct {
-	Host      string `json:"host"`
 	Port      int    `json:"port"`
 	Public    bool   `json:"public,omitempty"`
 	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
@@ -40,7 +50,8 @@ type Route struct {
 //
 //	<dir>/boxes/<name>.json   box record
 //	<dir>/disks/<name>.ext4   box disk
-//	<dir>/run/<name>/         runtime files while running (bundle, sockets, logs)
+//	<dir>/run/<name>/         runtime files while running (bundle, sockets)
+//	<dir>/logs/<name>.console.log  the box's console, across runs
 type Store struct {
 	Dir      string
 	Net      driver.Network
@@ -56,11 +67,15 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 func (s Store) recordPath(name string) string { return filepath.Join(s.Dir, "boxes", name+".json") }
 func (s Store) DiskPath(name string) string   { return filepath.Join(s.Dir, "disks", name+".ext4") }
 func (s Store) RunDir(name string) string     { return filepath.Join(s.Dir, "run", name) }
+func (s Store) ConsoleLog(name string) string {
+	return filepath.Join(s.Dir, "logs", name+".console.log")
+}
+func (s Store) ConsoleIn(name string) string { return filepath.Join(s.RunDir(name), "console.in") }
 
-// Lock takes an exclusive lock on the store for the life of the process.
-// Every mutating command calls it first.
+// Lock takes an exclusive lock on the store for the life of the process,
+// so only one daemon owns a state directory.
 func (s Store) Lock() error {
-	for _, d := range []string{"boxes", "disks", "run"} {
+	for _, d := range []string{"boxes", "disks", "run", "logs"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, d), 0o700); err != nil {
 			return err
 		}
@@ -69,7 +84,11 @@ func (s Store) Lock() error {
 	if err != nil {
 		return err
 	}
-	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX) // released when the process exits
+	// Released when the process exits.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("%s is in use by another cyac daemon", s.Dir)
+	}
+	return nil
 }
 
 func (s Store) Get(name string) (*Box, error) {

@@ -1,53 +1,65 @@
-// Command cyac manages boxes on a single host and serves the proxy in
-// front of them. There is no daemon besides `cyac serve`: every other
-// command edits the state directory directly under a file lock.
+// Command cyac is both the daemon (`cyac daemon`), which owns the state
+// directory and serves the proxy, and the CLI, which talks to the daemon
+// over a unix socket.
 package main
 
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
+	"net"
 	"net/http"
 	"os"
-	"os/signal"
+	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"golang.org/x/crypto/acme/autocert"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
+	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/client"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/runtime/firecracker"
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
+	"github.com/containmentzone/cyacrt/internal/server"
 )
 
 const usage = `usage: cyac <command> [args]
 
-  new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024] [--init cmd]
+  new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024]
+      [--init cmd] [--mode init|command|pause]
   start <name>
   stop <name>
   rm <name>
   ls
   resize <name> <size>
-  exec <name> [cmd...]          (runc only; default: bash -l)
-  expose <name> <port> <host> [--public]
-  unexpose <host>
-  serve [--listen :8080] | [--acme-email <e> --https :443 --http :80]
-        [--oidc-issuer <url> --oidc-client-id <id> --oidc-client-secret-file <f>
-         --oidc-redirect-url https://<auth host>/__cyac/oidc/callback --oidc-allow <sub|email>,...]
+  shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
+  console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
+  expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
+  unexpose <name>
 
-State lives in $CYAC_DIR (default /var/lib/cyac).
-CYAC_RUNTIME=firecracker or CYAC_RUNTIME=runc forces a runtime.
+  daemon --domain <root domain> [--acme-email <e>] [--group <g>] [OIDC flags]
+                                the proxy serves :80 and :443 with Let's Encrypt;
+                                --group lets that group use the socket, like docker's
+         OIDC flags: --oidc-issuer <url> --oidc-client-id <id> --oidc-client-secret-file <f>
+                     --oidc-redirect-url https://<auth host>/__cyac/oidc/callback
+                     --oidc-allow <sub|email>,...
+
+The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
+The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
+CYAC_RUNTIME=firecracker, firecracker-pvm or runc forces a runtime.
 `
 
 func main() {
@@ -56,30 +68,37 @@ func main() {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
 	}
-	dir := os.Getenv("CYAC_DIR")
-	if dir == "" {
-		dir = "/var/lib/cyac"
-	}
-	s := box.Store{
-		Dir: dir,
-		Net: bridge.Network{DNS: "1.1.1.1"},
-		Runtimes: []driver.Runtime{
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux")},
-			runc.Runtime{},
-		},
-	}
+	socket := env("CYAC_SOCKET", api.DefaultSocket)
 	cmd, args := os.Args[1], os.Args[2:]
-	if cmd != "serve" && cmd != "ls" {
-		if err := s.Lock(); err != nil {
-			log.Fatal(err)
+	var err error
+	switch cmd {
+	case "daemon":
+		err = daemon(socket, args)
+	case "agent-exec":
+		// Internal: the daemon runs this on a pty to exec into a VM.
+		if len(args) < 2 {
+			log.Fatal("usage: cyac agent-exec <vsock socket> <cmd...>")
 		}
+		var status int
+		if status, err = agent.Run(args[0], args[1:]); err == nil {
+			os.Exit(status)
+		}
+	default:
+		err = dispatch(client.New(socket), cmd, args)
 	}
-	if err := dispatch(s, cmd, args); err != nil {
+	if err != nil {
 		log.Fatal("cyac: ", err)
 	}
 }
 
-func dispatch(s box.Store, cmd string, args []string) error {
+func env(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func dispatch(c *client.Client, cmd string, args []string) error {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
 	case "new":
@@ -87,175 +106,93 @@ func dispatch(s box.Store, cmd string, args []string) error {
 		size := fs.String("size", "10G", "disk size")
 		cpus := fs.Int("cpus", 1, "vCPUs")
 		mem := fs.Int("mem", 1024, "memory in MiB")
-		init := fs.String("init", "", "PID 1 command, space-separated (default: the image's ENTRYPOINT+CMD)")
+		init := fs.String("init", "", "command, space-separated (default: the image's ENTRYPOINT+CMD)")
+		mode := fs.String("mode", "", "init (the command is PID 1), command (run it like a container) or pause (run nothing); default: init if it's named init or systemd")
 		pos := parse(fs, args, 1)
 		bytes, err := parseSize(*size)
 		if err != nil {
 			return err
 		}
-		if *image == "" {
-			return fmt.Errorf("--image is required")
-		}
-		if !box.ValidName(pos[0]) {
-			return fmt.Errorf("invalid box name %q (lowercase letters, digits, dashes)", pos[0])
-		}
-		if _, err := s.Get(pos[0]); err == nil {
-			return fmt.Errorf("box %q already exists", pos[0])
-		}
-		id, err := s.FreeID()
+		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init), Mode: *mode}
+		start := time.Now()
+		b, err := c.Create(req, func(msg string) {
+			fmt.Fprintf(os.Stderr, "[%4.0fs] %s\n", time.Since(start).Seconds(), msg)
+		})
 		if err != nil {
 			return err
 		}
-		b := &box.Box{Name: pos[0], Image: *image, ID: id, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init)}
-		log.Printf("seeding %s from %s", b.Name, b.Image)
-		if err := s.Seed(b, bytes); err != nil {
-			return err
-		}
-		if err := s.Put(b); err != nil {
-			return err
-		}
-		return s.Start(b)
+		fmt.Fprintf(os.Stderr, "[%4.0fs] %s is %s at %s\n", time.Since(start).Seconds(), b.Name, b.Status, b.IP)
+		return nil
 
-	case "start", "stop", "rm":
-		b, err := s.Get(parse(fs, args, 1)[0])
-		if err != nil {
-			return err
-		}
-		switch cmd {
-		case "start":
-			return s.Start(b)
-		case "stop":
-			return s.Stop(b)
-		default:
-			return s.Remove(b)
-		}
+	case "start", "stop":
+		return c.Do("POST", "/v1/boxes/"+parse(fs, args, 1)[0]+"/"+cmd, nil, nil)
+
+	case "rm":
+		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0], nil, nil)
 
 	case "ls":
-		boxes, err := s.List()
-		if err != nil {
+		parse(fs, args, 0)
+		var boxes []api.Box
+		if err := c.Do("GET", "/v1/boxes", nil, &boxes); err != nil {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tIP\tSTATUS\tIMAGE\tROUTES")
+		fmt.Fprintln(w, "NAME\tIP\tSTATUS\tIMAGE\tROUTE")
 		for _, b := range boxes {
-			var routes []string
-			for _, r := range b.Routes {
+			route := ""
+			if r := b.Route; r != nil {
 				vis := "token"
 				if r.Public {
 					vis = "public"
 				}
-				routes = append(routes, fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis))
+				route = fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, s.IP(b), s.Status(b), b.Image, strings.Join(routes, ", "))
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP, b.Status, b.Image, route)
 		}
 		return w.Flush()
 
 	case "resize":
 		pos := parse(fs, args, 2)
-		b, err := s.Get(pos[0])
-		if err != nil {
-			return err
-		}
 		bytes, err := parseSize(pos[1])
 		if err != nil {
 			return err
 		}
-		return s.Resize(b, bytes)
+		return c.Do("POST", "/v1/boxes/"+pos[0]+"/resize", api.Resize{SizeBytes: bytes}, nil)
 
-	case "exec":
-		if len(args) < 1 {
-			return fmt.Errorf("usage: cyac exec <name> [cmd...]")
+	case "shell":
+		root := fs.Bool("root", false, "run as root instead of the image's login user")
+		fs.Parse(args) // flags go before the name; the command is passed through as is
+		if fs.NArg() < 1 {
+			return errors.New("usage: cyac shell [--root] <name> [cmd...]")
 		}
-		b, err := s.Get(args[0])
-		if err != nil {
-			return err
-		}
-		command := args[1:]
+		command := fs.Args()[1:]
 		if len(command) == 0 {
 			command = []string{"/bin/bash", "-l"}
 		}
-		return s.Exec(b, command)
+		return c.Exec(fs.Arg(0), command, *root)
+
+	case "console":
+		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
 		public := fs.Bool("public", false, "no token required")
-		pos := parse(fs, args, 3)
-		b, err := s.Get(pos[0])
-		if err != nil {
-			return err
-		}
+		pos := parse(fs, args, 2)
 		port, err := strconv.Atoi(pos[1])
-		if err != nil || port < 1 || port > 65535 {
+		if err != nil {
 			return fmt.Errorf("bad port %q", pos[1])
 		}
-		host := strings.ToLower(pos[2])
-		if owner := routeOwner(s, host); owner != "" {
-			return fmt.Errorf("%s is already exposed by %s", host, owner)
-		}
-		r := box.Route{Host: host, Port: port, Public: *public}
-		token := ""
-		if !*public {
-			token = rand.Text()
-			sum := sha256.Sum256([]byte(token))
-			r.TokenHash = hex.EncodeToString(sum[:])
-		}
-		b.Routes = append(b.Routes, r)
-		if err := s.Put(b); err != nil {
+		var e api.Exposed
+		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Port: port, Public: *public}, &e); err != nil {
 			return err
 		}
-		if token != "" {
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", token, host, token)
+		fmt.Printf("https://%s\n", e.Host)
+		if e.Token != "" {
+			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", e.Token, e.Host, e.Token)
 		}
 		return nil
 
 	case "unexpose":
-		host := strings.ToLower(parse(fs, args, 1)[0])
-		boxes, err := s.List()
-		if err != nil {
-			return err
-		}
-		for _, b := range boxes {
-			for i, r := range b.Routes {
-				if r.Host == host {
-					b.Routes = append(b.Routes[:i], b.Routes[i+1:]...)
-					return s.Put(b)
-				}
-			}
-		}
-		return fmt.Errorf("%s is not exposed", host)
-
-	case "serve":
-		listen := fs.String("listen", ":8080", "plain HTTP listen address (when not using ACME)")
-		email := fs.String("acme-email", "", "enable Let's Encrypt for exposed hosts")
-		httpsAddr := fs.String("https", ":443", "HTTPS listen address (ACME mode)")
-		httpAddr := fs.String("http", ":80", "HTTP listen address for ACME challenges (ACME mode)")
-		issuer := fs.String("oidc-issuer", "", "enable OIDC sign-in with this issuer")
-		clientID := fs.String("oidc-client-id", "", "OIDC client ID")
-		secretFile := fs.String("oidc-client-secret-file", "", "file holding the OIDC client secret")
-		redirect := fs.String("oidc-redirect-url", "", "OIDC callback, https://<auth host>/__cyac/oidc/callback")
-		allow := fs.String("oidc-allow", "", "comma-separated subjects or verified emails allowed to sign in")
-		parse(fs, args, 0)
-		srv := &proxy.Server{Store: s}
-		if *issuer != "" {
-			secret, err := os.ReadFile(*secretFile)
-			if err != nil {
-				return err
-			}
-			key, err := oidcKey(s.Dir)
-			if err != nil {
-				return err
-			}
-			var users []string
-			for _, u := range strings.Split(*allow, ",") {
-				if u = strings.TrimSpace(u); u != "" {
-					users = append(users, u)
-				}
-			}
-			srv.OIDC, err = proxy.NewOIDC(context.Background(), *issuer, *clientID, strings.TrimSpace(string(secret)), *redirect, users, key)
-			if err != nil {
-				return err
-			}
-		}
-		return serve(s, srv, *listen, *email, *httpsAddr, *httpAddr)
+		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0]+"/route", nil, nil)
 
 	default:
 		fmt.Fprint(os.Stderr, usage)
@@ -264,41 +201,161 @@ func dispatch(s box.Store, cmd string, args []string) error {
 	return nil
 }
 
-func serve(s box.Store, srv *proxy.Server, listen, email, httpsAddr, httpAddr string) error {
-	if err := srv.Reload(); err != nil {
+// daemon owns the state directory: it serves the API on the unix socket
+// and the proxy on the network.
+func daemon(socket string, args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
+	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
+	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
+	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
+	issuer := fs.String("oidc-issuer", "", "proxy: enable OIDC sign-in with this issuer")
+	clientID := fs.String("oidc-client-id", "", "proxy: OIDC client ID")
+	secretFile := fs.String("oidc-client-secret-file", "", "proxy: file holding the OIDC client secret, read at startup")
+	redirect := fs.String("oidc-redirect-url", "", "proxy: OIDC callback, https://<auth host>/__cyac/oidc/callback")
+	allow := fs.String("oidc-allow", "", "proxy: comma-separated subjects or verified emails allowed to sign in")
+	parse(fs, args, 0)
+	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
+	if !validDomain.MatchString(*domain) {
+		return fmt.Errorf("--domain must be a domain name like boxes.example.com, not %q", *domain)
+	}
+
+	// systemd's journal adds its own timestamps.
+	opts := &slog.HandlerOptions{}
+	if os.Getenv("JOURNAL_STREAM") != "" {
+		opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				return slog.Attr{}
+			}
+			return a
+		}
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
+
+	dir := env("CYAC_DIR", "/var/lib/cyac")
+	self, err := os.Executable()
+	if err != nil {
 		return err
 	}
-	// The CLI changes routes by rewriting box records; pick them up every
-	// few seconds, or immediately on SIGHUP.
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	go func() {
-		tick := time.NewTicker(5 * time.Second)
-		for {
-			select {
-			case <-tick.C:
-			case <-hup:
-			}
-			if err := srv.Reload(); err != nil {
-				log.Printf("reload: %v", err)
+	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
+	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
+	s := box.Store{
+		Dir: dir,
+		Net: bridge.Network{DNS: "1.1.1.1"},
+		Runtimes: []driver.Runtime{
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
+			runc.Runtime{Init: init},
+		},
+	}
+	if err := s.Lock(); err != nil {
+		return err
+	}
+	slog.Info("cyac daemon starting", "state_dir", dir, "socket", socket, "CYAC_RUNTIME", os.Getenv("CYAC_RUNTIME"))
+	for _, rt := range s.Runtimes {
+		if err := rt.Available(); err != nil {
+			slog.Info("runtime unavailable", "runtime", rt.Name(), "reason", err)
+		} else {
+			slog.Info("runtime available", "runtime", rt.Name())
+		}
+	}
+	boxes, err := s.List()
+	if err != nil {
+		return err
+	}
+	for _, b := range boxes {
+		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "exposed", b.Route != nil)
+	}
+	px := &proxy.Server{Store: s, Domain: *domain}
+	if *issuer != "" {
+		secret, err := os.ReadFile(*secretFile)
+		if err != nil {
+			return err
+		}
+		key, err := oidcKey(dir)
+		if err != nil {
+			return err
+		}
+		var users []string
+		for _, u := range strings.Split(*allow, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				users = append(users, u)
 			}
 		}
-	}()
-
-	if email == "" {
-		log.Printf("serving plain HTTP on %s", listen)
-		return http.ListenAndServe(listen, srv)
+		px.OIDC, err = proxy.NewOIDC(context.Background(), *issuer, *clientID, strings.TrimSpace(string(secret)), *redirect, users, key)
+		if err != nil {
+			return err
+		}
+		slog.Info("proxy OIDC enabled", "issuer", *issuer, "redirect", *redirect)
 	}
+	if err := px.Reload(); err != nil {
+		return err
+	}
+
+	ln, err := listenUnix(socket, *group)
+	if err != nil {
+		return err
+	}
+	srv := &server.Server{Store: s, Domain: *domain, RoutesChanged: px.Reload}
+	slog.Info("API listening", "socket", socket)
+	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
+	go srv.Watch(2 * time.Second)
+
+	// Certificates are only requested on demand, during the first TLS
+	// handshake for an exposed host; HostPolicy refuses every other name.
 	m := &autocert.Manager{
 		Prompt:     autocert.AcceptTOS,
-		Email:      email,
-		HostPolicy: srv.HostPolicy,
-		Cache:      autocert.DirCache(filepath.Join(s.Dir, "acme")),
+		Email:      *email,
+		HostPolicy: px.HostPolicy,
+		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
 	}
-	go func() { log.Fatal(http.ListenAndServe(httpAddr, m.HTTPHandler(nil))) }()
-	https := &http.Server{Addr: httpsAddr, Handler: srv, TLSConfig: m.TLSConfig()}
-	log.Printf("serving HTTPS on %s", httpsAddr)
+	// :80 answers ACME challenges and redirects everything else to HTTPS.
+	go func() { log.Fatal(proxyServer(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
+	https := proxyServer(":443", px)
+	https.TLSConfig = m.TLSConfig()
+	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
 	return https.ListenAndServeTLS("", "")
+}
+
+var validDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// proxyServer has timeouts for slow or idle clients, but none on reading
+// or writing bodies, which would cut off uploads, streams and websockets.
+func proxyServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+	}
+}
+
+// listenUnix opens the API socket, readable and writable by root only, or
+// also by group if one is given. That is the only access control, so the
+// group is as good as root, as with docker's.
+func listenUnix(path, group string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	os.Remove(path) // stale socket from an earlier run; the store lock rules out a live one
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if group == "" {
+		return ln, os.Chmod(path, 0o600)
+	}
+	g, err := user.LookupGroup(group)
+	if err != nil {
+		ln.Close()
+		return nil, err
+	}
+	gid, _ := strconv.Atoi(g.Gid)
+	if err := os.Chown(path, 0, gid); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, os.Chmod(path, 0o660)
 }
 
 // oidcKey signs OIDC sessions. It lives in the state dir so a restart
@@ -329,18 +386,6 @@ func parse(fs *flag.FlagSet, args []string, n int) []string {
 		os.Exit(2)
 	}
 	return pos
-}
-
-func routeOwner(s box.Store, host string) string {
-	boxes, _ := s.List()
-	for _, b := range boxes {
-		for _, r := range b.Routes {
-			if r.Host == host {
-				return b.Name
-			}
-		}
-	}
-	return ""
 }
 
 // parseSize accepts plain bytes or a K/M/G/T suffix (powers of 1024).

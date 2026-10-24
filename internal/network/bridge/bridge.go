@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -13,14 +14,14 @@ import (
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
-// Layout: bridge cyac0 on 10.88.0.0/16, host at 10.88.0.1, box id N at
-// 10.88.N/256.N%256.
+// Layout: bridge cyac0 on 10.42.0.0/16, host at 10.42.0.1, box id N at
+// 10.42.N/256.N%256.
 const (
 	bridgeName = "cyac0"
 	prefixLen  = 16
 )
 
-var hostIP = netip.MustParseAddr("10.88.0.1")
+var hostIP = netip.MustParseAddr("10.42.0.1")
 
 // rules is replaced atomically on every Setup. Boxes can reach the internet
 // through NAT and nothing else: not the host, not each other (bridge port
@@ -43,7 +44,7 @@ table inet cyac {
 	}
 	chain postrouting {
 		type nat hook postrouting priority 100;
-		ip saddr 10.88.0.0/16 oifname != "cyac0" masquerade
+		ip saddr 10.42.0.0/16 oifname != "cyac0" masquerade
 	}
 }
 `
@@ -57,7 +58,7 @@ var _ driver.Network = Network{}
 
 func (n Network) Addr(id int) driver.Addr {
 	return driver.Addr{
-		IP:      netip.AddrFrom4([4]byte{10, 88, byte(id >> 8), byte(id)}),
+		IP:      netip.AddrFrom4([4]byte{10, 42, byte(id >> 8), byte(id)}),
 		Prefix:  prefixLen,
 		Gateway: hostIP,
 		DNS:     n.DNS,
@@ -67,6 +68,18 @@ func (n Network) Addr(id int) driver.Addr {
 func (Network) Setup() error {
 	if sh.Run("ip", "link", "show", bridgeName) != nil {
 		if err := sh.Run("ip", "link", "add", bridgeName, "type", "bridge"); err != nil {
+			return err
+		}
+	}
+	// An existing bridge can carry an address from an older layout (cyac
+	// used 10.88.0.0/16 before), and then the host has no route to its
+	// boxes. Make hostIP/16 its only IPv4 address.
+	ok, err := hasOnlyHostAddr()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		if err := sh.Run("ip", "-4", "addr", "flush", "dev", bridgeName); err != nil {
 			return err
 		}
 		if err := sh.Run("ip", "addr", "add", fmt.Sprintf("%s/%d", hostIP, prefixLen), "dev", bridgeName); err != nil {
@@ -85,6 +98,31 @@ func (Network) Setup() error {
 		return fmt.Errorf("nft: %v: %s", err, out)
 	}
 	return nil
+}
+
+// hasOnlyHostAddr reports whether hostIP/16 is the bridge's only IPv4
+// address.
+func hasOnlyHostAddr() (bool, error) {
+	iface, err := net.InterfaceByName(bridgeName)
+	if err != nil {
+		return false, err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false, err
+	}
+	found := false
+	for _, a := range addrs {
+		p, err := netip.ParsePrefix(a.String())
+		if err != nil || !p.Addr().Is4() {
+			continue
+		}
+		if p != netip.PrefixFrom(hostIP, prefixLen) {
+			return false, nil
+		}
+		found = true
+	}
+	return found, nil
 }
 
 func (n Network) Attach(m *driver.Machine, kind driver.LinkKind) error {

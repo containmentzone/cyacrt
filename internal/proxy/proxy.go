@@ -1,7 +1,7 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
-// reaches a box only if its Host matches a route created with
-// `cyac expose`, and, unless that route is public, it carries the route's
-// token or an OIDC session for an allowed user.
+// reaches a box only if its Host is <box>.<root domain> for a box exposed
+// with `cyac expose`, and, unless that route is public, it carries the
+// route's token or an OIDC session for an allowed user.
 package proxy
 
 import (
@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/containmentzone/cyacrt/internal/box"
 )
@@ -34,9 +35,24 @@ type target struct {
 	IP netip.Addr
 }
 
+// transport reaches boxes on the bridge. Boxes are local, so connecting is
+// quick or not happening; a box gets a minute to start answering, and
+// once it does, bodies (uploads, streams, websockets) take as long as
+// they take.
+var transport = &http.Transport{
+	Proxy:                 nil, // never an outbound proxy from the environment
+	DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ResponseHeaderTimeout: time.Minute,
+	ExpectContinueTimeout: time.Second,
+	IdleConnTimeout:       90 * time.Second,
+	MaxIdleConnsPerHost:   16,
+}
+
 type Server struct {
 	Store box.Store
-	OIDC  *OIDC // optional
+	// Domain is the root domain; box b answers at <b>.<Domain>.
+	Domain string
+	OIDC   *OIDC // optional
 
 	mu     sync.RWMutex
 	routes map[string]target // by lowercased host
@@ -51,8 +67,8 @@ func (s *Server) Reload() error {
 	}
 	routes := map[string]target{}
 	for _, b := range boxes {
-		for _, r := range b.Routes {
-			routes[strings.ToLower(r.Host)] = target{Route: r, IP: s.Store.IP(b)}
+		if b.Route != nil {
+			routes[b.Name+"."+strings.ToLower(s.Domain)] = target{Route: *b.Route, IP: s.Store.IP(b)}
 		}
 	}
 	s.mu.Lock()
@@ -109,12 +125,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.login(w, r, t)
 		return
 	case r.URL.Path == oidcPrefix+"finish" && s.OIDC != nil:
-		s.OIDC.finish(w, r, t)
+		s.OIDC.finish(w, r)
 		return
 	}
 
 	tok, fromHeader := tokenFrom(r)
-	user, signedIn := s.OIDC.session(r, t.Host)
+	user, signedIn := s.OIDC.session(r)
 	if !t.Public && !validToken(t.Route, tok) && !signedIn {
 		if s.OIDC != nil && r.Method == http.MethodGet && !fromHeader {
 			s.OIDC.redirect(w, r)
@@ -126,6 +142,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rp := &httputil.ReverseProxy{
+		Transport: transport,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(&url.URL{Scheme: "http", Host: net.JoinHostPort(t.IP.String(), strconv.Itoa(t.Port))})
 			pr.Out.Host = pr.In.Host // apps see the public hostname

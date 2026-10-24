@@ -118,9 +118,9 @@ func (o *OIDC) allowed(sub, email string) bool {
 	return o.allow[sub] || (email != "" && o.allow[email])
 }
 
-// session returns the signed-in user for a route host, if any. It is
+// session returns the user signed in to the request's host, if any. It is
 // safe to call on a nil *OIDC.
-func (o *OIDC) session(r *http.Request, host string) (sealed, bool) {
+func (o *OIDC) session(r *http.Request) (sealed, bool) {
 	if o == nil {
 		return sealed{}, false
 	}
@@ -129,7 +129,7 @@ func (o *OIDC) session(r *http.Request, host string) (sealed, bool) {
 		return sealed{}, false
 	}
 	s, ok := o.open(c.Value, "session")
-	return s, ok && s.Host == strings.ToLower(host) && o.allowed(s.Sub, s.Email)
+	return s, ok && s.Host == strings.ToLower(hostname(r.Host)) && o.allowed(s.Sub, s.Email)
 }
 
 // redirect sends a browser on a route host to the auth host to sign in.
@@ -214,7 +214,7 @@ func (s *Server) oidcCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 // finish runs on the route host: it trades a ticket for a session cookie.
-func (o *OIDC) finish(w http.ResponseWriter, r *http.Request, t target) {
+func (o *OIDC) finish(w http.ResponseWriter, r *http.Request) {
 	c, ok := o.open(r.URL.Query().Get("t"), "ticket")
 	rd, err := url.Parse(c.URL)
 	if !ok || err != nil || !strings.EqualFold(rd.Host, r.Host) {
@@ -223,7 +223,7 @@ func (o *OIDC) finish(w http.ResponseWriter, r *http.Request, t target) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:  sessionCookie,
-		Value: o.seal(sealed{Kind: "session", Host: strings.ToLower(t.Host), Sub: c.Sub, Email: c.Email}, sessionTTL),
+		Value: o.seal(sealed{Kind: "session", Host: strings.ToLower(hostname(r.Host)), Sub: c.Sub, Email: c.Email}, sessionTTL),
 		Path:  "/", HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, rd.String(), http.StatusFound)

@@ -1,4 +1,5 @@
-// Package sh runs host commands, folding their output into errors.
+// Package sh runs host commands, folding their output into errors, and
+// quotes arguments for a POSIX shell.
 package sh
 
 import (
@@ -14,4 +15,13 @@ func Run(name string, args ...string) error {
 		return fmt.Errorf("%s %s: %v: %s", name, strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// Quote joins args into one string a POSIX shell splits back into args.
+func Quote(args []string) string {
+	q := make([]string, len(args))
+	for i, a := range args {
+		q[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+	}
+	return strings.Join(q, " ")
 }

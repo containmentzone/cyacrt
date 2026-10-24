@@ -1,7 +1,15 @@
 // Package firecracker is the VM runtime: it boots a box's disk as
-// /dev/vda under Firecracker, with the box's init (usually systemd) as
-// PID 1. The guest kernel brings eth0 up from the ip= boot argument; the
-// disk's networkd config carries the same address.
+// /dev/vda under Firecracker. The VM starts in an initramfs holding
+// cyac-init, which mounts the disk, starts an exec agent on vsock, and runs
+// the box's init (usually systemd) or command (see cmd/cyac-init). The
+// guest kernel brings eth0 up from the ip= boot argument; the disk's
+// networkd config carries the same address.
+//
+// With PVM set it is the "firecracker-pvm" runtime: the same VMM on a host
+// without hardware virtualization (a cloud VM without nested virt) whose
+// /dev/kvm comes from the out-of-tree kvm-pvm module. PVM needs a PVM guest
+// kernel, and a normal guest kernel won't boot on it, so the two runtimes
+// are mutually exclusive and each has its own kernel.
 //
 // TODO: run Firecracker under its jailer.
 package firecracker
@@ -22,24 +30,39 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
 )
 
 // Runtime implements driver.Runtime.
 type Runtime struct {
 	Kernel string // uncompressed guest vmlinux
+	Init   string // static cyac-init binary
+	PVM    bool
 }
 
 var _ driver.Runtime = Runtime{}
 
-func (Runtime) Name() string                     { return "firecracker" }
 func (Runtime) LinkKind() driver.LinkKind        { return driver.Tap }
 func socket(m *driver.Machine) string            { return filepath.Join(m.RunDir, "fc.sock") }
 func pidFile(m *driver.Machine) string           { return filepath.Join(m.RunDir, "fc.pid") }
+func vsock(m *driver.Machine) string             { return filepath.Join(m.RunDir, "v.sock") }
 func (Runtime) Cleanup(m *driver.Machine)        {}
 func (r Runtime) Running(m *driver.Machine) bool { return pid(m) > 0 }
 
+func (r Runtime) Name() string {
+	if r.PVM {
+		return "firecracker-pvm"
+	}
+	return "firecracker"
+}
+
 func (r Runtime) Available() error {
+	if pvm := pvmHost(); pvm && !r.PVM {
+		return errors.New("/dev/kvm is kvm-pvm, which needs the PVM guest kernel")
+	} else if !pvm && r.PVM {
+		return errors.New("kvm-pvm is not loaded")
+	}
 	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -48,20 +71,32 @@ func (r Runtime) Available() error {
 	if _, err := exec.LookPath("firecracker"); err != nil {
 		return err
 	}
+	if _, err = os.Stat(r.Init); err != nil {
+		return err
+	}
 	_, err = os.Stat(r.Kernel)
 	return err
 }
 
 func (r Runtime) Start(m *driver.Machine) error {
-	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
-	bootArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off root=/dev/vda rw ip=%s::%s:%s:%s:eth0:off init=%s",
-		m.Addr.IP, m.Addr.Gateway, mask, m.Name, m.Init[0])
-	if len(m.Init) > 1 {
-		bootArgs += " -- " + strings.Join(m.Init[1:], " ") // the kernel hands these to init as argv
+	initrd := filepath.Join(m.RunDir, "initrd")
+	f, err := os.OpenFile(initrd, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
 	}
+	err = agent.WriteInitrd(f, r.Init, m.Init)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
+	bootArgs := fmt.Sprintf("console=ttyS0 reboot=k panic=1 pci=off ip=%s::%s:%s:%s:eth0:off",
+		m.Addr.IP, m.Addr.Gateway, mask, m.Name)
 	ip := m.Addr.IP.As4()
 	cfg := map[string]any{
-		"boot-source": map[string]any{"kernel_image_path": r.Kernel, "boot_args": bootArgs},
+		"boot-source": map[string]any{"kernel_image_path": r.Kernel, "initrd_path": initrd, "boot_args": bootArgs},
 		"drives": []map[string]any{{
 			"drive_id": "rootfs", "path_on_host": m.Disk, "is_root_device": true, "is_read_only": false,
 		}},
@@ -70,6 +105,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 			"iface_id": "eth0", "host_dev_name": m.Link.HostIface,
 			"guest_mac": fmt.Sprintf("06:00:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3]),
 		}},
+		"vsock": map[string]any{"guest_cid": 3, "uds_path": vsock(m)},
 	}
 	cfgPath := filepath.Join(m.RunDir, "vm.json")
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -80,14 +116,15 @@ func (r Runtime) Start(m *driver.Machine) error {
 		return err
 	}
 
-	log, err := os.OpenFile(filepath.Join(m.RunDir, "console.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	log, in, err := driver.OpenConsole(m)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
-	// Firecracker's stdout is the guest serial console.
+	defer in.Close()
+	// Firecracker's stdin and stdout are the guest serial console.
 	cmd := exec.Command("firecracker", "--api-sock", socket(m), "--config-file", cfgPath)
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true} // outlive the CLI
 	if err := cmd.Start(); err != nil {
 		return err
@@ -111,7 +148,8 @@ func (r Runtime) Start(m *driver.Machine) error {
 }
 
 func (Runtime) Stop(m *driver.Machine) error {
-	// Ctrl-Alt-Del makes systemd reboot, and Firecracker exits on guest reboot.
+	// Ctrl-Alt-Del makes systemd (or cyac-init) reboot, and Firecracker
+	// exits on guest reboot.
 	if err := api(m, http.MethodPut, "/actions", map[string]any{"action_type": "SendCtrlAltDel"}); err == nil {
 		for range 60 {
 			if pid(m) == 0 {
@@ -134,8 +172,21 @@ func (Runtime) Grow(m *driver.Machine) error {
 	})
 }
 
-func (Runtime) Exec(m *driver.Machine, _ []string) error {
-	return fmt.Errorf("exec isn't supported for VMs yet; if the image runs sshd, use ssh root@%s", m.Addr.IP)
+// Command runs args through the guest's agent, by running "cyac
+// agent-exec" (agent.Run) on the daemon's pty.
+func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return exec.Command(self, append([]string{"agent-exec", vsock(m)}, args...)...), nil
+}
+
+// pvmHost reports whether /dev/kvm would be served by kvm-pvm. It can't be
+// loaded alongside kvm-intel or kvm-amd.
+func pvmHost() bool {
+	exists := func(mod string) bool { _, err := os.Stat("/sys/module/" + mod); return err == nil }
+	return exists("kvm_pvm") && !exists("kvm_intel") && !exists("kvm_amd")
 }
 
 // pid returns the Firecracker pid if that process is still Firecracker.

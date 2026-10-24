@@ -36,12 +36,20 @@ buildGoModule {
       ../internal
     ];
   };
-  vendorHash = "sha256-j5AZw+Yvy6TSpQRYSx8qaQV7EIXQ4aJX8PWwwMxP5Kc=";
-  subPackages = [ "cmd/cyac" ];
+  vendorHash = "sha256-mcolkUjJ7EkkfCY4zLVoAu/rP9tdJVI6kDKSDszMxOs=";
+  subPackages = [
+    "cmd/cyac"
+    "cmd/cyac-init"
+  ];
+  # cyac-init runs in VMs and images, so it must be static.
+  env.CGO_ENABLED = 0;
 
   nativeBuildInputs = [ makeWrapper ];
   postInstall = ''
-    wrapProgram $out/bin/cyac --prefix PATH : ${lib.makeBinPath runtimeTools}
+    mkdir -p $out/libexec/cyac
+    mv $out/bin/cyac-init $out/libexec/cyac/
+    wrapProgram $out/bin/cyac --prefix PATH : ${lib.makeBinPath runtimeTools} \
+      --set-default CYAC_INIT $out/libexec/cyac/cyac-init
   '';
 
   passthru = { inherit runtimeTools; };

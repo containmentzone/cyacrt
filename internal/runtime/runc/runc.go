@@ -1,5 +1,6 @@
 // Package runc is the container runtime: it runs a box's loop-mounted disk
-// with its own init (usually systemd) as PID 1.
+// with its own init (usually systemd) as PID 1, or with cyac-init as PID 1
+// for a box in command or pause mode.
 //
 // This is NOT a security boundary: systemd needs CAP_SYS_ADMIN and a
 // writable cgroup subtree, so treat these boxes as trusted.
@@ -16,12 +17,15 @@ import (
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // Runtime implements driver.Runtime.
-type Runtime struct{}
+type Runtime struct {
+	Init string // static cyac-init binary, bind-mounted for command and pause mode
+}
 
 var _ driver.Runtime = Runtime{}
 
@@ -29,41 +33,55 @@ func (Runtime) Name() string               { return "runc" }
 func (Runtime) LinkKind() driver.LinkKind  { return driver.Netns }
 func containerID(m *driver.Machine) string { return "cyac-" + m.Name }
 func rootfs(m *driver.Machine) string      { return filepath.Join(m.RunDir, "rootfs") }
+func initConfig(m *driver.Machine) string  { return filepath.Join(m.RunDir, "init.json") }
 
 func (Runtime) Available() error {
 	_, err := exec.LookPath("runc")
 	return err
 }
 
-func (Runtime) Start(m *driver.Machine) error {
+func (r Runtime) Start(m *driver.Machine) error {
 	if err := os.Mkdir(rootfs(m), 0o755); err != nil {
 		return err
 	}
 	if err := sh.Run("mount", "-o", "loop", m.Disk, rootfs(m)); err != nil {
 		return err
 	}
-	spec, err := json.MarshalIndent(containerSpec(m), "", "  ")
+	if err := agent.WriteNetConfig(rootfs(m), m.Init); err != nil {
+		return err
+	}
+	if m.Init.Mode != "" {
+		conf, err := json.Marshal(m.Init)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(initConfig(m), conf, 0o644); err != nil {
+			return err
+		}
+	}
+	spec, err := json.MarshalIndent(r.containerSpec(m), "", "  ")
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(m.RunDir, "config.json"), spec, 0o600); err != nil {
 		return err
 	}
-	log, err := os.OpenFile(filepath.Join(m.RunDir, "console.log"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600)
+	log, in, err := driver.OpenConsole(m)
 	if err != nil {
 		return err
 	}
 	defer log.Close()
-	// Detached: the container's stdio is the log file, and runc returns once
-	// init is running.
+	defer in.Close()
+	// Detached: the container's stdio is the console log and FIFO, and
+	// runc returns once init is running.
 	cmd := exec.Command("runc", "run", "--detach", "--bundle", m.RunDir, containerID(m))
-	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	return cmd.Run()
 }
 
 func (r Runtime) Stop(m *driver.Machine) error {
-	// SIGRTMIN+3 (37 on Linux) asks systemd for a clean halt; runc only
-	// takes it by number.
+	// SIGRTMIN+3 (37 on Linux) asks systemd (or cyac-init) for a clean
+	// halt; runc only takes it by number.
 	if err := sh.Run("runc", "kill", containerID(m), "37"); err != nil {
 		return err
 	}
@@ -107,13 +125,11 @@ func (Runtime) Grow(m *driver.Machine) error {
 	return sh.Run("resize2fs", dev)
 }
 
-func (Runtime) Exec(m *driver.Machine, args []string) error {
-	cmd := exec.Command("runc", append([]string{"exec", "-t", containerID(m)}, args...)...)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	return cmd.Run()
+func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
+	return exec.Command("runc", append([]string{"exec", "-t", containerID(m)}, args...)...), nil
 }
 
-func containerSpec(m *driver.Machine) *specs.Spec {
+func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 	caps := []string{
 		"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
 		"CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_SETFCAP",
@@ -124,18 +140,28 @@ func containerSpec(m *driver.Machine) *specs.Spec {
 	period := uint64(100_000)
 	quota := int64(m.CPUs) * int64(period)
 	mem := int64(m.MemMiB) << 20
+	args := m.Init.Args
+	var initMounts []specs.Mount
+	if m.Init.Mode != "" {
+		// cyac-init finds itself and its config in /run/cyac, as in a VM.
+		args = []string{"/run/cyac/init"}
+		initMounts = []specs.Mount{
+			{Destination: "/run/cyac/init", Type: "bind", Source: r.Init, Options: []string{"bind", "ro"}},
+			{Destination: "/run/cyac/config.json", Type: "bind", Source: initConfig(m), Options: []string{"bind", "ro"}},
+		}
+	}
 	return &specs.Spec{
 		Version:  specs.Version,
 		Root:     &specs.Root{Path: "rootfs"},
 		Hostname: m.Name,
 		Process: &specs.Process{
-			Args: m.Init,
+			Args: args,
 			// systemd reads $container to skip units that make no sense here.
 			Env:          []string{"container=cyac", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 			Cwd:          "/",
 			Capabilities: &specs.LinuxCapabilities{Bounding: caps, Effective: caps, Permitted: caps},
 		},
-		Mounts: []specs.Mount{
+		Mounts: append([]specs.Mount{
 			{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
 			{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
 			{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}},
@@ -146,7 +172,7 @@ func containerSpec(m *driver.Machine) *specs.Spec {
 			{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "rw"}},
 			{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=755"}},
 			{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=1777"}},
-		},
+		}, initMounts...),
 		Linux: &specs.Linux{
 			Namespaces: []specs.LinuxNamespace{
 				{Type: specs.PIDNamespace}, {Type: specs.IPCNamespace}, {Type: specs.UTSNamespace},
