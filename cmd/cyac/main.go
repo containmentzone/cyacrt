@@ -49,6 +49,7 @@ const usage = `usage: cyac <command> [args]
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
   unexpose <name>
+  prune                         delete unpacked images no box was made from
 
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
                                 the proxy serves :80 and :443 with Let's Encrypt;
@@ -190,6 +191,15 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 
 	case "unexpose":
 		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0]+"/route", nil, nil)
+
+	case "prune":
+		parse(fs, args, 0)
+		var p api.Pruned
+		if err := c.Do("POST", "/v1/prune", nil, &p); err != nil {
+			return err
+		}
+		fmt.Printf("freed %d MiB\n", p.Bytes>>20)
+		return nil
 
 	default:
 		fmt.Fprint(os.Stderr, usage)
