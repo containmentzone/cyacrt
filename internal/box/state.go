@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"syscall"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 
 	"github.com/containmentzone/cyacrt/internal/driver"
 )
@@ -36,6 +39,9 @@ type Box struct {
 	// empty means root.
 	User  string `json:"user,omitempty"`
 	Route *Route `json:"route,omitempty"`
+	// Digest is the image manifest the disk was seeded from, which keeps
+	// its base disk from being pruned.
+	Digest string `json:"digest,omitempty"`
 	// Up says the box should be running: start sets it, and stop or the
 	// box exiting on its own clears it. The daemon stops every box when it
 	// exits and starts the ones that are up again when it starts.
@@ -54,6 +60,7 @@ type Route struct {
 //
 //	<dir>/boxes/<name>.json   box record
 //	<dir>/disks/<name>.ext4   box disk
+//	<dir>/bases/<digest>.ext4 an image's filesystem, which box disks start as a copy of
 //	<dir>/run/<name>/         runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  the box's console, across runs
 type Store struct {
@@ -70,7 +77,10 @@ func ValidName(name string) bool { return validName.MatchString(name) }
 
 func (s Store) recordPath(name string) string { return filepath.Join(s.Dir, "boxes", name+".json") }
 func (s Store) DiskPath(name string) string   { return filepath.Join(s.Dir, "disks", name+".ext4") }
-func (s Store) RunDir(name string) string     { return filepath.Join(s.Dir, "run", name) }
+func (s Store) BasePath(digest v1.Hash) string {
+	return filepath.Join(s.Dir, "bases", digest.Hex+".ext4")
+}
+func (s Store) RunDir(name string) string { return filepath.Join(s.Dir, "run", name) }
 func (s Store) ConsoleLog(name string) string {
 	return filepath.Join(s.Dir, "logs", name+".console.log")
 }
@@ -79,7 +89,7 @@ func (s Store) ConsoleIn(name string) string { return filepath.Join(s.RunDir(nam
 // Lock takes an exclusive lock on the store for the life of the process,
 // so only one daemon owns a state directory.
 func (s Store) Lock() error {
-	for _, d := range []string{"boxes", "disks", "run", "logs"} {
+	for _, d := range []string{"boxes", "disks", "bases", "run", "logs"} {
 		if err := os.MkdirAll(filepath.Join(s.Dir, d), 0o700); err != nil {
 			return err
 		}
@@ -158,4 +168,50 @@ func (s Store) FreeID() (int, error) {
 		}
 	}
 	return 0, errors.New("out of box IDs")
+}
+
+// Prune removes the base disks of images no box was seeded from, and
+// whatever a crashed seed left next to them, and returns the bytes that
+// held. A box never reads its base again, so this only means the next box
+// of a pruned image unpacks it again.
+func (s Store) Prune() (int64, error) {
+	boxes, err := s.List()
+	if err != nil {
+		return 0, err
+	}
+	keep := map[string]bool{}
+	for _, b := range boxes {
+		if h, err := v1.NewHash(b.Digest); err == nil {
+			keep[s.BasePath(h)] = true
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(s.Dir, "bases", "*"))
+	if err != nil {
+		return 0, err
+	}
+	var freed int64
+	for _, path := range paths {
+		if keep[path] {
+			continue
+		}
+		freed += allocated(path)
+		if err := os.RemoveAll(path); err != nil {
+			return freed, err
+		}
+	}
+	return freed, nil
+}
+
+// allocated is the disk space the files under path take up.
+func allocated(path string) int64 {
+	var n int64
+	filepath.WalkDir(path, func(p string, d fs.DirEntry, err error) error {
+		if err == nil {
+			if fi, err := d.Info(); err == nil {
+				n += fi.Sys().(*syscall.Stat_t).Blocks * 512
+			}
+		}
+		return nil
+	})
+	return n
 }

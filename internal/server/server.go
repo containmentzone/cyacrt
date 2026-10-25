@@ -48,6 +48,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/boxes/{name}/route", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
 	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
+	mux.HandleFunc("POST /v1/prune", s.prune)
 	return logRequests(mux)
 }
 
@@ -235,6 +236,13 @@ func (s *Server) remove(b *box.Box) error {
 		return err
 	}
 	return s.RoutesChanged()
+}
+
+func (s *Server) prune(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, err := s.Store.Prune()
+	reply(w, api.Pruned{Bytes: n}, err)
 }
 
 func (s *Server) resize(w http.ResponseWriter, r *http.Request) {

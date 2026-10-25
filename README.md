@@ -8,9 +8,17 @@ The whole thing is meant to stay small enough to read in one sitting
 
 ## How it works
 
-**A box is a disk, not a container.** `cyac new` pulls an image once,
+**A box is a disk, not a container.** `cyac new` pulls an image,
 unpacks it into a sparse ext4 file, and adds a few files: the hostname, an
 `/etc/hosts` that resolves it, and an empty machine-id.
+The unpacked image is kept as a base disk in `$CYAC_DIR/bases`, one per
+image digest, so the next box of the same image is a copy of it, grown to
+its size, rather than another download and unpack. The copy is
+`cp --reflink=auto`, so on btrfs, XFS, or ZFS with block cloning
+(`zfs_bclone_enabled=1`) boxes share the image's blocks and only store
+what they change; elsewhere each box is a full sparse copy. A box never
+reads its base again, and `cyac prune` deletes the bases no box was made
+from.
 Every start also writes a systemd-networkd config with the box's static IP
 (`/etc/systemd/network/10-cyac.network`), so the box follows cyac's subnet,
 and rewrites `/etc/resolv.conf`
@@ -179,7 +187,7 @@ cyac stop web && cyac rm web
 ## Host requirements
 
 Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
-`losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
+`losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar` and `cp`. You also need
 `runc` for the runc runtime (on a cgroup v2 host), or `firecracker`, KVM
 and a guest kernel at `$CYAC_DIR/vmlinux` for the Firecracker runtime. The guest kernel
 needs ext4, virtio-blk/net, `CONFIG_IP_PNP`, initramfs support
@@ -258,7 +266,7 @@ over an hour. Every PR runs gofmt, `go vet`, `go test` and staticcheck.
 
 Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
 
-- seeding a disk
+- seeding a disk, and seeding a second box from the cached base
 - booting systemd under runc (`is-system-running` reports `running`)
 - reaching the box from the host
 - box-to-box and box-to-host traffic being blocked
