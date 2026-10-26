@@ -31,7 +31,7 @@ in
     package = lib.mkOption {
       type = lib.types.package;
       default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
-      description = "The cyac package. Its wrapper already carries runc, firecracker, iproute2, nftables and friends.";
+      description = "The cyac package. Its wrapper already carries runc, cloud-hypervisor, iproute2, nftables and friends.";
     };
 
     stateDir = lib.mkOption {
@@ -53,14 +53,14 @@ in
         How the host kernel provides virtualization. Must be set.
 
         - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
-          loads them). Pins cyac to the firecracker runtime. The guest
+          loads them). Pins cyac to the cloud-hypervisor runtime. The guest
           kernel is built from the host kernel's source by default.
         - pvm: no hardware virtualization needed, e.g. a cloud VM without
           nested virt. Boots the host into virt-pvm's kernel with pti=off,
           loads kvm-pvm instead of kvm-intel/kvm-amd, and pins cyac to the
-          firecracker-pvm runtime. x86_64 only.
+          cloud-hypervisor-pvm runtime. x86_64 only.
         - none: leaves the kernel alone and lets cyac pick a runtime itself
-          (firecracker, firecracker-pvm, then runc).
+          (cloud-hypervisor, cloud-hypervisor-pvm, then runc).
       '';
     };
 
@@ -78,7 +78,7 @@ in
         (`boot.kernelPackages.kernel`); for "pvm", the PVM guest kernel
       '';
       description = ''
-        Guest kernel (uncompressed vmlinux) for Firecracker, linked to
+        Guest kernel (uncompressed vmlinux) for Cloud Hypervisor, linked to
         stateDir/vmlinux, or stateDir/vmlinux-pvm with kernel = "pvm".
       '';
     };
@@ -168,7 +168,7 @@ in
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       environment.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
-        if pvm then "firecracker-pvm" else "firecracker"
+        if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor"
       );
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
