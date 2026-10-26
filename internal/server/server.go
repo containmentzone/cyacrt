@@ -88,12 +88,9 @@ func (s *Server) Shutdown() {
 }
 
 // Watch notices boxes whose runtime exited without a stop, every interval,
-// for the life of the daemon. It starts a VM that rebooted itself again,
-// unless it already did so maxRestarts times in the last minute, and
-// cleans up after anything else, which then shows as stopped.
+// for the life of the daemon, and cleans up after them, so they show as
+// stopped and aren't started again on the next boot.
 func (s *Server) Watch(interval time.Duration) {
-	const maxRestarts = 3
-	restarts := map[string][]time.Time{}
 	for range time.Tick(interval) {
 		s.mu.Lock()
 		boxes, err := s.Store.List()
@@ -101,29 +98,9 @@ func (s *Server) Watch(interval time.Duration) {
 			slog.Error("watch", "err", err)
 		}
 		for _, b := range boxes {
-			if !s.Store.Exited(b) {
-				continue
-			}
-			recent := restarts[b.Name][:0]
-			for _, t := range restarts[b.Name] {
-				if time.Since(t) < time.Minute {
-					recent = append(recent, t)
-				}
-			}
-			restarts[b.Name] = recent
-			switch {
-			case !s.Store.Rebooted(b):
+			if s.Store.Exited(b) {
 				slog.Info("box exited on its own; marking it stopped", "box", b.Name)
 				s.Store.Exit(b)
-			case len(recent) >= maxRestarts:
-				slog.Error("box keeps rebooting; leaving it stopped", "box", b.Name, "restarts", len(recent))
-				s.Store.Exit(b)
-			default:
-				slog.Info("box rebooted; starting it again", "box", b.Name)
-				restarts[b.Name] = append(recent, time.Now())
-				if err := s.Store.Start(b); err != nil {
-					slog.Error("restart failed", "box", b.Name, "err", err)
-				}
 			}
 		}
 		s.mu.Unlock()

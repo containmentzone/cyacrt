@@ -2,8 +2,8 @@
 # KVM to hosts without hardware virtualization, such as cloud VMs without
 # nested virt. It is not upstream: the host runs virt-pvm's kernel and loads
 # kvm-pvm, which serves /dev/kvm, and guests need a PVM-enabled kernel.
-# Plain upstream Firecracker boots PVM guests; Loophole Labs' fork only adds
-# snapshot support, which cyac doesn't use.
+# Stock Cloud Hypervisor boots PVM guests (cyac caps max_phys_bits for it,
+# as virt-pvm's Kata guide does).
 {
   lib,
   callPackage,

@@ -1,4 +1,4 @@
-# An uncompressed guest vmlinux for Firecracker, built from any kernel
+# An uncompressed guest vmlinux for Cloud Hypervisor, built from any kernel
 # source (e.g. the host's, so guest and host match). Without a configfile it
 # starts from defconfig plus kvm_guest.config. Either way, everything a box
 # needs is built in: there are no modules on the box's disk.
@@ -19,12 +19,13 @@
 }:
 
 let
-  # Firecracker devices and boot (virtio-mmio from the command line, ip=,
-  # serial console), cyac-init's initramfs and vsock, the root fs, and what
-  # systemd wants.
+  # Cloud Hypervisor devices and boot (virtio-pci, ip=, serial console;
+  # on x86_64 a PVH entry point and ACPI, which is how the guest powers the
+  # VM off), cyac-init's initramfs and vsock, the root fs, and what systemd
+  # wants.
   needed = [
-    "VIRTIO_MMIO"
-    "VIRTIO_MMIO_CMDLINE_DEVICES"
+    "PCI"
+    "VIRTIO_PCI"
     "VIRTIO_BLK"
     "VIRTIO_NET"
     "SERIAL_8250"
@@ -45,6 +46,10 @@ let
     "MEMCG"
     "BPF_SYSCALL"
     "CGROUP_BPF"
+  ]
+  ++ lib.optionals stdenv.hostPlatform.isx86_64 [
+    "PVH"
+    "ACPI"
   ];
 in
 stdenv.mkDerivation {

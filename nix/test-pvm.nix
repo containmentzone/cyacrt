@@ -1,5 +1,5 @@
 # A VM whose CPU has no VMX/SVM, like a cloud VM without nested virt, boots
-# the PVM host kernel; cyac must pick firecracker-pvm and boot boxes under
+# the PVM host kernel; cyac must pick cloud-hypervisor-pvm and boot boxes under
 # it, through cyac-init: a busybox disk in init and command mode, and a
 # NixOS disk. The disks are hand-made, since the test has no registry.
 # Run with `nix build .#checks.x86_64-linux.pvm -L` on a host with KVM.
@@ -140,7 +140,7 @@ pkgs.testers.runNixOSTest {
 
     host.succeed("cyac start t")
     host.wait_until_succeeds("grep cyac-pvm-ok /var/lib/cyac/logs/t.console.log", timeout=120)
-    host.succeed("cyac ls | grep -F 'running (firecracker-pvm)'")
+    host.succeed("cyac ls | grep -F 'running (cloud-hypervisor-pvm)'")
     host.succeed("ping -c1 -W5 10.42.0.2")
     host.wait_until_succeeds("cyac shell t busybox echo agent-ok | grep agent-ok", timeout=60)
     host.succeed("cyac stop t")
@@ -167,6 +167,15 @@ pkgs.testers.runNixOSTest {
     )
     host.wait_until_succeeds("cyac shell n systemctl is-system-running | grep -E 'running|degraded'", timeout=300)
     host.succeed("cyac shell n cat /etc/os-release | grep -F 'ID=nixos'")
+
+    # A guest reboot resets the VM in place: the box stays up.
+    host.execute("cyac shell n systemctl reboot")
+    host.wait_until_succeeds("grep -F 'reboot: Restarting system' /var/lib/cyac/logs/n.console.log", timeout=120)
+    host.wait_until_succeeds("cyac shell n systemctl is-system-running | grep -E 'running|degraded'", timeout=300)
+    host.succeed("cyac ls | grep -E '^n .*running'")
+
+    # A stop is a clean poweroff, asked for through the agent.
     host.succeed("cyac stop n")
+    host.succeed("grep -F 'reboot: Power down' /var/lib/cyac/logs/n.console.log")
   '';
 }

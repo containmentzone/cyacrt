@@ -37,23 +37,23 @@ picks one by hand:
 
 The same disk boots under one of two runtime drivers. At start, cyac uses the first one this host can run:
 
-| | `firecracker` (VM) | `runc` (container) |
+| | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
-| When | `/dev/kvm` usable, `firecracker` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
-| Runs under | Firecracker | runc |
+| When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
+| Runs under | Cloud Hypervisor | runc |
 | Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | disk loop-mounted on the host |
 | Growing the disk | host extends the file, the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | host extends the file and runs online `resize2fs` |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
 
 The runc runtime gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
-code on my own machine", not as a sandbox. Set `CYAC_RUNTIME=firecracker`
+code on my own machine", not as a sandbox. Set `CYAC_RUNTIME=cloud-hypervisor`
 or `CYAC_RUNTIME=runc` to force one.
 
 On a host without hardware virtualization, such as a cloud VM without nested
-virt, Firecracker can still run on [PVM](#pvm-firecracker-without-hardware-virtualization).
+virt, Cloud Hypervisor can still run on [PVM](#pvm-vms-without-hardware-virtualization).
 When the `kvm-pvm` module is loaded, cyac uses a third runtime,
-`firecracker-pvm`, in place of `firecracker`. It's the same VMM with the PVM
+`cloud-hypervisor-pvm`, in place of `cloud-hypervisor`. It's the same VMM with the PVM
 guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
 boot on PVM.
 
@@ -101,7 +101,7 @@ pause mode only.
 
 **Getting in.** `cyac shell` runs a command on a pty in the box. Under runc
 that is `runc exec`. In a VM the daemon reaches cyac-init's agent over
-Firecracker's vsock device, which only the host can reach, so it needs no
+Cloud Hypervisor's vsock device, which only the host can reach, so it needs no
 sshd, keys or guest network. The image can still run sshd for its own users.
 If the image names a login user, with the label `cyac.nullvoid.space/login-user`
 or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
@@ -118,15 +118,16 @@ it shows the last output, which is where boot failures end up. Under runc
 the log only gets what PID 1 prints before it detaches from its stdio
 (systemd does so right away), so use `cyac shell` there.
 
-**Reboots.** Firecracker can't reset a VM, so a guest reboot makes it exit.
-The daemon checks every 2 seconds for boxes whose runtime exited without
-`cyac stop`. If the console log ends with the kernel's `reboot: Restarting
-system`, it starts the box again, up to 3 times a minute. Anything else
-(a poweroff, a crash, a command-mode box whose command exited, or any exit
-under runc, where systemd's output doesn't reach the console) leaves the box
-stopped. cyac-init ends a VM with a reset too, since that's the one thing
-that stops Firecracker, but it prints `cyac-init: powering off` first, so
-the daemon doesn't restart it.
+**Reboots and stops.** A guest reboot resets the VM in place; Cloud
+Hypervisor keeps running. A guest poweroff (ACPI) ends it. `cyac stop` asks
+the agent to run `cyac-init poweroff`, which sends PID 1 `SIGRTMIN+4`
+(systemd powers off; cyac-init stops the box), presses the ACPI power button
+for a guest without a working agent, and kills the VM after 30 seconds. The
+daemon checks every 2 seconds for boxes whose runtime exited without `cyac
+stop` (a poweroff, a crash, a command-mode box whose command exited, or any
+exit under runc) and leaves them stopped. Guest kernels boot without
+`panic=`, so a panicked guest halts rather than rebooting in a loop; its
+console log says why.
 
 **Boxes live with the daemon.** When the daemon gets SIGTERM it stops every
 box, all at once, and deletes their interfaces, the bridge and its nftables
@@ -148,7 +149,7 @@ change before the API is reachable from anywhere but the host.
 Two interfaces in `internal/driver` are the seams:
 
 - **`driver.Runtime`** boots a box's disk. It has two implementations,
-  `internal/runtime/firecracker` and `internal/runtime/runc`.
+  `internal/runtime/cloudhypervisor` and `internal/runtime/runc`.
 - **`driver.Network`** gives a box an address and a link (a tap device or
   a netns). Its implementation is `internal/network/bridge`.
 
@@ -180,25 +181,26 @@ cyac stop web && cyac rm web
 
 Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
 `losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
-`runc` for the runc runtime (on a cgroup v2 host), or `firecracker`, KVM
-and a guest kernel at `$CYAC_DIR/vmlinux` for the Firecracker runtime. The guest kernel
-needs ext4, virtio-blk/net, `CONFIG_IP_PNP`, initramfs support
-(`CONFIG_BLK_DEV_INITRD`) and vsock (`CONFIG_VIRTIO_VSOCKETS`); the guest
-kernels the flake builds have them all. The daemon finds `cyac-init` next to
+`runc` for the runc runtime (on a cgroup v2 host), or `cloud-hypervisor`,
+KVM and a guest kernel at `$CYAC_DIR/vmlinux` for the Cloud Hypervisor
+runtime. The guest kernel needs ext4, virtio-pci with virtio-blk/net,
+`CONFIG_IP_PNP`, initramfs support (`CONFIG_BLK_DEV_INITRD`), vsock
+(`CONFIG_VIRTIO_VSOCKETS`), and on x86_64 a PVH entry point (`CONFIG_PVH`)
+and ACPI; the guest kernels the flake builds have them all. The daemon finds `cyac-init` next to
 its own binary, or at `$CYAC_INIT`. If another firewall (Docker, for example) sets the FORWARD policy
 to drop, allow `cyac0`.
 
 ## Nix
 
 `nix build` produces `cyac` wrapped with every tool it calls (runc,
-firecracker, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
+cloud-hypervisor, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
 needs nothing else on PATH, and a static `cyac-init` in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
 and `bridge` modules, enables IP forwarding, creates the state dir, runs
 `cyac daemon` as `cyac.service` and links the guest kernel. `kernel` must be
 set: `"kvm"` or `"pvm"` sets up the host kernel for that and pins the daemon
-to `firecracker` or `firecracker-pvm` with `CYAC_RUNTIME`; `"none"` changes
+to `cloud-hypervisor` or `cloud-hypervisor-pvm` with `CYAC_RUNTIME`; `"none"` changes
 nothing and leaves the choice to cyac's detection:
 
 ```nix
@@ -234,22 +236,23 @@ If you set `networking.nftables.flushRuleset = true`, every firewall reload
 also drops cyac's table until the next `cyac start`. The module warns about
 this.
 
-### PVM: Firecracker without hardware virtualization
+### PVM: VMs without hardware virtualization
 
 [PVM](https://github.com/virt-pvm) is an out-of-tree KVM backend that
-virtualizes using page tables rather than VMX/SVM, following
-[this post](https://blog.alexellis.io/how-to-run-firecracker-without-kvm-on-regular-cloud-vms/).
+virtualizes using page tables rather than VMX/SVM. It's a nice-to-have:
+runc is the usual answer on hosts without KVM.
 `services.cyac.kernel = "pvm"` switches the host to virt-pvm's 6.12 kernel
 with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps `kvm-intel` and
 `kvm-amd` from loading, and links a PVM guest kernel (built from virt-pvm's
 guest config) to `$CYAC_DIR/vmlinux-pvm`. It's x86_64 only. The host kernel
 isn't in any binary cache, so the first build compiles it.
 
-Stock Firecracker is enough. The PVM fork that post uses only adds snapshot
-state, which cyac doesn't use.
+Stock Cloud Hypervisor is enough. Under PVM, cyac caps the guest's
+physical address width (`max_phys_bits=43`), as virt-pvm's Kata guide does.
 
 `nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
-VMX/SVM from the VM's CPU and boots a small box under `firecracker-pvm`.
+VMX/SVM from the VM's CPU and boots small boxes and a NixOS disk under
+`cloud-hypervisor-pvm`, including an in-place reboot and a clean stop.
 The `pvm` workflow runs it on GitHub's runners, which have KVM for the
 outer VM, but only when started by hand, since building the kernel takes
 over an hour. Every PR runs gofmt, `go vet`, `go test` and staticcheck.
@@ -270,14 +273,16 @@ Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
 - command and pause mode under runc, including an image `USER`
   (`nginxinc/nginx-unprivileged`) and stopping each
 - cyac-init's initramfs under qemu (TCG) with the flake's guest kernel: a
-  busybox disk in init, command and pause mode (stopped by Ctrl-Alt-Del),
-  and a NixOS disk booting to its login prompt and shutting down cleanly
+  busybox disk in init, command and pause mode, and a NixOS disk booting to
+  its login prompt and shutting down cleanly (with the Firecracker-era
+  kernel arguments and Ctrl-Alt-Del stop)
 - the exec agent's protocol, over a pipe
 
 Not tested yet:
 
-- **The Firecracker runtime, and exec over vsock.** There was no KVM in the
-  sandbox; the PVM VM test covers both in CI.
+- **The Cloud Hypervisor runtime, exec over vsock, and stop through the
+  agent.** There was no KVM in the sandbox; the PVM VM test covers them, run
+  by hand.
 - **Online resize under runc.** The sandbox lacked `CAP_SYS_RESOURCE`.
 - **exeuntu itself.** Its layer blobs weren't reachable from the sandbox. Check that its `/etc/fstab` root entry matches a bare ext4 filesystem on `/dev/vda`.
 
@@ -286,6 +291,6 @@ Not tested yet:
 - Authentication on the API socket.
 - Terminal resizes after `cyac shell` starts, and passing its exit status back.
 - An SSH front door.
-- Running Firecracker under its jailer.
+- Confining Cloud Hypervisor with its `--landlock` rules.
 - Auto-starting a box on request.
 - exe-style services on 169.254.169.254: one host proxy that holds secrets the box never sees. When that lands, it must pin each box's source IP to its interface, because boxes control their own IP.

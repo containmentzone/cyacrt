@@ -15,7 +15,7 @@
         rec {
           cyac = pkgs.callPackage ./nix/package.nix { };
           default = cyac;
-          # A Firecracker guest vmlinux from nixpkgs' default kernel. On NixOS,
+          # A Cloud Hypervisor guest vmlinux from nixpkgs' default kernel. On NixOS,
           # services.cyac.kernel = "kvm" builds one from the host's kernel.
           guest-kernel = pkgs.callPackage ./nix/guest-kernel.nix { inherit (pkgs.linux) src version; };
         }
@@ -31,7 +31,7 @@
         )
       );
 
-      # Boots a box under firecracker-pvm in a VM with no VMX. Needs KVM.
+      # Boots a box under cloud-hypervisor-pvm in a VM with no VMX. Needs KVM.
       checks.x86_64-linux.pvm = import ./nix/test-pvm.nix {
         inherit self;
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
