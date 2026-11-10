@@ -1,0 +1,4 @@
+# sealed: no gateway, only the proxy
+[Network]
+Index=1
+Attach=service:llm-proxy

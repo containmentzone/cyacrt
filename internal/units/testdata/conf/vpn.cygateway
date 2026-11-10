@@ -1,0 +1,4 @@
+[Gateway]
+Kind=wireguard
+Config=/run/keys/wg0.conf
+DNS=10.64.0.1
