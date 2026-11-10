@@ -4,6 +4,7 @@ package bridge
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -87,10 +88,23 @@ func (Network) Setup() error {
 	return nil
 }
 
-// Teardown deletes the bridge and the nftables table. The daemon calls it
-// on start and exit, so a bridge from an older layout (cyac used
-// 10.88.0.0/16 before) or a crashed daemon never outlives it.
+// Teardown deletes the bridge, every box interface and netns still around,
+// and the nftables table. The daemon calls it on start and exit, so a
+// bridge from an older layout (cyac used 10.88.0.0/16 before) or a crashed
+// daemon never outlives it.
 func (Network) Teardown() {
+	ifaces, _ := net.Interfaces()
+	for _, i := range ifaces {
+		if strings.HasPrefix(i.Name, "cyac-") {
+			sh.Run("ip", "link", "del", i.Name)
+		}
+	}
+	netns, _ := os.ReadDir("/run/netns")
+	for _, ns := range netns {
+		if strings.HasPrefix(ns.Name(), "cyac-") {
+			sh.Run("ip", "netns", "del", ns.Name())
+		}
+	}
 	sh.Run("ip", "link", "del", bridgeName)
 	sh.Run("nft", "delete", "table", "inet", "cyac")
 }

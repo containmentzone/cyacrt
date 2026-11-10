@@ -71,6 +71,14 @@ func main() {
 	switch cmd {
 	case "daemon":
 		err = daemon(socket, args)
+	case "teardown":
+		// Internal: systemd runs this after the daemon exits, to clean up
+		// if the daemon was killed before it could. It refuses to run
+		// while a daemon owns the state directory.
+		var s box.Store
+		if s, err = lockStore(); err == nil {
+			s.Shutdown()
+		}
 	case "agent-exec":
 		// Internal: the daemon runs this on a pty to exec into a VM.
 		if len(args) < 2 {
@@ -223,26 +231,11 @@ func daemon(socket string, args []string) error {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
 
-	dir := env("CYAC_DIR", "/var/lib/cyac")
-	self, err := os.Executable()
+	s, err := lockStore()
 	if err != nil {
 		return err
 	}
-	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
-	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
-	s := box.Store{
-		Dir: dir,
-		Net: bridge.Network{DNS: "1.1.1.1"},
-		Runtimes: []driver.Runtime{
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
-			runc.Runtime{Init: init},
-		},
-	}
-	if err := s.Lock(); err != nil {
-		return err
-	}
-	slog.Info("cyac daemon starting", "state_dir", dir, "socket", socket, "CYAC_RUNTIME", os.Getenv("CYAC_RUNTIME"))
+	slog.Info("cyac daemon starting", "state_dir", s.Dir, "socket", socket, "CYAC_RUNTIME", os.Getenv("CYAC_RUNTIME"))
 	for _, rt := range s.Runtimes {
 		if err := rt.Available(); err != nil {
 			slog.Info("runtime unavailable", "runtime", rt.Name(), "reason", err)
@@ -280,7 +273,7 @@ func daemon(socket string, args []string) error {
 		Prompt:     autocert.AcceptTOS,
 		Email:      *email,
 		HostPolicy: px.HostPolicy,
-		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
+		Cache:      autocert.DirCache(filepath.Join(s.Dir, "acme")),
 	}
 	// :80 answers ACME challenges and redirects everything else to HTTPS.
 	go func() { log.Fatal(proxyServer(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
@@ -295,6 +288,27 @@ func daemon(socket string, args []string) error {
 	slog.Info("stopping boxes before exiting", "signal", <-sigs)
 	srv.Shutdown()
 	return nil
+}
+
+// lockStore opens the state directory, which only one process may own.
+func lockStore() (box.Store, error) {
+	dir := env("CYAC_DIR", "/var/lib/cyac")
+	self, err := os.Executable()
+	if err != nil {
+		return box.Store{}, err
+	}
+	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
+	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
+	s := box.Store{
+		Dir: dir,
+		Net: bridge.Network{DNS: "1.1.1.1"},
+		Runtimes: []driver.Runtime{
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
+			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
+			runc.Runtime{Init: init},
+		},
+	}
+	return s, s.Lock()
 }
 
 var validDomain = regexp.MustCompile(`^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
