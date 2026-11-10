@@ -191,6 +191,11 @@ in
         # The daemon stops its boxes on SIGTERM (each gets up to 30s for a
         # clean shutdown, all at once); whatever is left after that is killed.
         KillMode = "mixed";
+        # Room for those 30s, whatever the system-wide default is. Past it,
+        # systemd kills the daemon before it removes cyac0 and the box
+        # interfaces, so ExecStopPost does that once everything is gone.
+        TimeoutStopSec = "90s";
+        ExecStopPost = "${lib.getExe cfg.package} teardown";
         Restart = "on-failure";
       };
     };

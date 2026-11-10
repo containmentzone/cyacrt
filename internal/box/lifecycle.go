@@ -201,18 +201,24 @@ func (s Store) Boot() error {
 }
 
 // Shutdown is the daemon's exit: it stops every running box, all at once,
-// and removes host networking. Boxes stay marked up, so the next Boot
-// starts them again.
+// cleans up after the rest, and removes host networking. Boxes stay marked
+// up, so the next Boot starts them again. `cyac teardown` runs it too, after
+// the daemon is gone, in case the daemon was killed before it got here.
 func (s Store) Shutdown() {
 	boxes, _ := s.List()
 	var wg sync.WaitGroup
 	for _, b := range boxes {
-		if s.running(b) != nil {
-			wg.Go(func() { s.halt(b) })
-		}
+		wg.Go(func() {
+			if s.running(b) != nil {
+				s.halt(b)
+			} else {
+				s.cleanup(b) // its runtime died, but its interface may not have
+			}
+		})
 	}
 	wg.Wait()
 	s.Net.Teardown()
+	slog.Info("removed host networking")
 }
 
 // rotate keeps one old console log once the current one passes 8 MiB,
