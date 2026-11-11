@@ -194,7 +194,7 @@ func Load(dir string) (*Config, []Problem, error) {
 			probs = append(probs, Problem{kind, name, err})
 		}
 	}
-	return c, append(probs, c.check()...), nil
+	return c, append(probs, c.check(probs)...), nil
 }
 
 // Path is where the file for an object lives in dir.
@@ -461,9 +461,21 @@ func parseWorkload(f *fields) (Workload, error) {
 // check resolves references between objects. It drops every object that
 // refers to a missing or dropped one, until nothing changes, and reports
 // each drop.
-func (c *Config) check() []Problem {
+func (c *Config) check(prior []Problem) []Problem {
 	var probs []Problem
+	// Why each object is missing, so a dependent's error can say so.
+	reasons := map[string]error{}
+	for _, p := range prior {
+		reasons[p.Kind+"/"+p.Name] = p.Err
+	}
+	why := func(kind, name string) error {
+		if err := reasons[kind+"/"+name]; err != nil {
+			return err
+		}
+		return fmt.Errorf("no file %s", name+"."+kind)
+	}
 	drop := func(kind, name string, err error) {
+		reasons[kind+"/"+name] = err
 		probs = append(probs, Problem{kind, name, err})
 		switch kind {
 		case KindGateway:
@@ -494,21 +506,21 @@ func (c *Config) check() []Problem {
 		for _, name := range Sorted(c.Networks) {
 			n := c.Networks[name]
 			if n.Gateway != "" && c.Gateways[n.Gateway] == nil {
-				drop(KindNetwork, name, fmt.Errorf("gateway %s: not usable", n.Gateway))
+				drop(KindNetwork, name, fmt.Errorf("gateway %s: %w", n.Gateway, why(KindGateway, n.Gateway)))
 				changed = true
 			}
 		}
 		for _, name := range Sorted(c.Services) {
 			s := c.Services[name]
 			if c.Gateways[s.Gateway] == nil {
-				drop(KindService, name, fmt.Errorf("gateway %s: not usable", s.Gateway))
+				drop(KindService, name, fmt.Errorf("gateway %s: %w", s.Gateway, why(KindGateway, s.Gateway)))
 				changed = true
 			}
 		}
 		for _, name := range Sorted(c.Networks) {
 			for _, s := range c.Networks[name].Services {
 				if c.Services[s] == nil {
-					drop(KindNetwork, name, fmt.Errorf("service %s: not usable", s))
+					drop(KindNetwork, name, fmt.Errorf("service %s: %w", s, why(KindService, s)))
 					changed = true
 					break
 				}
@@ -516,7 +528,7 @@ func (c *Config) check() []Problem {
 		}
 		for _, name := range Sorted(c.Boxes) {
 			if c.Networks[c.Boxes[name].Network] == nil {
-				drop(KindBox, name, fmt.Errorf("network %s: not usable", c.Boxes[name].Network))
+				drop(KindBox, name, fmt.Errorf("network %s: %w", c.Boxes[name].Network, why(KindNetwork, c.Boxes[name].Network)))
 				changed = true
 			}
 		}

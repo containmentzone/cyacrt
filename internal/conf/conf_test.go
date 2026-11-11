@@ -146,9 +146,14 @@ func TestCascade(t *testing.T) {
 		"web.cynetwork":   "[Network]\nIndex=2\nAttach=gateway:out\n",
 		"b.cybox":         strings.NewReplacer("dev", "web", "10.42.1.10", "10.42.2.10").Replace(bx),
 	})
-	for _, key := range []string{"proxy.cyservice", "dev.cynetwork", "a.cybox"} {
-		if errs[key] == "" {
-			t.Errorf("%s: no problem reported", key)
+	// Each error carries the root cause down the chain.
+	for key, want := range map[string]string{
+		"proxy.cyservice": "gateway gone: no file gone.cygateway",
+		"dev.cynetwork":   "service proxy: gateway gone: no file gone.cygateway",
+		"a.cybox":         "network dev: service proxy: gateway gone: no file gone.cygateway",
+	} {
+		if errs[key] != want {
+			t.Errorf("%s: %q, want %q", key, errs[key], want)
 		}
 	}
 	if len(errs) != 3 {
@@ -210,5 +215,16 @@ func TestINIContinuation(t *testing.T) {
 	}
 	if len(secs) != 1 || len(secs[0].entries) != 1 || secs[0].entries[0].value != "one two" {
 		t.Fatalf("got %+v", secs)
+	}
+}
+
+// A file that doesn't parse names its error in its dependents' too.
+func TestCascadeFileError(t *testing.T) {
+	_, errs := load(t, map[string]string{
+		"out.cygateway": "[Gateway]\nIndex=0\nKind=tor\n",
+		"web.cynetwork": "[Network]\nIndex=2\nAttach=gateway:out\n",
+	})
+	if got := errs["web.cynetwork"]; !strings.HasPrefix(got, "gateway out: ") || !strings.Contains(got, "want direct or wireguard") {
+		t.Errorf("web.cynetwork: %q", got)
 	}
 }
