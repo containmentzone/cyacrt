@@ -1,10 +1,9 @@
-// Package driver defines the two seams of cyac: a Runtime boots a box's
-// disk, and a Network gives the box a link and an address. Drivers live in
-// internal/runtime/* and internal/network/*; package box drives them.
+// Package driver defines cyac's runtime seam: a Runtime boots a workload's
+// disk. Runtimes live in internal/runtime/*; package run drives them,
+// after the workload's render plan has built its link.
 package driver
 
 import (
-	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -15,7 +14,6 @@ import (
 // Machine is everything a driver needs to know about one box.
 type Machine struct {
 	Name   string
-	ID     int    // small integer, unique per host
 	Disk   string // path to the box's ext4 disk
 	RunDir string // private scratch dir; exists only while running
 	// The init's console: runtimes append its output to ConsoleLog, which
@@ -25,8 +23,8 @@ type Machine struct {
 	Init       agent.Config // what runs as PID 1
 	CPUs       int
 	MemMiB     int
-	Addr       Addr // from Network.Addr
-	Link       Link // set by Network.Attach before Runtime.Start
+	Addr       Addr // a VM's address, for its kernel command line
+	Link       Link // built by the render plan before Runtime.Start
 	// MAC is eth0's address when the network pins one (VMs only: a
 	// container's netns already has it). Empty lets the runtime pick.
 	MAC string
@@ -44,12 +42,6 @@ type Addr struct {
 	DNS     string
 }
 
-// Networkd is a's systemd-networkd config for the box's eth0.
-func (a Addr) Networkd() string {
-	return fmt.Sprintf("# written by cyac on every start\n[Match]\nName=eth0\n\n[Network]\nAddress=%s/%d\nGateway=%s\nDNS=%s\n",
-		a.IP, a.Prefix, a.Gateway, a.DNS)
-}
-
 // LinkKind is the kind of attachment a runtime consumes.
 type LinkKind int
 
@@ -58,7 +50,7 @@ const (
 	Netns                 // a network namespace with eth0 configured
 )
 
-// Link is what Network.Attach created for a box.
+// Link is what a box's render plan built for it.
 type Link struct {
 	HostIface string // tap device, or the host end of a veth
 	Netns     string // netns path; empty for Tap
@@ -100,18 +92,4 @@ type Runtime interface {
 	// Command returns a command that runs args inside the box when started
 	// with a terminal on its stdio (the daemon attaches a pty).
 	Command(m *Machine, args []string) (*exec.Cmd, error)
-}
-
-// Network gives boxes links and addresses.
-type Network interface {
-	// Setup prepares host-wide state (bridges, firewall). Idempotent.
-	Setup() error
-	// Teardown removes what Setup made, once no box is attached.
-	Teardown()
-	// Addr returns the static address for box id.
-	Addr(id int) Addr
-	// Attach creates m's link of the given kind and sets m.Link.
-	Attach(m *Machine, kind LinkKind) error
-	// Detach removes whatever Attach created. Idempotent.
-	Detach(m *Machine)
 }

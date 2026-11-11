@@ -27,12 +27,10 @@ import (
 
 	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/api"
-	"github.com/containmentzone/cyacrt/internal/box"
 	"github.com/containmentzone/cyacrt/internal/client"
 	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
-	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/run"
 	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
@@ -42,13 +40,9 @@ import (
 
 const usage = `usage: cyac <command> [args]
 
-  new <name> --image <ref> [--size 10G] [--cpus 1] [--mem 1024]
-      [--init cmd] [--mode init|command|pause]
-  start <name>
-  stop <name>
-  rm <name>
   ls
-  resize <name> <size>
+  start <name>                  systemctl start cybox@<name>
+  stop <name>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
@@ -62,6 +56,9 @@ const usage = `usage: cyac <command> [args]
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
                                 the proxy serves :80 and :443 with Let's Encrypt;
                                 --group lets that group use the socket, like docker's
+
+Boxes, networks, gateways and services are files in /var/lib/cyac/conf
+(see cyac-generator); write them by hand for now, then systemctl daemon-reload.
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
@@ -178,34 +175,8 @@ func env(key, def string) string {
 func dispatch(c *client.Client, cmd string, args []string) error {
 	fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 	switch cmd {
-	case "new":
-		image := fs.String("image", "", "OCI image to seed the disk from")
-		size := fs.String("size", "10G", "disk size")
-		cpus := fs.Int("cpus", 1, "vCPUs")
-		mem := fs.Int("mem", 1024, "memory in MiB")
-		init := fs.String("init", "", "command, space-separated (default: the image's ENTRYPOINT+CMD)")
-		mode := fs.String("mode", "", "init (the command is PID 1), command (run it like a container) or pause (run nothing); default: init if it's named init or systemd")
-		pos := parse(fs, args, 1)
-		bytes, err := parseSize(*size)
-		if err != nil {
-			return err
-		}
-		req := api.NewBox{Name: pos[0], Image: *image, SizeBytes: bytes, CPUs: *cpus, MemMiB: *mem, Init: strings.Fields(*init), Mode: *mode}
-		start := time.Now()
-		b, err := c.Create(req, func(msg string) {
-			fmt.Fprintf(os.Stderr, "[%4.0fs] %s\n", time.Since(start).Seconds(), msg)
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "[%4.0fs] %s is %s at %s\n", time.Since(start).Seconds(), b.Name, b.Status, b.IP)
-		return nil
-
 	case "start", "stop":
 		return c.Do("POST", "/v1/boxes/"+parse(fs, args, 1)[0]+"/"+cmd, nil, nil)
-
-	case "rm":
-		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0], nil, nil)
 
 	case "ls":
 		parse(fs, args, 0)
@@ -214,7 +185,7 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 			return err
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "NAME\tIP\tSTATUS\tIMAGE\tROUTE")
+		fmt.Fprintln(w, "NAME\tNETWORK\tIP\tSTATUS\tIMAGE\tROUTE")
 		for _, b := range boxes {
 			route := ""
 			if r := b.Route; r != nil {
@@ -224,17 +195,9 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 				}
 				route = fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis)
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", b.Name, b.IP, b.Status, b.Image, route)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", b.Name, b.Network, b.IP, b.Status, b.Image, route)
 		}
 		return w.Flush()
-
-	case "resize":
-		pos := parse(fs, args, 2)
-		bytes, err := parseSize(pos[1])
-		if err != nil {
-			return err
-		}
-		return c.Do("POST", "/v1/boxes/"+pos[0]+"/resize", api.Resize{SizeBytes: bytes}, nil)
 
 	case "shell":
 		root := fs.Bool("root", false, "run as root instead of the image's login user")
@@ -308,41 +271,34 @@ func daemon(socket string, args []string) error {
 	if err != nil {
 		return err
 	}
-	s := box.Store{Dir: dir, Net: bridge.Network{DNS: "1.1.1.1"}, Runtimes: rts}
-	if err := s.Lock(); err != nil {
+	if err := lock(dir); err != nil {
 		return err
 	}
-	slog.Info("cyac daemon starting", "state_dir", dir, "socket", socket, "CYAC_RUNTIME", os.Getenv("CYAC_RUNTIME"))
-	for _, rt := range s.Runtimes {
-		if err := rt.Available(); err != nil {
-			slog.Info("runtime unavailable", "runtime", rt.Name(), "reason", err)
-		} else {
-			slog.Info("runtime available", "runtime", rt.Name())
-		}
-	}
-	if err := s.Boot(); err != nil {
-		return err
-	}
-	boxes, err := s.List()
-	if err != nil {
-		return err
-	}
-	for _, b := range boxes {
-		slog.Info("box", "box", b.Name, "status", s.Status(b), "ip", s.IP(b), "exposed", b.Route != nil)
-	}
-	px := &proxy.Server{Store: s, Domain: *domain}
+	slog.Info("cyac daemon starting", "state_dir", dir, "conf", conf.Dir, "socket", socket)
+	routes := filepath.Join(dir, "routes")
+	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {
 		return err
 	}
+	// Boxes come and go with their units and their files; pick that up.
+	go func() {
+		for range time.Tick(5 * time.Second) {
+			if err := px.Reload(); err != nil {
+				slog.Error("proxy reload", "err", err)
+			}
+		}
+	}()
 
 	ln, err := listenUnix(socket, *group)
 	if err != nil {
 		return err
 	}
-	srv := &server.Server{Store: s, Domain: *domain, RoutesChanged: px.Reload}
+	srv := &server.Server{
+		Conf: conf.Dir, Routes: routes, Domain: *domain, RoutesChanged: px.Reload,
+		Run: &run.Runner{State: dir, Runtimes: rts},
+	}
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
-	go srv.Watch(2 * time.Second)
 
 	// Certificates are only requested on demand, during the first TLS
 	// handshake for an exposed host; HostPolicy refuses every other name.
@@ -359,11 +315,27 @@ func daemon(socket string, args []string) error {
 	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
 	go func() { log.Fatal(https.ListenAndServeTLS("", "")) }()
 
-	// Boxes don't outlive the daemon; the next start brings them back.
+	// Boxes are their units' business; they outlive the daemon.
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
-	slog.Info("stopping boxes before exiting", "signal", <-sigs)
-	srv.Shutdown()
+	slog.Info("exiting", "signal", <-sigs)
+	return nil
+}
+
+// lock takes an exclusive lock on dir for the life of the process, so
+// only one daemon serves it.
+func lock(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	// Released when the process exits.
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		return fmt.Errorf("%s is in use by another cyac daemon", dir)
+	}
 	return nil
 }
 
@@ -425,18 +397,4 @@ func parse(fs *flag.FlagSet, args []string, n int) []string {
 		os.Exit(2)
 	}
 	return pos
-}
-
-// parseSize accepts plain bytes or a K/M/G/T suffix (powers of 1024).
-func parseSize(v string) (int64, error) {
-	mult := int64(1)
-	if i := strings.IndexAny(v, "KMGTkmgt"); i == len(v)-1 {
-		mult = 1 << (10 * (strings.IndexByte("KMGT", byte(strings.ToUpper(v[i:])[0])) + 1))
-		v = v[:i]
-	}
-	n, err := strconv.ParseInt(v, 10, 64)
-	if err != nil || n <= 0 {
-		return 0, fmt.Errorf("bad size %q", v)
-	}
-	return n * mult, nil
 }

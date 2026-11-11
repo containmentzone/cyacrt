@@ -1,10 +1,12 @@
-// Package server is the cyac daemon's API: it owns the store, serializes
-// changes to it, and tells the proxy when routes change. See package api
-// for the endpoints.
+// Package server is the cyac daemon's API. Boxes are what the conf
+// defines and their units run; the server only looks at them, reaches
+// into them (exec, console), asks systemd to start or stop them, and
+// keeps the proxy's routes. See package api for the endpoints.
 package server
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -16,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"sync"
 	"syscall"
 	"time"
@@ -23,27 +26,31 @@ import (
 	"github.com/creack/pty"
 
 	"github.com/containmentzone/cyacrt/internal/api"
-	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/proxy"
+	"github.com/containmentzone/cyacrt/internal/run"
+	"github.com/containmentzone/cyacrt/internal/sh"
+	"github.com/containmentzone/cyacrt/internal/units"
 )
 
 type Server struct {
-	Store box.Store
+	Conf string      // conf dir; boxes are what it defines
+	Run  *run.Runner // to see which boxes run, and reach them
+	// Routes is where exposed routes are kept (see proxy.SaveRoute).
+	Routes string
 	// Domain is the root domain: a box's route is always <name>.<Domain>.
 	Domain string
 	// RoutesChanged is called after every route change (the proxy's Reload).
 	RoutesChanged func() error
 
-	mu sync.Mutex // serializes everything that changes the store
+	mu sync.Mutex // serializes route changes
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/boxes", s.list)
-	mux.HandleFunc("POST /v1/boxes", s.create)
-	mux.HandleFunc("POST /v1/boxes/{name}/start", s.withBox(s.Store.Start))
-	mux.HandleFunc("POST /v1/boxes/{name}/stop", s.withBox(s.Store.Stop))
-	mux.HandleFunc("DELETE /v1/boxes/{name}", s.withBox(s.remove))
-	mux.HandleFunc("POST /v1/boxes/{name}/resize", s.resize)
+	mux.HandleFunc("POST /v1/boxes/{name}/start", s.unit("start"))
+	mux.HandleFunc("POST /v1/boxes/{name}/stop", s.unit("stop"))
 	mux.HandleFunc("PUT /v1/boxes/{name}/route", s.expose)
 	mux.HandleFunc("DELETE /v1/boxes/{name}/route", s.unexpose)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
@@ -80,33 +87,6 @@ func logRequests(h http.Handler) http.Handler {
 	})
 }
 
-// Shutdown stops every box and takes the store's lock for good, so no
-// request or Watch changes anything while the daemon exits.
-func (s *Server) Shutdown() {
-	s.mu.Lock()
-	s.Store.Shutdown()
-}
-
-// Watch notices boxes whose runtime exited without a stop, every interval,
-// for the life of the daemon, and cleans up after them, so they show as
-// stopped and aren't started again on the next boot.
-func (s *Server) Watch(interval time.Duration) {
-	for range time.Tick(interval) {
-		s.mu.Lock()
-		boxes, err := s.Store.List()
-		if err != nil {
-			slog.Error("watch", "err", err)
-		}
-		for _, b := range boxes {
-			if s.Store.Exited(b) {
-				slog.Info("box exited on its own; marking it stopped", "box", b.Name)
-				s.Store.Exit(b)
-			}
-		}
-		s.mu.Unlock()
-	}
-}
-
 func reply(w http.ResponseWriter, v any, err error) {
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -116,111 +96,63 @@ func reply(w http.ResponseWriter, v any, err error) {
 	json.NewEncoder(w).Encode(v)
 }
 
-func (s *Server) view(b *box.Box) api.Box {
-	out := api.Box{Name: b.Name, Image: b.Image, IP: s.Store.IP(b).String(), Status: s.Store.Status(b)}
-	if r := b.Route; r != nil {
-		out.Route = &api.Route{Host: b.Name + "." + s.Domain, Port: r.Port, Public: r.Public}
+// box returns the box the conf defines as name.
+func (s *Server) box(name string) (*conf.Box, error) {
+	c, probs, err := conf.Load(s.Conf)
+	if err != nil {
+		return nil, err
 	}
-	return out
+	for _, p := range probs {
+		if p.Kind == conf.KindBox && p.Name == name {
+			return nil, fmt.Errorf("%s: %w", conf.Path(s.Conf, p.Kind, p.Name), p.Err)
+		}
+	}
+	if b := c.Boxes[name]; b != nil {
+		return b, nil
+	}
+	return nil, fmt.Errorf("no box %q (no %s)", name, conf.Path(s.Conf, conf.KindBox, name))
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
-	boxes, err := s.Store.List()
-	out := []api.Box{}
-	for _, b := range boxes {
-		out = append(out, s.view(b))
+	c, _, err := conf.Load(s.Conf)
+	if err != nil {
+		reply(w, nil, err)
+		return
 	}
-	reply(w, out, err)
+	routes, err := proxy.LoadRoutes(s.Routes)
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	out := []api.Box{}
+	for _, name := range conf.Sorted(c.Boxes) {
+		b := c.Boxes[name]
+		v := api.Box{Name: name, Image: b.Workload.Image, Network: b.Network, IP: b.Address.String(), Status: "stopped"}
+		if rt, _ := s.Run.Running(conf.KindBox, name); rt != nil {
+			v.Status = "running (" + rt.Name() + ")"
+		}
+		if rt, ok := routes[name]; ok {
+			v.Route = &api.Route{Host: name + "." + s.Domain, Port: rt.Port, Public: rt.Public}
+		}
+		out = append(out, v)
+	}
+	reply(w, out, nil)
 }
 
-// withBox runs a lifecycle action on the named box under the lock.
-func (s *Server) withBox(action func(*box.Box) error) http.HandlerFunc {
+// unit starts or stops the box's unit; systemd does the rest.
+func (s *Server) unit(verb string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		b, err := s.Store.Get(r.PathValue("name"))
-		if err == nil {
-			err = action(b)
+		name := r.PathValue("name")
+		if _, err := s.box(name); err != nil {
+			reply(w, nil, err)
+			return
+		}
+		out, err := exec.Command("systemctl", verb, units.Name(conf.KindBox, name)).CombinedOutput()
+		if err != nil {
+			err = fmt.Errorf("systemctl %s: %v: %s", verb, err, bytes.TrimSpace(out))
 		}
 		reply(w, struct{}{}, err)
 	}
-}
-
-// create streams progress while it seeds and starts the box, since that
-// can take minutes for a large image.
-func (s *Server) create(w http.ResponseWriter, r *http.Request) {
-	var req api.NewBox
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		reply(w, nil, err)
-		return
-	}
-	w.Header().Set("Content-Type", "application/x-ndjson")
-	enc := json.NewEncoder(w)
-	rc := http.NewResponseController(w)
-	send := func(p api.Progress) {
-		enc.Encode(p)
-		rc.Flush()
-	}
-	progress := func(msg string) {
-		slog.Info(msg, "box", req.Name)
-		send(api.Progress{Message: msg})
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	b, err := s.newBox(req, progress)
-	if err != nil {
-		slog.Error("create failed", "box", req.Name, "err", err)
-		send(api.Progress{Error: err.Error()})
-		return
-	}
-	v := s.view(b)
-	send(api.Progress{Box: &v})
-}
-
-func (s *Server) newBox(req api.NewBox, progress func(string)) (*box.Box, error) {
-	switch {
-	case !box.ValidName(req.Name):
-		return nil, fmt.Errorf("invalid box name %q (lowercase letters, digits, dashes)", req.Name)
-	case req.Image == "":
-		return nil, errors.New("image is required")
-	case req.SizeBytes <= 0 || req.CPUs <= 0 || req.MemMiB <= 0:
-		return nil, errors.New("size, cpus and mem must be positive")
-	case req.Mode != "" && req.Mode != "init" && req.Mode != "command" && req.Mode != "pause":
-		return nil, fmt.Errorf("mode %q is not init, command or pause", req.Mode)
-	}
-	if _, err := s.Store.Get(req.Name); err == nil {
-		return nil, fmt.Errorf("box %q already exists", req.Name)
-	}
-	id, err := s.Store.FreeID()
-	if err != nil {
-		return nil, err
-	}
-	b := &box.Box{Name: req.Name, Image: req.Image, ID: id, CPUs: req.CPUs, MemMiB: req.MemMiB, Init: req.Init, Mode: req.Mode}
-	if err := s.Store.Seed(b, req.SizeBytes, progress); err != nil {
-		return nil, err
-	}
-	if err := s.Store.Put(b); err != nil {
-		return nil, err
-	}
-	progress("starting")
-	return b, s.Store.Start(b)
-}
-
-func (s *Server) remove(b *box.Box) error {
-	if err := s.Store.Remove(b); err != nil {
-		return err
-	}
-	return s.RoutesChanged()
-}
-
-func (s *Server) resize(w http.ResponseWriter, r *http.Request) {
-	var req api.Resize
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		reply(w, nil, err)
-		return
-	}
-	s.withBox(func(b *box.Box) error { return s.Store.Resize(b, req.SizeBytes) })(w, r)
 }
 
 func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
@@ -239,47 +171,67 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 // addRoute exposes one port of the box at <name>.<Domain>, replacing any
 // earlier route and its token.
 func (s *Server) addRoute(name string, req api.Expose) (token string, err error) {
-	b, err := s.Store.Get(name)
-	if err != nil {
+	if _, err := s.box(name); err != nil {
 		return "", err
 	}
 	if req.Port < 1 || req.Port > 65535 {
 		return "", errors.New("need a port between 1 and 65535")
 	}
-	route := &box.Route{Port: req.Port, Public: req.Public}
+	route := &proxy.Route{Port: req.Port, Public: req.Public}
 	if !req.Public {
 		token = rand.Text()
 		sum := sha256.Sum256([]byte(token))
 		route.TokenHash = hex.EncodeToString(sum[:])
 	}
-	b.Route = route
-	if err := s.Store.Put(b); err != nil {
+	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
 		return "", err
 	}
-	slog.Info("exposed route", "box", b.Name, "host", b.Name+"."+s.Domain, "port", req.Port, "public", req.Public)
+	slog.Info("exposed route", "box", name, "host", name+"."+s.Domain, "port", req.Port, "public", req.Public)
 	return token, s.RoutesChanged()
 }
 
 func (s *Server) unexpose(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	reply(w, struct{}{}, s.removeRoute(r.PathValue("name")))
+	name := r.PathValue("name")
+	routes, err := proxy.LoadRoutes(s.Routes)
+	if err == nil {
+		if _, ok := routes[name]; !ok {
+			err = fmt.Errorf("%s is not exposed", name)
+		}
+	}
+	if err == nil {
+		err = proxy.SaveRoute(s.Routes, name, nil)
+	}
+	if err == nil {
+		slog.Info("removed route", "box", name)
+		err = s.RoutesChanged()
+	}
+	reply(w, struct{}{}, err)
 }
 
-func (s *Server) removeRoute(name string) error {
-	b, err := s.Store.Get(name)
-	if err != nil {
-		return err
+// command returns a command that runs args inside the running box; start
+// it with a terminal on its stdio. It runs as the image's login user, if
+// it named one, unless root is set, with TERM set to term if given.
+func (s *Server) command(name string, args []string, root bool, term string) (*exec.Cmd, error) {
+	if _, err := s.box(name); err != nil {
+		return nil, err
 	}
-	if b.Route == nil {
-		return fmt.Errorf("%s is not exposed", name)
+	rt, m := s.Run.Running(conf.KindBox, name)
+	if rt == nil {
+		return nil, fmt.Errorf("%s is not running", name)
 	}
-	b.Route = nil
-	if err := s.Store.Put(b); err != nil {
-		return err
+	if img := s.Run.Image(conf.KindBox, name); img != nil && img.User != "" && !root {
+		// A login shell, so the user's HOME, profile and MOTD apply. With
+		// -c, runuser starts a new session, which would leave the shell
+		// without a controlling terminal (no job control); --pty gives it one.
+		args = []string{"runuser", "--pty", "-l", img.User, "-c", sh.Quote(args)}
 	}
-	slog.Info("removed route", "box", b.Name)
-	return s.RoutesChanged()
+	if term != "" {
+		// runuser -l keeps TERM.
+		args = append([]string{"env", "TERM=" + term}, args...)
+	}
+	return rt.Command(m, args)
 }
 
 // exec runs a command on a pty in the box, then switches the connection to
@@ -291,12 +243,8 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, err)
 		return
 	}
-	b, err := s.Store.Get(r.PathValue("name"))
-	if err != nil {
-		reply(w, nil, err)
-		return
-	}
-	cmd, err := s.Store.Command(b, req.Args, req.Root, req.Term)
+	name := r.PathValue("name")
+	cmd, err := s.command(name, req.Args, req.Root, req.Term)
 	if err != nil {
 		reply(w, nil, err)
 		return
@@ -307,7 +255,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tty.Close()
-	slog.Info("exec started", "box", b.Name, "args", req.Args, "root", req.Root, "pid", cmd.Process.Pid)
+	slog.Info("exec started", "box", name, "args", req.Args, "root", req.Root, "pid", cmd.Process.Pid)
 
 	conn, buf, err := upgrade(w, api.ExecUpgrade)
 	if err != nil {
@@ -319,7 +267,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	go io.Copy(tty, buf) // client keystrokes; ends when the conn closes
 	io.Copy(conn, tty)   // command output; ends when the command exits
 	err = cmd.Wait()
-	slog.Info("exec ended", "box", b.Name, "pid", cmd.Process.Pid, "err", err)
+	slog.Info("exec ended", "box", name, "pid", cmd.Process.Pid, "err", err)
 }
 
 // upgrade takes over the connection and answers 101 with token.
@@ -337,14 +285,15 @@ func upgrade(w http.ResponseWriter, token string) (net.Conn, *bufio.ReadWriter, 
 // nothing reads that FIFO (a stopped box, or an init like systemd under
 // runc that detaches from its stdio) it is output only.
 func (s *Server) console(w http.ResponseWriter, r *http.Request) {
-	b, err := s.Store.Get(r.PathValue("name"))
-	if err != nil {
+	name := r.PathValue("name")
+	if _, err := s.box(name); err != nil {
 		reply(w, nil, err)
 		return
 	}
-	log, err := os.Open(s.Store.ConsoleLog(b.Name))
+	logPath, inPath := s.Run.Console(conf.KindBox, name)
+	log, err := os.Open(logPath)
 	if err != nil {
-		reply(w, nil, fmt.Errorf("%s has no console output yet", b.Name))
+		reply(w, nil, fmt.Errorf("%s has no console output yet", name))
 		return
 	}
 	defer log.Close()
@@ -354,7 +303,7 @@ func (s *Server) console(w http.ResponseWriter, r *http.Request) {
 	// Non-blocking, so this fails instead of hanging when nobody reads the
 	// FIFO or it doesn't exist.
 	var in io.Writer = io.Discard
-	if f, err := os.OpenFile(s.Store.ConsoleIn(b.Name), os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+	if f, err := os.OpenFile(inPath, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
 		defer f.Close()
 		in = f
 	}
@@ -366,10 +315,10 @@ func (s *Server) console(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 	if in == io.Discard {
-		fmt.Fprintf(conn, "[output only: %s is stopped, or its init doesn't read the console]\r\n", b.Name)
+		fmt.Fprintf(conn, "[output only: %s is stopped, or its init doesn't read the console]\r\n", name)
 	}
-	slog.Info("console attached", "box", b.Name)
-	defer slog.Info("console detached", "box", b.Name)
+	slog.Info("console attached", "box", name)
+	defer slog.Info("console detached", "box", name)
 
 	done := make(chan struct{})
 	go func() {
