@@ -2,6 +2,7 @@
   lib,
   buildGoModule,
   makeWrapper,
+  coreutils,
   iproute2,
   nftables,
   util-linux,
@@ -14,6 +15,7 @@
 let
   # Everything cyac execs. firecracker is only used on hosts with KVM.
   runtimeTools = [
+    coreutils
     iproute2
     nftables
     util-linux
