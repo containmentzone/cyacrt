@@ -13,6 +13,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -73,10 +74,13 @@ func replaceFile(root *os.Root, name, content string) error {
 	return err
 }
 
-// PoweringOff starts the console line cyac-init writes before it ends a VM.
-// Firecracker can only exit on a guest reboot, so the console is how the
-// daemon tells this apart from a reboot.
-const PoweringOff = "cyac-init: powering off"
+// InitPath is where cyac-init copies itself in a VM; the agent runs from
+// there once the initramfs is gone.
+const InitPath = "/run/cyac/init"
+
+// PowerOffSignal is what "cyac-init poweroff" sends PID 1: SIGRTMIN+4,
+// which makes systemd power off, and cyac-init stop the box.
+const PowerOffSignal = syscall.Signal(38)
 
 // Port is the vsock port the agent listens on in a VM.
 const Port = 52
@@ -122,7 +126,8 @@ func ReadFrame(r io.Reader) (typ byte, p []byte, err error) {
 	return hdr[0], p, err
 }
 
-// Dial connects to the agent through Firecracker's vsock socket.
+// Dial connects to the agent through the VMM's vsock socket, which speaks
+// Firecracker's CONNECT protocol (Cloud Hypervisor's does too).
 func Dial(uds string) (net.Conn, error) {
 	conn, err := net.DialTimeout("unix", uds, 5*time.Second)
 	if err != nil {
@@ -130,7 +135,7 @@ func Dial(uds string) (net.Conn, error) {
 	}
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	fmt.Fprintf(conn, "CONNECT %d\n", Port)
-	// Firecracker answers "OK <port>\n", or hangs up if nothing listens.
+	// The VMM answers "OK <port>\n", or hangs up if nothing listens.
 	// Read a byte at a time so nothing after the line is consumed.
 	var line []byte
 	b := make([]byte, 1)
@@ -184,6 +189,27 @@ func Run(uds string, args []string) (int, error) {
 				return 0, errors.New("agent: bad exit frame")
 			}
 			return int(int32(binary.BigEndian.Uint32(p))), nil
+		}
+	}
+}
+
+// PowerOff asks the VM behind uds to power off, by running "cyac-init
+// poweroff" there, and returns once that has signalled PID 1.
+func PowerOff(uds string) error {
+	conn, err := Dial(uds)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	if err := json.NewEncoder(conn).Encode(Exec{Args: []string{InitPath, "poweroff"}}); err != nil {
+		return err
+	}
+	r := bufio.NewReader(conn)
+	for {
+		typ, _, err := ReadFrame(r)
+		if err != nil || typ == Exit {
+			return err
 		}
 	}
 }

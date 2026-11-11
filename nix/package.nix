@@ -8,11 +8,11 @@
   e2fsprogs,
   gnutar,
   runc,
-  firecracker,
+  cloud-hypervisor,
 }:
 
 let
-  # Everything cyac execs. firecracker is only used on hosts with KVM.
+  # Everything cyac execs. cloud-hypervisor is only used on hosts with KVM.
   runtimeTools = [
     iproute2
     nftables
@@ -20,7 +20,7 @@ let
     e2fsprogs
     gnutar
     runc
-    firecracker
+    cloud-hypervisor
   ];
 in
 buildGoModule {
@@ -55,7 +55,7 @@ buildGoModule {
   passthru = { inherit runtimeTools; };
 
   meta = {
-    description = "Disk-backed boxes under Firecracker or runc, behind a closed-by-default proxy";
+    description = "Disk-backed boxes under Cloud Hypervisor or runc, behind a closed-by-default proxy";
     mainProgram = "cyac";
     platforms = lib.platforms.linux;
   };

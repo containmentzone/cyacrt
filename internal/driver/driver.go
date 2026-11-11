@@ -76,7 +76,7 @@ func OpenConsole(m *Machine) (log, in *os.File, err error) {
 
 // Runtime boots and stops a box's disk.
 type Runtime interface {
-	// Name identifies the runtime ("firecracker", "runc"); it is recorded
+	// Name identifies the runtime ("cloud-hypervisor", "runc"); it is recorded
 	// while a box runs and accepted by CYAC_RUNTIME.
 	Name() string
 	// Available reports why this host can't use the runtime, or nil.

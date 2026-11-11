@@ -18,7 +18,7 @@ import (
 )
 
 // serveAgent runs commands for the daemon, which reaches it through
-// Firecracker's vsock device (see agent.Exec for the protocol). Commands
+// the VMM's vsock device (see agent.Exec for the protocol). Commands
 // run as root; the daemon wraps them in runuser for the login user.
 func serveAgent() error {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)

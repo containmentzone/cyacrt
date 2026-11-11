@@ -31,7 +31,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
-	"github.com/containmentzone/cyacrt/internal/runtime/firecracker"
+	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
 	"github.com/containmentzone/cyacrt/internal/server"
 )
@@ -56,7 +56,7 @@ const usage = `usage: cyac <command> [args]
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
-CYAC_RUNTIME=firecracker, firecracker-pvm or runc forces a runtime.
+CYAC_RUNTIME=cloud-hypervisor, cloud-hypervisor-pvm or runc forces a runtime.
 `
 
 func main() {
@@ -234,8 +234,8 @@ func daemon(socket string, args []string) error {
 		Dir: dir,
 		Net: bridge.Network{DNS: "1.1.1.1"},
 		Runtimes: []driver.Runtime{
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
-			firecracker.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
+			cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
+			cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
 			runc.Runtime{Init: init},
 		},
 	}

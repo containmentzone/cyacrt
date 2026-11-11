@@ -1,6 +1,6 @@
 // Command cyac-init is PID 1 wherever cyac supplies one:
 //
-//   - In a Firecracker VM it is the initramfs's /init. It mounts the box's
+//   - In a VM it is the initramfs's /init. It mounts the box's
 //     disk, writes its resolv.conf and networkd config, switches root to
 //     it, and starts the exec agent ("cyac-init agent", see agent.go).
 //     Then it runs the box's init, its command, or nothing (see
@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	self       = "/run/cyac/init"
+	self       = agent.InitPath
 	configPath = "/run/cyac/config.json"
 	defaultEnv = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )
@@ -35,6 +35,10 @@ const (
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		fatal(serveAgent())
+	}
+	// The daemon runs this through the agent to stop a VM.
+	if len(os.Args) > 1 && os.Args[1] == "poweroff" {
+		fatal(syscall.Kill(1, agent.PowerOffSignal))
 	}
 	if os.Getpid() != 1 {
 		fatal(fmt.Errorf("must run as PID 1"))
@@ -142,14 +146,12 @@ func startAgent() error {
 
 // supervise is PID 1 in command and pause mode: it runs the command,
 // reaps orphans, restarts the agent if it dies, and ends the box when the
-// command exits or a stop signal arrives (SIGINT from Firecracker's
-// Ctrl-Alt-Del, or runc's SIGRTMIN+3, the signal that halts systemd).
+// command exits or a stop signal arrives (SIGRTMIN+4 from "cyac-init
+// poweroff", or runc's SIGRTMIN+3, the signal that halts systemd).
 func supervise(cfg agent.Config, vm bool) {
 	sigs := make(chan os.Signal, 16)
-	signal.Notify(sigs, syscall.SIGCHLD, syscall.SIGINT, syscall.SIGTERM, syscall.Signal(37))
+	signal.Notify(sigs, syscall.SIGCHLD, syscall.SIGINT, syscall.SIGTERM, syscall.Signal(37), agent.PowerOffSignal)
 	if vm {
-		// Ctrl-Alt-Del then sends SIGINT instead of resetting the VM.
-		syscall.Reboot(syscall.LINUX_REBOOT_CMD_CAD_OFF)
 		os.MkdirAll("/dev/shm", 0o1777)
 		syscall.Mount("shm", "/dev/shm", "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "mode=1777")
 	}
@@ -330,11 +332,10 @@ func lookup(file, key string) []string {
 
 func atoi(s string) uint32 { n, _ := strconv.ParseUint(s, 10, 32); return uint32(n) }
 
-// powerOff ends the box. In a VM it stops everything, syncs, and resets:
-// Firecracker exits on a reset (the kernel runs with reboot=k), and the
-// console line tells the daemon not to restart the box.
+// powerOff ends the box. In a VM it stops everything, syncs, and powers
+// off, which ends the VMM.
 func powerOff(vm bool, reason string) {
-	fmt.Fprintf(os.Stderr, "%s: %s\n", agent.PoweringOff, reason)
+	fmt.Fprintf(os.Stderr, "cyac-init: powering off: %s\n", reason)
 	if !vm {
 		os.Exit(0)
 	}
@@ -343,7 +344,7 @@ func powerOff(vm bool, reason string) {
 	syscall.Kill(-1, syscall.SIGKILL)
 	syscall.Sync()
 	syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
-	syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
 	select {}
 }
 
