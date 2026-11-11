@@ -148,7 +148,8 @@ func (r Runtime) Start(m *driver.Machine) error {
 	p := cmd.Process.Pid
 	// Reap it when it exits; a zombie still has /proc/<pid>/cmdline, so
 	// pid() would report it running.
-	go cmd.Wait()
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
 	if err := os.WriteFile(pidFile(m), []byte(strconv.Itoa(p)), 0o600); err != nil {
 		return err
 	}
@@ -156,10 +157,11 @@ func (r Runtime) Start(m *driver.Machine) error {
 		if _, err := os.Stat(socket(m)); err == nil {
 			return nil
 		}
-		if pid(m) == 0 {
-			return errors.New("cloud-hypervisor exited")
+		select {
+		case err := <-exited:
+			return fmt.Errorf("cloud-hypervisor exited: %v", err)
+		case <-time.After(100 * time.Millisecond):
 		}
-		time.Sleep(100 * time.Millisecond)
 	}
 	return errors.New("cloud-hypervisor didn't come up")
 }
@@ -221,7 +223,10 @@ func pid(m *driver.Machine) int {
 	if err != nil {
 		return 0
 	}
-	if argv0, _, _ := bytes.Cut(argv, []byte{0}); filepath.Base(string(argv0)) != binary {
+	// Ours if it was started with m's API socket. That holds through a
+	// wrapper script (argv[0] is the shell until it execs the VMM) and
+	// rules out an unrelated process that reused the pid.
+	if !bytes.Contains(argv, []byte("path="+socket(m)+"\x00")) {
 		return 0
 	}
 	return p
