@@ -92,11 +92,11 @@ func TestNameLengths(t *testing.T) {
 }
 
 // TestNftSyntax checks every nft script in the plans with nft -c, which
-// parses without touching the ruleset. Skipped where nft isn't installed.
+// parses without touching the ruleset. nft -c still needs netlink, so
+// unprivileged runs (CI) check inside a fresh user and network namespace.
+// Skipped where neither works.
 func TestNftSyntax(t *testing.T) {
-	if _, err := exec.LookPath("nft"); err != nil {
-		t.Skip("nft not installed")
-	}
+	nft := nftChecker(t)
 	c, _, err := conf.Load("testdata/conf")
 	if err != nil {
 		t.Fatal(err)
@@ -119,11 +119,32 @@ func TestNftSyntax(t *testing.T) {
 			if s.Stdin == "" {
 				continue
 			}
-			cmd := exec.Command("nft", "-c", "-f", "-")
-			cmd.Stdin = strings.NewReader(s.Stdin)
-			if out, err := cmd.CombinedOutput(); err != nil {
+			if out, err := nft(s.Stdin); err != nil {
 				t.Errorf("nft -c: %v\n%s\n%s", err, out, s.Stdin)
 			}
 		}
 	}
+}
+
+// nftChecker returns a func running nft -c on a script, directly if that
+// works and in a new user and network namespace otherwise.
+func nftChecker(t *testing.T) func(string) ([]byte, error) {
+	if _, err := exec.LookPath("nft"); err != nil {
+		t.Skip("nft not installed")
+	}
+	for _, argv := range [][]string{
+		{"nft", "-c", "-f", "-"},
+		{"unshare", "--user", "--map-root-user", "--net", "nft", "-c", "-f", "-"},
+	} {
+		run := func(script string) ([]byte, error) {
+			cmd := exec.Command(argv[0], argv[1:]...)
+			cmd.Stdin = strings.NewReader(script)
+			return cmd.CombinedOutput()
+		}
+		if _, err := run("table inet probe {\n}\n"); err == nil {
+			return run
+		}
+	}
+	t.Skip("nft -c needs netlink access, and no user namespace is available")
+	return nil
 }
