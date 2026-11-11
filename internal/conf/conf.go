@@ -35,11 +35,24 @@ const (
 // kinds before it, except that a network attaches services.
 var Kinds = []string{KindGateway, KindNetwork, KindService, KindBox}
 
+// Address plan, all inside 10.42.0.0/16:
+//
+//	10.42.<network Index>.0/24   one per network, Index 0 to 253
+//	10.42.254.<2*Index>/31       a direct gateway's uplink to the host
+//	10.42.255.<2*Index>/31       a service's link to its gateway
+//
+// Indexes live in the files, like box addresses, so nothing about an
+// object's addresses or interface names depends on what else exists.
+const (
+	MaxNetworkIndex = 253
+	MaxLinkIndex    = 127
+)
+
 // Network is a Linux bridge: one broadcast domain on 10.42.<Index>.0/24.
 // What its members reach beyond each other is exactly what it attaches.
 type Network struct {
 	Name     string
-	Index    int      // 0 to 254; picks the /24
+	Index    int      // 0 to MaxNetworkIndex; picks the /24
 	Services []string // Attach=service:<name>, any number
 	Gateway  string   // Attach=gateway:<name>, at most one; "" = sealed
 }
@@ -61,10 +74,12 @@ func (n *Network) addr(last byte) netip.Addr {
 // Gateway is a netns with one uplink. Networks and services plug their
 // own legs into it.
 type Gateway struct {
-	Name   string
-	Kind   string // "direct" or "wireguard"
-	Config string // wireguard: path to a wg-quick style file
-	DNS    string // upstream resolver for its networks; may be empty
+	Name    string
+	Index   int          // 0 to MaxLinkIndex; picks the uplink /31
+	Kind    string       // "direct" or "wireguard"
+	Config  string       // wireguard: path to a file wg setconf reads
+	Address netip.Prefix // wireguard: the tunnel's address, e.g. 10.64.0.2/32
+	DNS     string       // upstream resolver for its networks; may be empty
 }
 
 // Workload is what cybox and cyservice share: an OCI image and how to run
@@ -83,6 +98,7 @@ type Workload struct {
 // it and a link to one gateway.
 type Service struct {
 	Name     string
+	Index    int // 0 to MaxLinkIndex; picks the gateway link /31
 	Workload Workload
 	Gateway  string
 	Port     int
@@ -94,6 +110,23 @@ type Service struct {
 type Secret struct {
 	Name string
 	Path string // absolute path on the host
+}
+
+// AddressIn is the service's address on network n, one of the top of the
+// /24, counted down from .254 by the service's Index. Boxes can't use it.
+func (s *Service) AddressIn(n *Network) netip.Addr { return n.addr(byte(254 - s.Index)) }
+
+// Uplink is a direct gateway's /31 to the host: the host end, then the
+// gateway's.
+func (g *Gateway) Uplink() (host, gw netip.Prefix) { return link(254, g.Index) }
+
+// Link is a service's /31 to its gateway: the gateway's end, then the
+// service's.
+func (s *Service) Link() (gw, svc netip.Prefix) { return link(255, s.Index) }
+
+func link(third byte, index int) (netip.Prefix, netip.Prefix) {
+	a := netip.AddrFrom4([4]byte{10, 42, third, byte(2 * index)})
+	return netip.PrefixFrom(a, 31), netip.PrefixFrom(a.Next(), 31)
 }
 
 // Box is a VM (or runc container) with a disk, in one network.
@@ -217,7 +250,7 @@ func (c *Config) parseNetwork(name string, f *fields) error {
 	if err != nil {
 		return err
 	}
-	if n.Index, err = intIn(idx, "Index", 0, 254, true); err != nil {
+	if n.Index, err = intIn(idx, "Index", 0, MaxNetworkIndex, true); err != nil {
 		return err
 	}
 	for _, a := range f.all("Attach") {
@@ -248,26 +281,37 @@ func (c *Config) parseNetwork(name string, f *fields) error {
 
 func (c *Config) parseGateway(name string, f *fields) error {
 	g := &Gateway{Name: name}
+	var addr string
 	var err error
 	for _, kv := range []struct {
 		key string
 		dst *string
-	}{{"Kind", &g.Kind}, {"Config", &g.Config}, {"DNS", &g.DNS}} {
+	}{{"Kind", &g.Kind}, {"Config", &g.Config}, {"DNS", &g.DNS}, {"Address", &addr}} {
 		if *kv.dst, err = f.one(kv.key); err != nil {
 			return err
 		}
+	}
+	idx, err := f.one("Index")
+	if err != nil {
+		return err
+	}
+	if g.Index, err = intIn(idx, "Index", 0, MaxLinkIndex, true); err != nil {
+		return err
 	}
 	if err := f.done(); err != nil {
 		return err
 	}
 	switch g.Kind {
 	case "direct":
-		if g.Config != "" {
-			return bad("Config", g.Config, "only applies to Kind=wireguard")
+		if g.Config != "" || addr != "" {
+			return fmt.Errorf("[Gateway] Config= and Address= only apply to Kind=wireguard")
 		}
 	case "wireguard":
 		if !filepath.IsAbs(g.Config) {
 			return bad("Config", g.Config, "Kind=wireguard needs an absolute path")
+		}
+		if g.Address, err = netip.ParsePrefix(addr); err != nil || !g.Address.Addr().Is4() {
+			return bad("Address", addr, "Kind=wireguard needs the tunnel's IPv4 address with a prefix length")
 		}
 	default:
 		return bad("Kind", g.Kind, "want direct or wireguard")
@@ -287,6 +331,13 @@ func (c *Config) parseService(name string, wf, f *fields) error {
 	s := &Service{Name: name}
 	var err error
 	if s.Workload, err = parseWorkload(wf); err != nil {
+		return err
+	}
+	idx, err := f.one("Index")
+	if err != nil {
+		return err
+	}
+	if s.Index, err = intIn(idx, "Index", 0, MaxLinkIndex, true); err != nil {
 		return err
 	}
 	if s.Gateway, err = f.one("Gateway"); err != nil {
@@ -415,6 +466,8 @@ func (c *Config) check() []Problem {
 	drop := func(kind, name string, err error) {
 		probs = append(probs, Problem{kind, name, err})
 		switch kind {
+		case KindGateway:
+			delete(c.Gateways, name)
 		case KindNetwork:
 			delete(c.Networks, name)
 		case KindService:
@@ -425,15 +478,9 @@ func (c *Config) check() []Problem {
 	}
 
 	// Checks between objects of the same kind first; they don't cascade.
-	byIndex := map[int]string{}
-	for _, name := range Sorted(c.Networks) {
-		n := c.Networks[name]
-		if other, ok := byIndex[n.Index]; ok {
-			drop(KindNetwork, name, bad("Index", strconv.Itoa(n.Index), "already used by network "+other))
-			continue
-		}
-		byIndex[n.Index] = name
-	}
+	uniqueIndex(c.Networks, KindNetwork, func(n *Network) int { return n.Index }, drop)
+	uniqueIndex(c.Gateways, KindGateway, func(g *Gateway) int { return g.Index }, drop)
+	uniqueIndex(c.Services, KindService, func(s *Service) int { return s.Index }, drop)
 
 	for changed := true; changed; {
 		changed = false
@@ -471,6 +518,12 @@ func (c *Config) check() []Problem {
 	// Addresses: inside the network's /24, out of the reserved .0 to .9
 	// and .255, and unique.
 	used := map[netip.Addr]string{}
+	for _, name := range Sorted(c.Networks) {
+		n := c.Networks[name]
+		for _, s := range n.Services {
+			used[c.Services[s].AddressIn(n)] = "service " + s
+		}
+	}
 	for _, name := range Sorted(c.Boxes) {
 		b := c.Boxes[name]
 		n := c.Networks[b.Network]
@@ -481,12 +534,26 @@ func (c *Config) check() []Problem {
 		case last < 10 || last == 255:
 			drop(KindBox, name, bad("Address", b.Address.String(), ".0 to .9 and .255 are reserved"))
 		case used[b.Address] != "":
-			drop(KindBox, name, bad("Address", b.Address.String(), "already used by box "+used[b.Address]))
+			drop(KindBox, name, bad("Address", b.Address.String(), "already used by "+used[b.Address]))
 		default:
-			used[b.Address] = name
+			used[b.Address] = "box " + name
 		}
 	}
 	return probs
+}
+
+// uniqueIndex drops every object whose Index an earlier one (by name)
+// already has.
+func uniqueIndex[T any](m map[string]*T, kind string, index func(*T) int, drop func(kind, name string, err error)) {
+	seen := map[int]string{}
+	for _, name := range Sorted(m) {
+		i := index(m[name])
+		if other, ok := seen[i]; ok {
+			drop(kind, name, bad("Index", strconv.Itoa(i), "already used by "+kind+" "+other))
+			continue
+		}
+		seen[i] = name
+	}
 }
 
 // AttachedBy lists the networks that attach service s, sorted.
