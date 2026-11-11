@@ -9,6 +9,8 @@
   gnutar,
   runc,
   cloud-hypervisor,
+  procps,
+  wireguard-tools,
 }:
 
 let
@@ -21,6 +23,8 @@ let
     gnutar
     runc
     cloud-hypervisor
+    procps # sysctl, for `cyac run`
+    wireguard-tools # wg, for Kind=wireguard gateways
   ];
 in
 buildGoModule {
@@ -39,6 +43,7 @@ buildGoModule {
   vendorHash = "sha256-AOAoiZVtd+ad/YCHX+jb03e3cs09OhZtgCG0RnqHOKM=";
   subPackages = [
     "cmd/cyac"
+    "cmd/cyac-generator"
     "cmd/cyac-init"
   ];
   # cyac-init runs in VMs and images, so it must be static.
