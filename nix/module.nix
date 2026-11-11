@@ -14,6 +14,17 @@ let
   cfg = config.services.cyac;
   pvm = cfg.kernel == "pvm";
   vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
+  # For the generated cybox@ and cyservice@ units: added to them, not
+  # replacing them.
+  workloadDropin = {
+    overrideStrategy = "asDropin";
+    environment = {
+      CYAC_DIR = cfg.stateDir;
+    }
+    // lib.optionalAttrs (cfg.kernel == "kvm" || pvm) {
+      CYAC_RUNTIME = if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor";
+    };
+  };
 in
 {
   imports = [
@@ -120,6 +131,10 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.stateDir} 0700 root root -"
+      # Networking objects: one file per box, service, network or gateway.
+      # The path is fixed (cyac-generator runs before any of this config
+      # could reach it), whatever stateDir says.
+      "d /var/lib/cyac/conf 0700 root root -"
     ]
     ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}";
 
@@ -194,6 +209,14 @@ in
         Restart = "on-failure";
       };
     };
+
+    # cyac-generator turns the files in /var/lib/cyac/conf into units
+    # (cygateway@, cynetwork@, cydns@, cyservice@, cybox@ and cyac.target)
+    # at boot and on every `systemctl daemon-reload`. These drop-ins give
+    # the workload units the daemon's state dir and runtime pin.
+    systemd.generators.cyac = "${cfg.package}/bin/cyac-generator";
+    systemd.services."cybox@" = workloadDropin;
+    systemd.services."cyservice@" = workloadDropin;
 
     networking.firewall.allowedTCPPorts = lib.mkIf cfg.proxy.openFirewall [
       80
