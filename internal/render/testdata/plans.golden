@@ -1,0 +1,359 @@
+==> cygateway out <==
+up:
+  ip netns add cygw-out
+  ip -n cygw-out link set lo up
+  ip netns exec cygw-out sysctl -q -w net.ipv4.ip_forward=1
+  ip link add cygw0 type veth peer name uplink netns cygw-out
+  ip addr add 10.42.254.0/31 dev cygw0
+  ip link set cygw0 up
+  ip -n cygw-out addr add 10.42.254.1/31 dev uplink
+  ip -n cygw-out link set uplink up
+  ip -n cygw-out route add default via 10.42.254.0
+  sysctl -q -w net.ipv4.ip_forward=1
+  nft -f -
+    <<<
+    table inet cygw-out
+    delete table inet cygw-out
+    table inet cygw-out {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cygw0" ct state established,related accept
+    		iifname "cygw0" drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cygw0" accept
+    		oifname "cygw0" ct state established,related accept
+    	}
+    	chain postrouting {
+    		type nat hook postrouting priority 100;
+    		ip saddr 10.42.254.1 oifname != "cygw0" masquerade
+    	}
+    }
+    >>>
+  ip netns exec cygw-out nft -f -
+    <<<
+    table inet gw {
+    	chain input {
+    		type filter hook input priority 0; policy drop;
+    		iifname "lo" accept
+    		ct state established,related accept
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy drop;
+    		ct state established,related accept
+    		oifname "uplink" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
+    		oifname "uplink" accept
+    	}
+    	chain postrouting {
+    		type nat hook postrouting priority 100;
+    		oifname "uplink" masquerade
+    	}
+    }
+    >>>
+down:
+  nft delete table inet cygw-out
+  ip link del cygw0
+  ip netns del cygw-out
+
+==> cygateway vpn <==
+up:
+  ip netns add cygw-vpn
+  ip -n cygw-vpn link set lo up
+  ip netns exec cygw-vpn sysctl -q -w net.ipv4.ip_forward=1
+  ip link add cywg1 type wireguard
+  ip link set cywg1 netns cygw-vpn
+  ip -n cygw-vpn link set cywg1 name wg0
+  ip netns exec cygw-vpn wg setconf wg0 /run/keys/wg0.conf
+  ip -n cygw-vpn addr add 10.64.0.2/32 dev wg0
+  ip -n cygw-vpn link set wg0 up
+  ip -n cygw-vpn route add default dev wg0
+  ip netns exec cygw-vpn nft -f -
+    <<<
+    table inet gw {
+    	chain input {
+    		type filter hook input priority 0; policy drop;
+    		iifname "lo" accept
+    		ct state established,related accept
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy drop;
+    		ct state established,related accept
+    		oifname "wg0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
+    		oifname "wg0" accept
+    	}
+    	chain postrouting {
+    		type nat hook postrouting priority 100;
+    		oifname "wg0" masquerade
+    	}
+    }
+    >>>
+down:
+  ip link del cywg1
+  ip netns del cygw-vpn
+
+==> cynetwork dev <==
+up:
+  ip link add cyn1 type bridge
+  ip addr add 10.42.1.2/24 dev cyn1
+  ip link set cyn1 up
+  nft -f -
+    <<<
+    table inet cyn-dev
+    delete table inet cyn-dev
+    table inet cyn-dev {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyn1" ct state established,related accept
+    		iifname "cyn1" ip daddr 10.42.1.2 udp dport 53 accept
+    		iifname "cyn1" ip daddr 10.42.1.2 tcp dport 53 accept
+    		iifname "cyn1" drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyn1" drop
+    		oifname "cyn1" drop
+    	}
+    }
+    >>>
+down:
+  nft delete table inet cyn-dev
+  ip link del cyn1
+
+==> cynetwork web <==
+up:
+  ip link add cyn2 type bridge
+  ip addr add 10.42.2.2/24 dev cyn2
+  ip link set cyn2 up
+  nft -f -
+    <<<
+    table inet cyn-web
+    delete table inet cyn-web
+    table inet cyn-web {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyn2" ct state established,related accept
+    		iifname "cyn2" ip daddr 10.42.2.2 udp dport 53 accept
+    		iifname "cyn2" ip daddr 10.42.2.2 tcp dport 53 accept
+    		iifname "cyn2" drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyn2" drop
+    		oifname "cyn2" drop
+    	}
+    }
+    >>>
+  ip link add cynl2 type veth peer name n2 netns cygw-out
+  ip link set cynl2 master cyn2
+  ip link set cynl2 up
+  ip -n cygw-out addr add 10.42.2.1/24 dev n2
+  ip -n cygw-out link set n2 up
+down:
+  nft delete table inet cyn-web
+  ip link del cynl2
+  ip link del cyn2
+
+==> cyservice llm-proxy <==
+up:
+  ip netns add cysvc-llm-proxy
+  ip -n cysvc-llm-proxy link set lo up
+  ip link add cys0n1 type veth peer name n1 netns cysvc-llm-proxy
+  ip -n cysvc-llm-proxy link set n1 address 02:c7:ac:00:01:fe
+  ip -n cysvc-llm-proxy addr add 10.42.1.254/24 dev n1
+  ip -n cysvc-llm-proxy link set n1 up
+  ip link set cys0n1 master cyn1
+  ip link set cys0n1 up
+  nft -f -
+    <<<
+    table bridge cys-llm-proxy
+    delete table bridge cys-llm-proxy
+    table bridge cys-llm-proxy {
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cys0n1" ether saddr != 02:c7:ac:00:01:fe drop
+    		iifname "cys0n1" ether type ip ip saddr != 10.42.1.254 drop
+    		iifname "cys0n1" ether type arp arp saddr ip != 10.42.1.254 drop
+    		iifname "cys0n1" ether type ip6 drop
+    	}
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cys0n1" ether saddr != 02:c7:ac:00:01:fe drop
+    		iifname "cys0n1" ether type ip ip saddr != 10.42.1.254 drop
+    		iifname "cys0n1" ether type arp arp saddr ip != 10.42.1.254 drop
+    		iifname "cys0n1" ether type ip6 drop
+    	}
+    }
+    >>>
+  ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
+  ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
+  ip -n cysvc-llm-proxy link set gw up
+  ip -n cygw-vpn addr add 10.42.255.0/31 dev s0
+  ip -n cygw-vpn link set s0 up
+  ip -n cysvc-llm-proxy route add default via 10.42.255.0
+  ip netns exec cysvc-llm-proxy nft -f -
+    <<<
+    table inet svc {
+    	chain forward {
+    		type filter hook forward priority 0; policy drop;
+    	}
+    }
+    >>>
+down:
+  nft delete table bridge cys-llm-proxy
+  ip netns del cysvc-llm-proxy
+
+==> cybox box-a (VM) <==
+up:
+  ip tuntap add dev cyb1-10 mode tap
+  ip link set cyb1-10 master cyn1
+  ip link set cyb1-10 up
+  nft -f -
+    <<<
+    table bridge cyb-box-a
+    delete table bridge cyb-box-a
+    table bridge cyb-box-a {
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyb1-10" ether saddr != 02:c7:ac:00:01:0a drop
+    		iifname "cyb1-10" ether type ip ip saddr != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type arp arp saddr ip != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type ip6 drop
+    	}
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyb1-10" ether saddr != 02:c7:ac:00:01:0a drop
+    		iifname "cyb1-10" ether type ip ip saddr != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type arp arp saddr ip != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type ip6 drop
+    	}
+    }
+    >>>
+down:
+  nft delete table bridge cyb-box-a
+  ip link del cyb1-10
+
+==> cybox box-a (runc) <==
+up:
+  ip netns add cybox-box-a
+  ip link add cyb1-10 type veth peer name eth0 netns cybox-box-a
+  ip -n cybox-box-a link set lo up
+  ip -n cybox-box-a link set eth0 address 02:c7:ac:00:01:0a
+  ip -n cybox-box-a addr add 10.42.1.10/24 dev eth0
+  ip -n cybox-box-a link set eth0 up
+  ip link set cyb1-10 master cyn1
+  ip link set cyb1-10 up
+  nft -f -
+    <<<
+    table bridge cyb-box-a
+    delete table bridge cyb-box-a
+    table bridge cyb-box-a {
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyb1-10" ether saddr != 02:c7:ac:00:01:0a drop
+    		iifname "cyb1-10" ether type ip ip saddr != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type arp arp saddr ip != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type ip6 drop
+    	}
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyb1-10" ether saddr != 02:c7:ac:00:01:0a drop
+    		iifname "cyb1-10" ether type ip ip saddr != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type arp arp saddr ip != 10.42.1.10 drop
+    		iifname "cyb1-10" ether type ip6 drop
+    	}
+    }
+    >>>
+down:
+  ip netns del cybox-box-a
+  nft delete table bridge cyb-box-a
+  ip link del cyb1-10
+
+==> cybox box-a networkd <==
+# written by cyac on every start
+[Match]
+Name=eth0
+
+[Network]
+Address=10.42.1.10/24
+DNS=10.42.1.2
+Domains=dev.cyac.internal
+
+==> cybox site (VM) <==
+up:
+  ip tuntap add dev cyb2-10 mode tap
+  ip link set cyb2-10 master cyn2
+  ip link set cyb2-10 up
+  nft -f -
+    <<<
+    table bridge cyb-site
+    delete table bridge cyb-site
+    table bridge cyb-site {
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyb2-10" ether saddr != 02:c7:ac:00:02:0a drop
+    		iifname "cyb2-10" ether type ip ip saddr != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type arp arp saddr ip != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type ip6 drop
+    	}
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyb2-10" ether saddr != 02:c7:ac:00:02:0a drop
+    		iifname "cyb2-10" ether type ip ip saddr != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type arp arp saddr ip != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type ip6 drop
+    	}
+    }
+    >>>
+down:
+  nft delete table bridge cyb-site
+  ip link del cyb2-10
+
+==> cybox site (runc) <==
+up:
+  ip netns add cybox-site
+  ip link add cyb2-10 type veth peer name eth0 netns cybox-site
+  ip -n cybox-site link set lo up
+  ip -n cybox-site link set eth0 address 02:c7:ac:00:02:0a
+  ip -n cybox-site addr add 10.42.2.10/24 dev eth0
+  ip -n cybox-site link set eth0 up
+  ip -n cybox-site route add default via 10.42.2.1
+  ip link set cyb2-10 master cyn2
+  ip link set cyb2-10 up
+  nft -f -
+    <<<
+    table bridge cyb-site
+    delete table bridge cyb-site
+    table bridge cyb-site {
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname "cyb2-10" ether saddr != 02:c7:ac:00:02:0a drop
+    		iifname "cyb2-10" ether type ip ip saddr != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type arp arp saddr ip != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type ip6 drop
+    	}
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname "cyb2-10" ether saddr != 02:c7:ac:00:02:0a drop
+    		iifname "cyb2-10" ether type ip ip saddr != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type arp arp saddr ip != 10.42.2.10 drop
+    		iifname "cyb2-10" ether type ip6 drop
+    	}
+    }
+    >>>
+down:
+  ip netns del cybox-site
+  nft delete table bridge cyb-site
+  ip link del cyb2-10
+
+==> cybox site networkd <==
+# written by cyac on every start
+[Match]
+Name=eth0
+
+[Network]
+Address=10.42.2.10/24
+Gateway=10.42.2.1
+DNS=10.42.2.2
+Domains=web.cyac.internal
+

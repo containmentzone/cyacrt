@@ -3,6 +3,7 @@ Image=ghcr.io/example/llm-proxy
 Memory=256M
 
 [Service]
+Index=0
 Gateway=vpn
 Port=8080
 Secret=OPENAI_API_KEY:/run/keys/openai

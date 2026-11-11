@@ -1,2 +1,3 @@
 [Gateway]
+Index=0
 Kind=direct

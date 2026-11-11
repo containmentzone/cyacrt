@@ -1,0 +1,9 @@
+[Workload]
+Image=ghcr.io/boldsoftware/exeuntu
+CPUs=2
+Memory=4G
+
+[Box]
+Network=dev
+Address=10.42.1.10
+Autostart=yes

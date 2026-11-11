@@ -36,10 +36,10 @@ func load(t *testing.T, files map[string]string) (*Config, map[string]string) {
 }
 
 const (
-	out = "[Gateway]\nKind=direct\n"
+	out = "[Gateway]\nIndex=0\nKind=direct\n"
 	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
 	prx = "[Workload]\nImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n\n" +
-		"[Service]\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
+		"[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
 	bx = "[Workload]\nImage=example/box\nCPUs=2\nMemory=4G\n\n[Box]\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
 )
 
@@ -97,25 +97,29 @@ func TestFileErrors(t *testing.T) {
 		file, content, want string
 	}{
 		{"x.cynetwork", "[Network]\n", "Index= is required"},
-		{"x.cynetwork", "[Network]\nIndex=255\n", "from 0 to 254"},
+		{"x.cynetwork", "[Network]\nIndex=254\n", "from 0 to 253"},
 		{"x.cynetwork", "[Network]\nIndex=3\nAttach=gateway:out\nAttach=gateway:out\n", "at most one gateway"},
 		{"x.cynetwork", "[Network]\nIndex=3\nAttach=box:a\n", "want service:<name>"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIndex=4\n", "more than once"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIsolated=yes\n", "unknown key Isolated="},
 		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "Index= is required"},
 		{"x.cynetwork", "Index=3\n", "outside a section"},
-		{"x.cygateway", "[Gateway]\nKind=tor\n", "want direct or wireguard"},
-		{"x.cygateway", "[Gateway]\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
-		{"x.cygateway", "[Gateway]\nKind=direct\nDNS=resolver\n", "DNS=resolver"},
-		{"x.cyservice", "[Service]\nGateway=out\nPort=80\n", "needs Image="},
-		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nGateway=out\nPort=0\n", "Port=0"},
-		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
-		{"x.cyservice", "[Workload]\nImage=i\nExec=sh -c 'oops\n[Service]\nGateway=out\nPort=1\n", "unterminated"},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=tor\n", "want direct or wireguard"},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\nConfig=/k\n", "needs the tunnel's IPv4 address"},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nAddress=10.0.0.1/32\n", "only apply to Kind=wireguard"},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nDNS=resolver\n", "DNS=resolver"},
+		{"x.cyservice", "[Service]\nIndex=5\nGateway=out\nPort=80\n", "needs Image="},
+		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=0\n", "Port=0"},
+		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
+		{"x.cyservice", "[Workload]\nImage=i\nExec=sh -c 'oops\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
 		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\n", "needs Address="},
 		{"x.cybox", "[Workload]\nImage=i\nMemory=lots\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
 		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
 		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
 		{"Bad.cybox", "", "invalid name"},
+		{"x.cygateway", "[Gateway]\nIndex=0\nKind=direct\n", "Index=0: already used by cygateway out"},
+		{"x.cyservice", strings.Replace(prx, "Index=0", "Index=128", 1), "from 0 to 127"},
 	} {
 		t.Run(tc.file+"/"+tc.want, func(t *testing.T) {
 			_, errs := load(t, map[string]string{
@@ -163,13 +167,15 @@ func TestAddresses(t *testing.T) {
 		"c.cybox":     box("10.42.2.10"), // other network
 		"d.cybox":     box("10.42.1.2"),  // reserved
 		"e.cybox":     box("10.42.1.11"),
+		"f.cybox":     box("10.42.1.254"),     // proxy's address (Index 0)
 		"x.cynetwork": "[Network]\nIndex=1\n", // index taken by dev
 	})
 	want := map[string]string{
 		"b.cybox":     "already used by box a",
 		"c.cybox":     "outside network dev",
 		"d.cybox":     "reserved",
-		"x.cynetwork": "Index=1: already used by network dev",
+		"f.cybox":     "already used by service proxy",
+		"x.cynetwork": "Index=1: already used by cynetwork dev",
 	}
 	if len(errs) != len(want) {
 		t.Errorf("problems: %v", errs)
