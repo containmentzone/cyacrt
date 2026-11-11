@@ -132,7 +132,10 @@ func (r Runtime) Start(m *driver.Machine) error {
 		"--cmdline", cmdline,
 		"--cpus", cpus,
 		"--memory", fmt.Sprintf("size=%dM", m.MemMiB),
-		"--disk", "path="+m.Disk+",id=rootfs",
+		// image_type=raw: without it, Cloud Hypervisor guards sector 0 against
+		// a guest rewriting the format probe, and ext4 rewrites block 0 (it holds
+		// the superblock) on every mount.
+		"--disk", "path="+m.Disk+",id=rootfs,image_type=raw",
 		"--net", fmt.Sprintf("tap=%s,mac=%s,id=eth0", m.Link.HostIface, mac),
 		"--vsock", "cid=3,socket="+vsock(m),
 		"--serial", "tty",
