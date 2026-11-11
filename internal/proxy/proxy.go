@@ -9,19 +9,23 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/conf"
 )
 
 const (
@@ -29,12 +33,20 @@ const (
 	loginPath  = "/__cyac/login"
 )
 
+// Route exposes one port of a box at <name>.<root domain>. Nothing is
+// reachable without one.
+type Route struct {
+	Port      int    `json:"port"`
+	Public    bool   `json:"public,omitempty"`
+	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+}
+
 type target struct {
-	box.Route
+	Route
 	IP netip.Addr
 }
 
-// transport reaches boxes on the bridge. Boxes are local, so connecting is
+// transport reaches boxes on their networks. Boxes are local, so connecting is
 // quick or not happening; a box gets a minute to start answering, and
 // once it does, bodies (uploads, streams, websockets) take as long as
 // they take.
@@ -48,7 +60,8 @@ var transport = &http.Transport{
 }
 
 type Server struct {
-	Store box.Store
+	Conf   string // conf dir: where boxes and their addresses come from
+	Routes string // route dir (see SaveRoute)
 	// Domain is the root domain; box b answers at <b>.<Domain>.
 	Domain string
 
@@ -56,23 +69,70 @@ type Server struct {
 	routes map[string]target // by lowercased host
 }
 
-// Reload rebuilds the route table from the store. Call it periodically or
-// on SIGHUP; the CLI writes records, the proxy only reads them.
+// Reload rebuilds the route table from the routes and the conf. A route
+// whose box is gone from the conf is kept on disk but not served.
 func (s *Server) Reload() error {
-	boxes, err := s.Store.List()
+	c, _, err := conf.Load(s.Conf)
+	if err != nil {
+		return err
+	}
+	saved, err := LoadRoutes(s.Routes)
 	if err != nil {
 		return err
 	}
 	routes := map[string]target{}
-	for _, b := range boxes {
-		if b.Route != nil {
-			routes[b.Name+"."+strings.ToLower(s.Domain)] = target{Route: *b.Route, IP: s.Store.IP(b)}
+	for name, r := range saved {
+		if b := c.Boxes[name]; b != nil {
+			routes[name+"."+strings.ToLower(s.Domain)] = target{Route: r, IP: b.Address}
 		}
 	}
 	s.mu.Lock()
 	s.routes = routes
 	s.mu.Unlock()
 	return nil
+}
+
+// LoadRoutes reads the routes in dir, one <box>.json each.
+func LoadRoutes(dir string) (map[string]Route, error) {
+	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, err
+	}
+	routes := map[string]Route{}
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return nil, err
+		}
+		var r Route
+		if err := json.Unmarshal(data, &r); err != nil {
+			return nil, fmt.Errorf("%s: %w", f, err)
+		}
+		routes[strings.TrimSuffix(filepath.Base(f), ".json")] = r
+	}
+	return routes, nil
+}
+
+// SaveRoute stores box name's route in dir, or removes it if r is nil.
+func SaveRoute(dir, name string, r *Route) error {
+	if !conf.ValidName(name) {
+		return fmt.Errorf("invalid box name %q", name)
+	}
+	path := filepath.Join(dir, name+".json")
+	if r == nil {
+		return os.Remove(path)
+	}
+	data, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(path+".tmp", path)
 }
 
 func (s *Server) lookup(host string) (target, bool) {
@@ -166,7 +226,7 @@ func tokenFrom(r *http.Request) (tok string, fromHeader bool) {
 	return "", false
 }
 
-func validToken(rt box.Route, tok string) bool {
+func validToken(rt Route, tok string) bool {
 	if tok == "" || rt.TokenHash == "" {
 		return false
 	}

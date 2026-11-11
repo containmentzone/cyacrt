@@ -119,7 +119,7 @@ in
     environment.systemPackages = [ cfg.package ];
     environment.variables.CYAC_DIR = cfg.stateDir;
 
-    # loop: container-tier disks; tun: VM taps; bridge: cyac0.
+    # loop: container-tier disks; tun: VM taps; bridge: each network's bridge.
     boot.kernelModules = [
       "loop"
       "tun"
@@ -203,9 +203,6 @@ in
         RuntimeDirectory = "cyac";
         # The socket inside is 0660 root:cyac.
         RuntimeDirectoryMode = "0755";
-        # The daemon stops its boxes on SIGTERM (each gets up to 30s for a
-        # clean shutdown, all at once); whatever is left after that is killed.
-        KillMode = "mixed";
         Restart = "on-failure";
       };
     };
@@ -224,8 +221,8 @@ in
     ];
 
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
-      services.cyac: networking.nftables.flushRuleset wipes cyac's "inet cyac" table on every
-      firewall reload, until the next `cyac start` puts it back. Consider flushRuleset = false.
+      services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
+      and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
     '';
   };
 }
