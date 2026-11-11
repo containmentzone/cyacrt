@@ -150,6 +150,10 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 			{Destination: "/run/cyac/config.json", Type: "bind", Source: initConfig(m), Options: []string{"bind", "ro"}},
 		}
 	}
+	if m.Secrets != "" {
+		initMounts = append(initMounts, specs.Mount{Destination: "/run/secrets", Type: "bind", Source: m.Secrets,
+			Options: []string{"rbind", "ro", "nosuid", "nodev", "noexec"}})
+	}
 	return &specs.Spec{
 		Version:  specs.Version,
 		Root:     &specs.Root{Path: "rootfs"},
