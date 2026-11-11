@@ -1,0 +1,6 @@
+[Workload]
+Image=docker.io/library/nginx
+
+[Box]
+Network=web
+Address=10.42.2.10

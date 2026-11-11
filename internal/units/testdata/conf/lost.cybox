@@ -1,0 +1,6 @@
+[Workload]
+Image=docker.io/library/alpine
+
+[Box]
+Network=nowhere
+Address=10.42.9.10
