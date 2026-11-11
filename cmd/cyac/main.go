@@ -28,9 +28,11 @@ import (
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/box"
 	"github.com/containmentzone/cyacrt/internal/client"
+	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/network/bridge"
 	"github.com/containmentzone/cyacrt/internal/proxy"
+	"github.com/containmentzone/cyacrt/internal/run"
 	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
 	"github.com/containmentzone/cyacrt/internal/server"
@@ -49,6 +51,9 @@ const usage = `usage: cyac <command> [args]
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
   unexpose <name>
+
+  run start|stop <kind> <name>  run by the units cyac-generator writes:
+                                create or remove one object's kernel objects
 
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
                                 the proxy serves :80 and :443 with Let's Encrypt;
@@ -80,12 +85,26 @@ func main() {
 		if status, err = agent.Run(args[0], args[1:]); err == nil {
 			os.Exit(status)
 		}
+	case "run":
+		err = runUnit(args)
 	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
 	if err != nil {
 		log.Fatal("cyac: ", err)
 	}
+}
+
+// runUnit is ExecStart/ExecStop of a generated unit.
+func runUnit(args []string) error {
+	if len(args) != 3 || (args[0] != "start" && args[0] != "stop") {
+		return errors.New("usage: cyac run start|stop <kind> <name>")
+	}
+	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr)}
+	if args[0] == "start" {
+		return r.Start(args[1], args[2])
+	}
+	return r.Stop(args[1], args[2])
 }
 
 func env(key, def string) string {
