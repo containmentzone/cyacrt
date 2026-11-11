@@ -169,7 +169,7 @@ func pickMode(root *os.Root, b *Box) error {
 		}
 		b.Init = []string{"/sbin/init"}
 	}
-	if base := filepath.Base(b.Init[0]); want == "command" || want == "" && base != "init" && base != "systemd" {
+	if want == "command" || want == "" && ModeFor(b.Init) == "command" {
 		b.Mode = "command"
 		return nil
 	}
@@ -177,6 +177,16 @@ func pickMode(root *os.Root, b *Box) error {
 		return fmt.Errorf("init %s not found in image (pass --init to choose one): %w", b.Init[0], err)
 	}
 	return nil
+}
+
+// ModeFor is the mode a command gets when nothing asks for one: an init
+// (named init or systemd) becomes PID 1, anything else runs under
+// cyac-init like a container.
+func ModeFor(init []string) string {
+	if base := filepath.Base(init[0]); base == "init" || base == "systemd" {
+		return ""
+	}
+	return "command"
 }
 
 // writeFile replaces name in root, without following a symlink there.

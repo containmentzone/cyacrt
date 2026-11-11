@@ -27,6 +27,12 @@ type Machine struct {
 	MemMiB     int
 	Addr       Addr // from Network.Addr
 	Link       Link // set by Network.Attach before Runtime.Start
+	// MAC is eth0's address when the network pins one (VMs only: a
+	// container's netns already has it). Empty lets the runtime pick.
+	MAC string
+	// Secrets is a host directory a container sees read-only at
+	// /run/secrets, or empty (runc only).
+	Secrets string
 }
 
 // Addr is a box's static network config. cyac writes it into the box on

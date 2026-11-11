@@ -120,6 +120,7 @@ func TestFileErrors(t *testing.T) {
 		{"Bad.cybox", "", "invalid name"},
 		{"x.cygateway", "[Gateway]\nIndex=0\nKind=direct\n", "Index=0: already used by cygateway out"},
 		{"x.cyservice", strings.Replace(prx, "Index=0", "Index=128", 1), "from 0 to 127"},
+		{"proxy.cybox", strings.Replace(bx, "10.42.1.10", "10.42.1.11", 1), "name already used by cyservice proxy"},
 	} {
 		t.Run(tc.file+"/"+tc.want, func(t *testing.T) {
 			_, errs := load(t, map[string]string{

@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -53,7 +54,8 @@ const usage = `usage: cyac <command> [args]
   unexpose <name>
 
   run start|stop <kind> <name>  run by the units cyac-generator writes:
-                                create or remove one object's kernel objects
+                                start or stop one object (a box or service
+                                runs in the foreground)
 
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
                                 the proxy serves :80 and :443 with Let's Encrypt;
@@ -100,11 +102,35 @@ func runUnit(args []string) error {
 	if len(args) != 3 || (args[0] != "start" && args[0] != "stop") {
 		return errors.New("usage: cyac run start|stop <kind> <name>")
 	}
-	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr)}
+	dir := env("CYAC_DIR", "/var/lib/cyac")
+	rts, err := runtimes(dir)
+	if err != nil {
+		return err
+	}
+	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr), State: dir, Runtimes: rts}
 	if args[0] == "start" {
-		return r.Start(args[1], args[2])
+		// systemd stops a box or service with SIGTERM; Start then stops
+		// the workload cleanly and returns.
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+		defer stop()
+		return r.Start(ctx, args[1], args[2])
 	}
 	return r.Stop(args[1], args[2])
+}
+
+// runtimes are the runtimes a box can use, in order of preference.
+func runtimes(dir string) ([]driver.Runtime, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
+	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
+	return []driver.Runtime{
+		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
+		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
+		runc.Runtime{Init: init},
+	}, nil
 }
 
 func env(key, def string) string {
@@ -243,21 +269,11 @@ func daemon(socket string, args []string) error {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, opts)))
 
 	dir := env("CYAC_DIR", "/var/lib/cyac")
-	self, err := os.Executable()
+	rts, err := runtimes(dir)
 	if err != nil {
 		return err
 	}
-	// The static PID 1 for VMs and init-less boxes; the Nix package sets it.
-	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
-	s := box.Store{
-		Dir: dir,
-		Net: bridge.Network{DNS: "1.1.1.1"},
-		Runtimes: []driver.Runtime{
-			cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
-			cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
-			runc.Runtime{Init: init},
-		},
-	}
+	s := box.Store{Dir: dir, Net: bridge.Network{DNS: "1.1.1.1"}, Runtimes: rts}
 	if err := s.Lock(); err != nil {
 		return err
 	}

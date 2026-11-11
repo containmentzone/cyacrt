@@ -8,6 +8,7 @@
 package run
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
@@ -42,50 +44,59 @@ func Command(log io.Writer) Exec {
 	}
 }
 
-// Runner starts and stops objects. Only gateways and networks so far:
-// their units are oneshots whose whole job is the plan.
+// Runner starts and stops objects.
 type Runner struct {
 	Conf string // conf dir to render from
 	Dir  string // where records go
 	Exec Exec
-}
-
-// Plan renders what starting kind/name means under the current conf.
-func Plan(c *conf.Config, probs []conf.Problem, kind, name string) (render.Plan, error) {
-	for _, p := range probs {
-		if p.Kind == kind && p.Name == name {
-			return render.Plan{}, p.Err
-		}
-	}
-	switch kind {
-	case conf.KindGateway:
-		if g := c.Gateways[name]; g != nil {
-			return render.Gateway(g), nil
-		}
-	case conf.KindNetwork:
-		if n := c.Networks[name]; n != nil {
-			return render.Network(n), nil
-		}
-	case conf.KindService, conf.KindBox:
-		return render.Plan{}, fmt.Errorf("starting a %s is not implemented yet", kind)
-	default:
-		return render.Plan{}, fmt.Errorf("unknown kind %q", kind)
-	}
-	return render.Plan{}, fmt.Errorf("no %s %s in the conf", kind, name)
+	// Workloads: where disks, run dirs and console logs live (see
+	// package box), and the runtimes a box may use, in order of
+	// preference. Services always use runc.
+	State    string
+	Runtimes []driver.Runtime
 }
 
 // Start brings kind/name up. It first clears whatever an earlier run left
 // behind, so a start after a crash doesn't trip over its own objects, and
-// it undoes a half-finished Up before returning its error.
-func (r *Runner) Start(kind, name string) error {
+// it undoes a half-finished Up before returning its error. A gateway or
+// network is done once its plan ran; a box or service runs in the
+// foreground until it exits or ctx ends.
+func (r *Runner) Start(ctx context.Context, kind, name string) error {
 	c, probs, err := conf.Load(r.Conf)
 	if err != nil {
 		return err
 	}
-	p, err := Plan(c, probs, kind, name)
-	if err != nil {
-		return err
+	for _, p := range probs {
+		if p.Kind == kind && p.Name == name {
+			return p.Err
+		}
 	}
+	missing := fmt.Errorf("no %s %s in the conf", kind, name)
+	switch kind {
+	case conf.KindGateway:
+		if g := c.Gateways[name]; g != nil {
+			return r.up(kind, name, render.Gateway(g))
+		}
+	case conf.KindNetwork:
+		if n := c.Networks[name]; n != nil {
+			return r.up(kind, name, render.Network(n))
+		}
+	case conf.KindBox:
+		if b := c.Boxes[name]; b != nil {
+			return r.box(ctx, c, b)
+		}
+	case conf.KindService:
+		if s := c.Services[name]; s != nil {
+			return r.service(ctx, c, s)
+		}
+	default:
+		return fmt.Errorf("unknown kind %q", kind)
+	}
+	return missing
+}
+
+// up clears an earlier run of kind/name, records p's Down, and runs its Up.
+func (r *Runner) up(kind, name string, p render.Plan) error {
 	if err := r.Stop(kind, name); err != nil {
 		return err
 	}
@@ -102,10 +113,14 @@ func (r *Runner) Start(kind, name string) error {
 }
 
 // Stop runs the Down steps Start recorded, all of them whatever fails, and
-// then drops the record. Without a record there is nothing to do.
+// then drops the record. Without a record there is nothing to do. For a
+// workload it first removes what its runtime left (see cleanup).
 func (r *Runner) Stop(kind, name string) error {
 	if !conf.ValidName(name) {
 		return fmt.Errorf("invalid name %q", name)
+	}
+	if kind == conf.KindBox || kind == conf.KindService {
+		r.cleanup(kind, name)
 	}
 	path := r.path(kind, name)
 	data, err := os.ReadFile(path)

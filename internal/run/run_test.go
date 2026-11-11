@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ const (
 // Stop runs what Start recorded, even after the file is gone.
 func TestStartStop(t *testing.T) {
 	r, f := runner(t, map[string]string{"dev.cynetwork": dev, "out.cygateway": out})
-	if err := r.Start("cynetwork", "dev"); err != nil {
+	if err := r.Start(context.Background(), "cynetwork", "dev"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.ran) == 0 || f.ran[0] != "ip link add cyn1 type bridge" {
@@ -73,7 +74,7 @@ func TestStartStop(t *testing.T) {
 func TestStartFails(t *testing.T) {
 	r, f := runner(t, map[string]string{"out.cygateway": out})
 	f.fail = "ip -n cygw-out route add"
-	err := r.Start("cygateway", "out")
+	err := r.Start(context.Background(), "cygateway", "out")
 	if err == nil || !strings.Contains(err.Error(), "route add default") {
 		t.Fatalf("err = %v", err)
 	}
@@ -88,11 +89,11 @@ func TestStartFails(t *testing.T) {
 // A start after a crash first clears what the crashed run left.
 func TestStartClearsOld(t *testing.T) {
 	r, f := runner(t, map[string]string{"out.cygateway": out})
-	if err := r.Start("cygateway", "out"); err != nil {
+	if err := r.Start(context.Background(), "cygateway", "out"); err != nil {
 		t.Fatal(err)
 	}
 	f.ran = nil
-	if err := r.Start("cygateway", "out"); err != nil {
+	if err := r.Start(context.Background(), "cygateway", "out"); err != nil {
 		t.Fatal(err)
 	}
 	if f.ran[0] != "nft delete table inet cygw-out" || !strings.HasPrefix(f.ran[3], "ip netns add") {
@@ -108,10 +109,10 @@ func TestStartRefuses(t *testing.T) {
 	for _, tc := range []struct{ kind, name, want string }{
 		{"cynetwork", "bad", "gone"},
 		{"cynetwork", "nope", "no cynetwork nope"},
-		{"cybox", "a", "not implemented"},
+		{"cybox", "a", "no cybox a"},
 		{"cyfoo", "a", "unknown kind"},
 	} {
-		if err := r.Start(tc.kind, tc.name); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if err := r.Start(context.Background(), tc.kind, tc.name); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("Start(%s, %s) = %v, want %q", tc.kind, tc.name, err, tc.want)
 		}
 	}

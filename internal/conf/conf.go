@@ -481,6 +481,13 @@ func (c *Config) check() []Problem {
 	uniqueIndex(c.Networks, KindNetwork, func(n *Network) int { return n.Index }, drop)
 	uniqueIndex(c.Gateways, KindGateway, func(g *Gateway) int { return g.Index }, drop)
 	uniqueIndex(c.Services, KindService, func(s *Service) int { return s.Index }, drop)
+	// Boxes and services are both workloads, named alike in DNS and on
+	// the host (container, run dir), so a name can only be one of them.
+	for _, name := range Sorted(c.Boxes) {
+		if c.Services[name] != nil {
+			drop(KindBox, name, fmt.Errorf("name already used by %s %s", KindService, name))
+		}
+	}
 
 	for changed := true; changed; {
 		changed = false

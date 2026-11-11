@@ -99,8 +99,12 @@ func (r Runtime) Start(m *driver.Machine) error {
 	}
 	mask := net.IP(net.CIDRMask(m.Addr.Prefix, 32))
 	// No panic=: a panicking guest would reboot in place, again and again.
+	var gw string // none on a sealed network
+	if m.Addr.Gateway.IsValid() {
+		gw = m.Addr.Gateway.String()
+	}
 	cmdline := fmt.Sprintf("console=ttyS0 ip=%s::%s:%s:%s:eth0:off",
-		m.Addr.IP, m.Addr.Gateway, mask, m.Name)
+		m.Addr.IP, gw, mask, m.Name)
 	cpus := fmt.Sprintf("boot=%d", m.CPUs)
 	if r.PVM {
 		// virt-pvm's guide caps the guest's physical address width for
@@ -109,6 +113,9 @@ func (r Runtime) Start(m *driver.Machine) error {
 	}
 	ip := m.Addr.IP.As4()
 	mac := fmt.Sprintf("06:00:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3])
+	if m.MAC != "" {
+		mac = m.MAC
+	}
 
 	log, in, err := driver.OpenConsole(m)
 	if err != nil {
