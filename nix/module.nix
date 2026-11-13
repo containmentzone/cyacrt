@@ -220,6 +220,17 @@ in
       443
     ];
 
+    # The host firewall drops input it wasn't told about, and an accept in
+    # cyac's own tables can't overrule a drop in another table. Boxes need
+    # their network's DNS on .2 of its bridge (cyn<index>), so open 53 there.
+    networking.firewall.extraInputRules = lib.mkIf config.networking.nftables.enable ''
+      iifname "cyn*" meta l4proto { tcp, udp } th dport 53 accept
+    '';
+    networking.firewall.extraCommands = lib.mkIf (!config.networking.nftables.enable) ''
+      iptables -w -I nixos-fw -i cyn+ -p udp --dport 53 -j nixos-fw-accept
+      iptables -w -I nixos-fw -i cyn+ -p tcp --dport 53 -j nixos-fw-accept
+    '';
+
     warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
       services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
       and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
