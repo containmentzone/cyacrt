@@ -71,6 +71,7 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 		return err
 	}
 	m := machine(st, s.Name, s.Workload, img)
+	m.Confined = true
 	m.Link.Netns = netnsPath(render.ServiceNetns(s.Name))
 	// Names resolve through the gateway's resolver if it names one, and
 	// otherwise through cyac dns on the first network that attaches s.

@@ -31,6 +31,11 @@ type Machine struct {
 	// Secrets is a host directory a container sees read-only at
 	// /run/secrets, or empty (runc only).
 	Secrets string
+	// Confined runs the workload without the privileges systemd as PID 1
+	// needs: services, which face every box on their networks. For runc
+	// that means docker's default capabilities, no new privileges and no
+	// writable cgroup subtree.
+	Confined bool
 }
 
 // Addr is a box's static network config. cyac writes it into the box on
