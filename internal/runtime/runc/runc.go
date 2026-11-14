@@ -3,7 +3,9 @@
 // for a box in command or pause mode.
 //
 // This is NOT a security boundary: systemd needs CAP_SYS_ADMIN and a
-// writable cgroup subtree, so treat these boxes as trusted.
+// writable cgroup subtree, so treat these boxes as trusted. A confined
+// machine (a service) gets neither, nor CAP_NET_ADMIN, so it can't undo
+// the no-forwarding table in its netns.
 package runc
 
 import (
@@ -130,12 +132,9 @@ func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
 }
 
 func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
-	caps := []string{
-		"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
-		"CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_SETFCAP",
-		"CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_NET_ADMIN", "CAP_IPC_LOCK",
-		"CAP_SYS_CHROOT", "CAP_SYS_ADMIN", "CAP_SYS_NICE", "CAP_SYS_RESOURCE",
-		"CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_LEASE",
+	caps := boxCaps
+	if m.Confined {
+		caps = confinedCaps
 	}
 	period := uint64(100_000)
 	quota := int64(m.CPUs) * int64(period)
@@ -161,22 +160,12 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 		Process: &specs.Process{
 			Args: args,
 			// systemd reads $container to skip units that make no sense here.
-			Env:          []string{"container=cyac", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-			Cwd:          "/",
-			Capabilities: &specs.LinuxCapabilities{Bounding: caps, Effective: caps, Permitted: caps},
+			Env:             []string{"container=cyac", "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
+			Cwd:             "/",
+			Capabilities:    &specs.LinuxCapabilities{Bounding: caps, Effective: caps, Permitted: caps},
+			NoNewPrivileges: m.Confined,
 		},
-		Mounts: append([]specs.Mount{
-			{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
-			{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
-			{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}},
-			{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}},
-			{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
-			{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
-			// With a cgroup namespace, systemd gets a writable view of its own subtree only.
-			{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "rw"}},
-			{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=755"}},
-			{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=1777"}},
-		}, initMounts...),
+		Mounts: append(baseMounts(m.Confined), initMounts...),
 		Linux: &specs.Linux{
 			Namespaces: []specs.LinuxNamespace{
 				{Type: specs.PIDNamespace}, {Type: specs.IPCNamespace}, {Type: specs.UTSNamespace},
@@ -192,4 +181,41 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 			ReadonlyPaths: []string{"/proc/bus", "/proc/fs", "/proc/irq", "/proc/sys", "/proc/sysrq-trigger"},
 		},
 	}
+}
+
+// boxCaps are what systemd as PID 1 needs.
+var boxCaps = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
+	"CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_SETFCAP",
+	"CAP_NET_BIND_SERVICE", "CAP_NET_RAW", "CAP_NET_ADMIN", "CAP_IPC_LOCK",
+	"CAP_SYS_CHROOT", "CAP_SYS_ADMIN", "CAP_SYS_NICE", "CAP_SYS_RESOURCE",
+	"CAP_MKNOD", "CAP_AUDIT_WRITE", "CAP_LEASE",
+}
+
+// confinedCaps are docker's defaults without CAP_NET_RAW, CAP_MKNOD and
+// CAP_SYS_CHROOT: enough to drop to the image's user and bind low ports.
+var confinedCaps = []string{
+	"CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_FSETID", "CAP_KILL",
+	"CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_SETFCAP",
+	"CAP_NET_BIND_SERVICE", "CAP_AUDIT_WRITE",
+}
+
+// baseMounts is the container's /proc, /dev, /sys and tmpfs mounts. A box
+// gets a writable cgroup subtree for systemd; a confined machine doesn't.
+func baseMounts(confined bool) []specs.Mount {
+	mounts := []specs.Mount{
+		{Destination: "/proc", Type: "proc", Source: "proc", Options: []string{"nosuid", "noexec", "nodev"}},
+		{Destination: "/dev", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "strictatime", "mode=755", "size=65536k"}},
+		{Destination: "/dev/pts", Type: "devpts", Source: "devpts", Options: []string{"nosuid", "noexec", "newinstance", "ptmxmode=0666", "mode=0620"}},
+		{Destination: "/dev/shm", Type: "tmpfs", Source: "shm", Options: []string{"nosuid", "noexec", "nodev", "mode=1777", "size=65536k"}},
+		{Destination: "/dev/mqueue", Type: "mqueue", Source: "mqueue", Options: []string{"nosuid", "noexec", "nodev"}},
+		{Destination: "/sys", Type: "sysfs", Source: "sysfs", Options: []string{"nosuid", "noexec", "nodev", "ro"}},
+		{Destination: "/run", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=755"}},
+		{Destination: "/tmp", Type: "tmpfs", Source: "tmpfs", Options: []string{"nosuid", "nodev", "mode=1777"}},
+	}
+	if !confined {
+		// With a cgroup namespace, systemd gets a writable view of its own subtree only.
+		mounts = append(mounts, specs.Mount{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "rw"}})
+	}
+	return mounts
 }
