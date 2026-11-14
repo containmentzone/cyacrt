@@ -70,8 +70,13 @@ func MAC(addr netip.Addr) string {
 }
 
 // private is what no gateway forwards to: other hosts' LANs, CGNAT,
-// link-local (cloud metadata) and cyac's own range.
-const private = "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 }"
+// link-local (cloud metadata), cyac's own range, Azure's WireServer
+// (168.63.129.16, which hands out the VM's goal state and certificates),
+// and the special-use ranges that are never the internet: "this network",
+// loopback, IETF protocol assignments, benchmarking, multicast and
+// reserved (with broadcast).
+const private = "{ 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, 169.254.0.0/16, " +
+	"172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }"
 
 // Gateway is the plan for cygateway@<g>: its netns, its uplink, and the
 // firewall that lets legs out through the uplink and nowhere else.
@@ -104,14 +109,14 @@ func Gateway(g *conf.Gateway) Plan {
 	}
 	chain forward {
 		type filter hook forward priority 0; policy accept;
-		iifname %[1]q accept
+%[3]s		iifname %[1]q accept
 		oifname %[1]q ct state established,related accept
 	}
 	chain postrouting {
 		type nat hook postrouting priority 100;
 		ip saddr %[2]s oifname != %[1]q masquerade
 	}
-`, hostIf, gw.Addr()))
+`, hostIf, gw.Addr(), hostForward(g, hostIf)))
 		p.down("ip", "link", "del", hostIf)
 	case "wireguard":
 		// Created in the host netns so its UDP socket stays there and
@@ -152,6 +157,24 @@ func Gateway(g *conf.Gateway) Plan {
 	// Deleting the netns deletes everything in it, the legs' ends too.
 	p.down("ip", "netns", "del", ns)
 	return p
+}
+
+// hostForward is what the host drops of a direct gateway's traffic before
+// forwarding the rest: the same private ranges the gateway already drops,
+// in case its netns rules are gone, and, with Uplink=, every interface
+// but that one. Its resolver (DNS=, which may well be on the LAN) stays
+// reachable: only cyac dns asks it from inside the gateway, as the
+// gateway's own rules drop the private range for boxes.
+func hostForward(g *conf.Gateway, hostIf string) string {
+	var b strings.Builder
+	if g.DNS != "" {
+		fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s meta l4proto { tcp, udp } th dport 53 accept\n", hostIf, g.DNS)
+	}
+	fmt.Fprintf(&b, "\t\tiifname %q ip daddr %s drop\n", hostIf, private)
+	if g.Out != "" {
+		fmt.Fprintf(&b, "\t\tiifname %q oifname != %q drop\n", hostIf, g.Out)
+	}
+	return b.String()
 }
 
 // Network is the plan for cynetwork@<n>: the bridge with the host on .2,

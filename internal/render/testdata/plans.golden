@@ -22,6 +22,9 @@ up:
     	}
     	chain forward {
     		type filter hook forward priority 0; policy accept;
+    		iifname "cygw0" ip daddr 192.168.1.1 meta l4proto { tcp, udp } th dport 53 accept
+    		iifname "cygw0" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } drop
+    		iifname "cygw0" oifname != "eth0" drop
     		iifname "cygw0" accept
     		oifname "cygw0" ct state established,related accept
     	}
@@ -42,7 +45,7 @@ up:
     	chain forward {
     		type filter hook forward priority 0; policy drop;
     		ct state established,related accept
-    		oifname "uplink" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
+    		oifname "uplink" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } drop
     		oifname "uplink" accept
     	}
     	chain postrouting {
@@ -79,7 +82,7 @@ up:
     	chain forward {
     		type filter hook forward priority 0; policy drop;
     		ct state established,related accept
-    		oifname "wg0" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } drop
+    		oifname "wg0" ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129.16, 169.254.0.0/16, 172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 } drop
     		oifname "wg0" accept
     	}
     	chain postrouting {
