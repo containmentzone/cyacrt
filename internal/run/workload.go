@@ -58,12 +58,15 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	return r.run(ctx, rt, m)
 }
 
-// service runs s under runc in the netns its plan builds, with the unit's
-// credentials (LoadCredential=) at /run/secrets.
+// service runs s confined in the netns its plan builds, with the unit's
+// credentials (LoadCredential=) at /run/secrets: under gVisor where runsc
+// is installed, else under runc.
 func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) error {
-	rt, err := r.runtime("runc")
+	rt, err := r.runtime("runsc")
 	if err != nil {
-		return err
+		if rt, err = r.runtime("runc"); err != nil {
+			return err
+		}
 	}
 	st := r.store(conf.KindService)
 	img, err := image(st, s.Name, s.Workload, defaultDiskMB)

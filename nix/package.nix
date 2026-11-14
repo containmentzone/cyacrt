@@ -8,6 +8,7 @@
   e2fsprogs,
   gnutar,
   runc,
+  gvisor,
   cloud-hypervisor,
   procps,
   wireguard-tools,
@@ -22,6 +23,7 @@ let
     e2fsprogs
     gnutar
     runc
+    gvisor # runsc, for services
     cloud-hypervisor
     procps # sysctl, for `cyac run`
     wireguard-tools # wg, for Kind=wireguard gateways

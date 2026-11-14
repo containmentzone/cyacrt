@@ -162,6 +162,9 @@ func runtimes(dir string) ([]driver.Runtime, error) {
 		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
 		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
 		runc.Runtime{Init: init},
+		// Last, so a box only gets it by asking: systemd doesn't run
+		// under gVisor. Services prefer it (see run.Runner.service).
+		runc.Runtime{Init: init, GVisor: true},
 	}, nil
 }
 

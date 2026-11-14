@@ -27,18 +27,45 @@ import (
 // Runtime implements driver.Runtime.
 type Runtime struct {
 	Init string // static cyac-init binary, bind-mounted for command and pause mode
+	// GVisor runs the same bundle under runsc instead: the workload talks
+	// to gVisor's kernel, not the host's, and its network stack takes
+	// over the interfaces in the netns. Not for systemd boxes.
+	GVisor bool
 }
 
 var _ driver.Runtime = Runtime{}
 
-func (Runtime) Name() string               { return "runc" }
+func (r Runtime) Name() string             { return r.bin() }
 func (Runtime) LinkKind() driver.LinkKind  { return driver.Netns }
 func containerID(m *driver.Machine) string { return "cyac-" + m.Name }
 func rootfs(m *driver.Machine) string      { return filepath.Join(m.RunDir, "rootfs") }
 func initConfig(m *driver.Machine) string  { return filepath.Join(m.RunDir, "init.json") }
 
-func (Runtime) Available() error {
-	_, err := exec.LookPath("runc")
+// bin is the OCI runtime's binary, which is also this runtime's name.
+func (r Runtime) bin() string {
+	if r.GVisor {
+		return "runsc"
+	}
+	return "runc"
+}
+
+// cmd is the argv for one runtime subcommand. runsc gets --overlay2=none
+// so writes land in the disk, as under runc, instead of in gVisor's
+// default overlay, which is thrown away when the sandbox ends.
+func (r Runtime) cmd(args ...string) []string {
+	if r.GVisor {
+		args = append([]string{"--overlay2=none"}, args...)
+	}
+	return append([]string{r.bin()}, args...)
+}
+
+func (r Runtime) run(args ...string) error {
+	argv := r.cmd(args...)
+	return sh.Run(argv[0], argv[1:]...)
+}
+
+func (r Runtime) Available() error {
+	_, err := exec.LookPath(r.bin())
 	return err
 }
 
@@ -76,7 +103,8 @@ func (r Runtime) Start(m *driver.Machine) error {
 	defer in.Close()
 	// Detached: the container's stdio is the console log and FIFO, and
 	// runc returns once init is running.
-	cmd := exec.Command("runc", "run", "--detach", "--bundle", m.RunDir, containerID(m))
+	argv := r.cmd("run", "--detach", "--bundle", m.RunDir, containerID(m))
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	return cmd.Run()
 }
@@ -84,7 +112,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 func (r Runtime) Stop(m *driver.Machine) error {
 	// SIGRTMIN+3 (37 on Linux) asks systemd (or cyac-init) for a clean
 	// halt; runc only takes it by number.
-	if err := sh.Run("runc", "kill", containerID(m), "37"); err != nil {
+	if err := r.run("kill", containerID(m), "37"); err != nil {
 		return err
 	}
 	for range 60 {
@@ -93,11 +121,12 @@ func (r Runtime) Stop(m *driver.Machine) error {
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	return sh.Run("runc", "kill", containerID(m), "KILL")
+	return r.run("kill", containerID(m), "KILL")
 }
 
-func (Runtime) Running(m *driver.Machine) bool {
-	out, err := exec.Command("runc", "state", containerID(m)).Output()
+func (r Runtime) Running(m *driver.Machine) bool {
+	argv := r.cmd("state", containerID(m))
+	out, err := exec.Command(argv[0], argv[1:]...).Output()
 	if err != nil {
 		return false
 	}
@@ -105,8 +134,8 @@ func (Runtime) Running(m *driver.Machine) bool {
 	return json.Unmarshal(out, &st) == nil && st.Status == specs.StateRunning
 }
 
-func (Runtime) Cleanup(m *driver.Machine) {
-	sh.Run("runc", "delete", "--force", containerID(m))
+func (r Runtime) Cleanup(m *driver.Machine) {
+	r.run("delete", "--force", containerID(m))
 	sh.Run("umount", rootfs(m))
 }
 
@@ -127,8 +156,13 @@ func (Runtime) Grow(m *driver.Machine) error {
 	return sh.Run("resize2fs", dev)
 }
 
-func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
-	return exec.Command("runc", append([]string{"exec", "-t", containerID(m)}, args...)...), nil
+func (r Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
+	// runsc has no -t: it gives the process a pty when its stdio is one.
+	argv := r.cmd("exec", "-t", containerID(m))
+	if r.GVisor {
+		argv = r.cmd("exec", containerID(m))
+	}
+	return exec.Command(argv[0], append(argv[1:], args...)...), nil
 }
 
 func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
