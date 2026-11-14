@@ -80,6 +80,9 @@ type Gateway struct {
 	Config  string       // wireguard: path to a file wg setconf reads
 	Address netip.Prefix // wireguard: the tunnel's address, e.g. 10.64.0.2/32
 	DNS     string       // upstream resolver for its networks; may be empty
+	// Out is a direct gateway's Uplink=: the host interface its traffic
+	// may leave by. Empty means any interface the host routes to.
+	Out string
 }
 
 // Workload is what cybox and cyservice share: an OCI image and how to run
@@ -286,7 +289,7 @@ func (c *Config) parseGateway(name string, f *fields) error {
 	for _, kv := range []struct {
 		key string
 		dst *string
-	}{{"Kind", &g.Kind}, {"Config", &g.Config}, {"DNS", &g.DNS}, {"Address", &addr}} {
+	}{{"Kind", &g.Kind}, {"Config", &g.Config}, {"DNS", &g.DNS}, {"Address", &addr}, {"Uplink", &g.Out}} {
 		if *kv.dst, err = f.one(kv.key); err != nil {
 			return err
 		}
@@ -306,7 +309,13 @@ func (c *Config) parseGateway(name string, f *fields) error {
 		if g.Config != "" || addr != "" {
 			return fmt.Errorf("[Gateway] Config= and Address= only apply to Kind=wireguard")
 		}
+		if g.Out != "" && !ifname.MatchString(g.Out) {
+			return bad("Uplink", g.Out, "want a host interface name")
+		}
 	case "wireguard":
+		if g.Out != "" {
+			return fmt.Errorf("[Gateway] Uplink= only applies to Kind=direct; a wireguard gateway leaves by its tunnel")
+		}
 		if !filepath.IsAbs(g.Config) {
 			return bad("Config", g.Config, "Kind=wireguard needs an absolute path")
 		}
@@ -324,6 +333,10 @@ func (c *Config) parseGateway(name string, f *fields) error {
 	c.Gateways[name] = g
 	return nil
 }
+
+// ifname is a Linux interface name: at most 15 bytes, and nothing that
+// would need quoting in an nft rule.
+var ifname = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
 
 var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
