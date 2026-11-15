@@ -52,7 +52,11 @@ func WriteNetConfig(dir string, c Config) error {
 	if err := root.MkdirAll("etc/systemd/network", 0o755); err != nil {
 		return err
 	}
-	if err := replaceFile(root, "etc/resolv.conf", "# written by cyac on every start\nnameserver "+c.DNS+"\n"); err != nil {
+	resolv := "# written by cyac on every start\n"
+	if c.DNS != "" { // a box on a sealed network has no resolver
+		resolv += "nameserver " + c.DNS + "\n"
+	}
+	if err := replaceFile(root, "etc/resolv.conf", resolv); err != nil {
 		return err
 	}
 	return replaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)

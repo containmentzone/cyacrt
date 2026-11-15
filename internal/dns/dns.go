@@ -1,16 +1,26 @@
-// Package dns is the resolver on a network's .2: it answers for the
-// network's zone, <name>.<network>.cyac.internal, from the conf (its
-// boxes and the services it attaches), and forwards every other question
-// to its gateway's resolver from inside the gateway's netns, so a box can
-// only resolve outside names along the path its packets could take. A
-// sealed network gets no forwarding at all.
+// Package dns is a gateway's resolver. It runs inside the gateway's
+// netns as an unprivileged user and listens on port 53 of every leg, so
+// a box asks its router (.1) and a service asks the gateway end of its
+// link; nothing on the host is involved. It answers for the zones of the
+// networks behind the gateway, <name>.<network>.cyac.internal, and
+// forwards every other question to the gateway's resolver, which leaves
+// by the gateway's own route (its uplink or its tunnel) like any other
+// traffic from the netns.
+//
+// The resolver can't read the conf (it is root's, and holds more than
+// names), so `cyac run start` writes each gateway's zone to a file the
+// resolver rereads: a name follows the conf as of the last start of any
+// object.
 package dns
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -21,59 +31,155 @@ import (
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
+// Dir is where zone files live: on /run, world-readable, one per gateway.
+const Dir = "/run/cyac-dns"
+
 // DefaultUpstream is the resolver for a gateway without DNS=.
 const DefaultUpstream = "1.1.1.1"
 
-// Forward sends a raw query upstream through gateway gw and returns the
-// raw reply.
-type Forward func(ctx context.Context, gw *conf.Gateway, query []byte) ([]byte, error)
+// root is the suffix of every zone. Names under it are never forwarded.
+const root = "cyac.internal."
 
-// Server answers for one network. It rereads the conf at most once a
-// second, so it follows edits without a restart.
+// inFlight caps the queries (UDP) and connections (TCP) served at once;
+// more are dropped, so a box that floods the resolver gets timeouts, not
+// the host's memory.
+const inFlight = 256
+
+// Zone is what one gateway's resolver knows.
+type Zone struct {
+	Upstream string   `json:"upstream"`
+	Clients  []Client `json:"clients"`
+}
+
+// Client is who may ask, by source address (which the bridge pins), and
+// the names they see, fully qualified and lower case. Anyone else is
+// refused.
+type Client struct {
+	From  netip.Prefix          `json:"from"`
+	Names map[string]netip.Addr `json:"names"`
+}
+
+// ZoneFor builds g's zone from the conf: every network behind g sees its
+// own boxes and services, and every service behind g sees the names of
+// all the networks that attach it.
+func ZoneFor(c *conf.Config, g *conf.Gateway) Zone {
+	z := Zone{Upstream: g.DNS}
+	if z.Upstream == "" {
+		z.Upstream = DefaultUpstream
+	}
+	names := func(n *conf.Network, into map[string]netip.Addr) {
+		zone := render.Domain(n) + "."
+		for _, name := range conf.Sorted(c.Boxes) {
+			if b := c.Boxes[name]; b.Network == n.Name {
+				into[name+"."+zone] = b.Address
+			}
+		}
+		for _, name := range n.Services {
+			into[name+"."+zone] = c.Services[name].AddressIn(n)
+		}
+	}
+	for _, name := range conf.Sorted(c.Networks) {
+		if n := c.Networks[name]; n.Gateway == g.Name {
+			cl := Client{From: n.Prefix(), Names: map[string]netip.Addr{}}
+			names(n, cl.Names)
+			z.Clients = append(z.Clients, cl)
+		}
+	}
+	for _, name := range conf.Sorted(c.Services) {
+		if s := c.Services[name]; s.Gateway == g.Name {
+			_, end := s.Link()
+			cl := Client{From: netip.PrefixFrom(end.Addr(), 32), Names: map[string]netip.Addr{}}
+			for _, n := range c.AttachedBy(name) {
+				names(c.Networks[n], cl.Names)
+			}
+			z.Clients = append(z.Clients, cl)
+		}
+	}
+	return z
+}
+
+// Path is gateway gw's zone file in dir.
+func Path(dir, gw string) string { return filepath.Join(dir, gw+".json") }
+
+// Write puts every gateway's zone file in dir.
+func Write(c *conf.Config, dir string) error {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	for _, name := range conf.Sorted(c.Gateways) {
+		data, err := json.Marshal(ZoneFor(c, c.Gateways[name]))
+		if err != nil {
+			return err
+		}
+		tmp := Path(dir, name) + ".tmp"
+		if err := os.WriteFile(tmp, data, 0o644); err != nil {
+			return err
+		}
+		if err := os.Rename(tmp, Path(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Forward sends a raw query to the resolver at upstream and returns the
+// raw reply.
+type Forward func(ctx context.Context, upstream string, query []byte) ([]byte, error)
+
+// Upstream is the Forward that asks over UDP.
+func Upstream(ctx context.Context, upstream string, query []byte) ([]byte, error) {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "udp", net.JoinHostPort(upstream, "53"))
+	if err != nil {
+		return nil, err
+	}
+	defer c.Close()
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(5 * time.Second)
+	}
+	c.SetDeadline(deadline)
+	if _, err := c.Write(query); err != nil {
+		return nil, err
+	}
+	buf := make([]byte, 65535)
+	n, err := c.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+// Server answers for one gateway. It rereads the zone file at most once
+// a second.
 type Server struct {
-	Conf    string // conf dir
-	Network string
+	File    string
 	Forward Forward
 
 	mu     sync.Mutex
 	loaded time.Time
-	zone   string                // "<network>.cyac.internal."
-	names  map[string]netip.Addr // fully qualified, lower case
-	gw     *conf.Gateway         // nil: sealed
+	zone   Zone
 }
 
-// load refreshes the zone from the conf if it is more than a second old.
-// A network that is missing or broken has an empty zone and no gateway.
-func (s *Server) load() {
+// load returns the zone, refreshed if it is more than a second old. A
+// missing or broken file is an empty zone: everyone is refused.
+func (s *Server) load() Zone {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if time.Since(s.loaded) < time.Second {
-		return
+		return s.zone
 	}
-	s.loaded = time.Now()
-	s.names, s.gw = map[string]netip.Addr{}, nil
-	c, _, err := conf.Load(s.Conf)
-	n := c.Networks[s.Network]
-	if err != nil || n == nil {
-		s.zone = s.Network + ".cyac.internal."
-		return
-	}
-	s.zone = render.Domain(n) + "."
-	for _, name := range conf.Sorted(c.Boxes) {
-		if b := c.Boxes[name]; b.Network == n.Name {
-			s.names[name+"."+s.zone] = b.Address
+	s.loaded, s.zone = time.Now(), Zone{}
+	if data, err := os.ReadFile(s.File); err == nil {
+		if json.Unmarshal(data, &s.zone) != nil {
+			s.zone = Zone{}
 		}
 	}
-	for _, name := range n.Services {
-		s.names[name+"."+s.zone] = c.Services[name].AddressIn(n)
-	}
-	if n.Gateway != "" {
-		s.gw = c.Gateways[n.Gateway]
-	}
+	return s.zone
 }
 
-// Answer returns the reply to one query, or nil to drop it.
-func (s *Server) Answer(ctx context.Context, query []byte) []byte {
+// Answer returns the reply to one query from from, or nil to drop it.
+func (s *Server) Answer(ctx context.Context, from netip.Addr, query []byte) []byte {
 	var p dnsmessage.Parser
 	h, err := p.Start(query)
 	if err != nil || h.Response {
@@ -83,14 +189,20 @@ func (s *Server) Answer(ctx context.Context, query []byte) []byte {
 	if err != nil {
 		return reply(h, nil, dnsmessage.RCodeFormatError, nil)
 	}
-	s.load()
-	s.mu.Lock()
-	zone, names, gw := s.zone, s.names, s.gw
-	s.mu.Unlock()
-
+	zone := s.load()
+	var client *Client
+	for i := range zone.Clients {
+		if zone.Clients[i].From.Contains(from.Unmap()) {
+			client = &zone.Clients[i]
+			break
+		}
+	}
+	if client == nil {
+		return reply(h, &q, dnsmessage.RCodeRefused, nil)
+	}
 	name := strings.ToLower(q.Name.String())
-	if name == zone || strings.HasSuffix(name, "."+zone) {
-		addr, ok := names[name]
+	if name == root || strings.HasSuffix(name, "."+root) {
+		addr, ok := client.Names[name]
 		switch {
 		case !ok:
 			return reply(h, &q, dnsmessage.RCodeNameError, nil)
@@ -100,10 +212,10 @@ func (s *Server) Answer(ctx context.Context, query []byte) []byte {
 			return reply(h, &q, dnsmessage.RCodeSuccess, nil)
 		}
 	}
-	if gw == nil || s.Forward == nil {
+	if s.Forward == nil {
 		return reply(h, &q, dnsmessage.RCodeRefused, nil)
 	}
-	ans, err := s.Forward(ctx, gw, query)
+	ans, err := s.Forward(ctx, zone.Upstream, query)
 	if err != nil {
 		return reply(h, &q, dnsmessage.RCodeServerFailure, nil)
 	}
@@ -137,6 +249,7 @@ func reply(h dnsmessage.Header, q *dnsmessage.Question, rcode dnsmessage.RCode, 
 // Serve answers UDP queries on pc and TCP queries on l until ctx ends.
 // Either may be nil.
 func (s *Server) Serve(ctx context.Context, pc net.PacketConn, l net.Listener) {
+	slots := make(chan struct{}, inFlight)
 	if pc != nil {
 		go func() {
 			buf := make([]byte, 65535)
@@ -145,11 +258,21 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn, l net.Listener) {
 				if err != nil {
 					return
 				}
+				src, ok := from.(*net.UDPAddr)
+				if !ok {
+					continue
+				}
+				select {
+				case slots <- struct{}{}:
+				default:
+					continue
+				}
 				query := append([]byte(nil), buf[:n]...)
 				go func() {
+					defer func() { <-slots }()
 					ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 					defer cancel()
-					if ans := s.Answer(ctx, query); ans != nil {
+					if ans := s.Answer(ctx, src.AddrPort().Addr(), query); ans != nil {
 						pc.WriteTo(ans, from)
 					}
 				}()
@@ -163,7 +286,15 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn, l net.Listener) {
 				if err != nil {
 					return
 				}
-				go s.serveTCP(ctx, c)
+				select {
+				case slots <- struct{}{}:
+					go func() {
+						defer func() { <-slots }()
+						s.serveTCP(ctx, c)
+					}()
+				default:
+					c.Close()
+				}
 			}
 		}()
 	}
@@ -179,6 +310,10 @@ func (s *Server) Serve(ctx context.Context, pc net.PacketConn, l net.Listener) {
 // serveTCP answers length-prefixed queries on c until it goes quiet.
 func (s *Server) serveTCP(ctx context.Context, c net.Conn) {
 	defer c.Close()
+	src, ok := c.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return
+	}
 	for {
 		c.SetDeadline(time.Now().Add(10 * time.Second))
 		var size [2]byte
@@ -189,7 +324,7 @@ func (s *Server) serveTCP(ctx context.Context, c net.Conn) {
 		if _, err := io.ReadFull(c, query); err != nil {
 			return
 		}
-		ans := s.Answer(ctx, query)
+		ans := s.Answer(ctx, src.AddrPort().Addr(), query)
 		if ans == nil {
 			return
 		}
