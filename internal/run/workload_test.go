@@ -70,8 +70,8 @@ func TestBox(t *testing.T) {
 	if m.Link.HostIface != "cyb3-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:03:0a" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)
 	}
-	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "10.42.3.2" {
-		t.Errorf("addr %+v: a sealed network has no gateway", m.Addr)
+	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "" || m.Init.DNS != "" {
+		t.Errorf("addr %+v: a sealed network has no gateway and no resolver", m.Addr)
 	}
 	if !slices.Equal(m.Init.Args, []string{"/bin/app", "--x"}) || m.Init.Mode != "command" ||
 		!slices.Equal(m.Init.Env, []string{"A=1", "B=2"}) || m.Init.User != "app" || m.Init.Cwd != "/srv" {
@@ -114,7 +114,7 @@ func TestService(t *testing.T) {
 	}
 	m := rc.started
 	want := driver.Link{Netns: "/run/netns/cysvc-proxy"}
-	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "9.9.9.9" {
+	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "10.42.255.0" {
 		t.Errorf("link %+v, secrets %q, dns %q", m.Link, m.Secrets, m.Init.DNS)
 	}
 	if filepath.Dir(filepath.Dir(m.Disk)) != filepath.Join(r.State, "services") {

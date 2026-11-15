@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/render"
 )
@@ -48,6 +49,7 @@ func Command(log io.Writer) Exec {
 type Runner struct {
 	Conf string // conf dir to render from
 	Dir  string // where records go
+	DNS  string // where the gateways' zone files go (see package dns); "" writes none
 	Exec Exec
 	// Workloads: where disks, run dirs and console logs live (see
 	// package box), and the runtimes a box may use, in order of
@@ -69,6 +71,12 @@ func (r *Runner) Start(ctx context.Context, kind, name string) error {
 	for _, p := range probs {
 		if p.Kind == kind && p.Name == name {
 			return p.Err
+		}
+	}
+	// Every start brings the resolvers' zones up to date with the conf.
+	if r.DNS != "" {
+		if err := dns.Write(c, r.DNS); err != nil {
+			return err
 		}
 	}
 	missing := fmt.Errorf("no %s %s in the conf", kind, name)
