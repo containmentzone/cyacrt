@@ -14,7 +14,7 @@ import (
 // Machine is everything a driver needs to know about one box.
 type Machine struct {
 	Name   string
-	Disk   string // path to the box's ext4 disk
+	Disk   string // the box's ext4 disk: its zvol's device
 	RunDir string // private scratch dir; exists only while running
 	// The init's console: runtimes append its output to ConsoleLog, which
 	// outlives the run, and feed it input from the FIFO at ConsoleIn.
@@ -92,7 +92,7 @@ type Runtime interface {
 	Running(m *Machine) bool
 	// Cleanup removes leftovers of a stopped or crashed run. Idempotent.
 	Cleanup(m *Machine)
-	// Grow makes an already extended disk file visible at its new size.
+	// Grow makes an already extended zvol visible at its new size.
 	Grow(m *Machine) error
 	// Command returns a command that runs args inside the box when started
 	// with a terminal on its stdio (the daemon attaches a pty).

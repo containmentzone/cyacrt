@@ -61,7 +61,8 @@ Boxes, networks, gateways and services are files in /var/lib/cyac/conf
 (see cyac-generator); write them by hand for now, then systemctl daemon-reload.
 
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
-The daemon keeps state in $CYAC_DIR (default /var/lib/cyac).
+The daemon keeps state in $CYAC_DIR (default /var/lib/cyac), and box and
+service disks as zvols under the ZFS dataset $CYAC_ZFS (e.g. rpool/cyac).
 CYAC_RUNTIME=cloud-hypervisor, cloud-hypervisor-pvm or runc forces a runtime.
 `
 
@@ -108,7 +109,11 @@ func runUnit(args []string) error {
 	if err != nil {
 		return err
 	}
-	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr), State: dir, Runtimes: rts}
+	ds := os.Getenv("CYAC_ZFS")
+	if ds == "" && (args[1] == conf.KindBox || args[1] == conf.KindService) {
+		return errors.New("CYAC_ZFS must name the ZFS dataset for disks, e.g. rpool/cyac")
+	}
+	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr), State: dir, Dataset: ds, Runtimes: rts}
 	if args[0] == "start" {
 		// systemd stops a box or service with SIGTERM; Start then stops
 		// the workload cleanly and returns.
@@ -298,7 +303,7 @@ func daemon(socket string, args []string) error {
 	}
 	srv := &server.Server{
 		Conf: conf.Dir, Routes: routes, Domain: *domain, RoutesChanged: px.Reload,
-		Run: &run.Runner{State: dir, Runtimes: rts},
+		Run: &run.Runner{State: dir, Dataset: os.Getenv("CYAC_ZFS"), Runtimes: rts},
 	}
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()

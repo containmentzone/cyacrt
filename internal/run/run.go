@@ -49,10 +49,11 @@ type Runner struct {
 	Conf string // conf dir to render from
 	Dir  string // where records go
 	Exec Exec
-	// Workloads: where disks, run dirs and console logs live (see
-	// package box), and the runtimes a box may use, in order of
-	// preference. Services always use runc.
+	// Workloads: where run dirs and console logs live, the ZFS dataset
+	// their disks are zvols under (see package box), and the runtimes a
+	// box may use, in order of preference. Services always use runc.
 	State    string
+	Dataset  string
 	Runtimes []driver.Runtime
 }
 

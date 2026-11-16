@@ -142,13 +142,13 @@ func (r *Runner) cleanup(kind, name string) {
 }
 
 // store is where kind's disks, run dirs and logs live: boxes where the
-// daemon kept them, services in a tree of their own, so a service can
-// never be handed a box's disk.
+// daemon kept them, services in a tree and dataset of their own, so a
+// service can never be handed a box's disk.
 func (r *Runner) store(kind string) box.Store {
 	if kind == conf.KindService {
-		return box.Store{Dir: filepath.Join(r.State, "services")}
+		return box.Store{Dir: filepath.Join(r.State, "services"), Dataset: r.Dataset + "/services"}
 	}
-	return box.Store{Dir: r.State}
+	return box.Store{Dir: r.State, Dataset: r.Dataset + "/boxes"}
 }
 
 // runtime returns the runtime named want, else the one CYAC_RUNTIME
@@ -175,15 +175,18 @@ func (r *Runner) runtime(want string) (driver.Runtime, error) {
 }
 
 // image returns what the workload's image says to run, seeding its disk
-// first if it has none. Seeding saves the image's defaults next to the
-// disk, so later starts don't need the registry; the file only ever
-// changes when the disk is seeded again.
+// first if it has none, or growing it to diskMB if it has. Seeding saves
+// the image's defaults next to the disk, so later starts don't need the
+// registry; the file only ever changes when the disk is seeded again.
 func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, error) {
 	meta := filepath.Join(st.Dir, "disks", name+".json")
 	data, err := os.ReadFile(meta)
 	if err == nil {
 		var b box.Box
-		return &b, json.Unmarshal(data, &b)
+		if err := json.Unmarshal(data, &b); err != nil {
+			return nil, err
+		}
+		return &b, st.Grow(name, int64(diskMB)<<20)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -193,7 +196,9 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 		}
 	}
 	// A disk without its defaults is a seed that died part way.
-	os.Remove(st.DiskPath(name))
+	if err := st.Destroy(name); err != nil {
+		return nil, err
+	}
 	b := &box.Box{Name: name, Image: w.Image}
 	if err := st.Seed(b, int64(diskMB)<<20, func(line string) { log.Print(line) }); err != nil {
 		return nil, err

@@ -18,8 +18,14 @@ let
   # replacing them.
   workloadDropin = {
     overrideStrategy = "asDropin";
+    # The host's zfs, which matches its kernel module, for the disks, which
+    # are there once the pools are imported.
+    path = [ config.boot.zfs.package ];
+    wants = [ "zfs.target" ];
+    after = [ "zfs.target" ];
     environment = {
       CYAC_DIR = cfg.stateDir;
+      CYAC_ZFS = cfg.dataset;
     }
     // lib.optionalAttrs (cfg.kernel == "kvm" || pvm) {
       CYAC_RUNTIME = if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor";
@@ -48,7 +54,17 @@ in
     stateDir = lib.mkOption {
       type = lib.types.str;
       default = "/var/lib/cyac";
-      description = "Where box records and disks live (CYAC_DIR).";
+      description = "Where box records, run dirs and console logs live (CYAC_DIR).";
+    };
+
+    dataset = lib.mkOption {
+      type = lib.types.str;
+      example = "rpool/cyac";
+      description = ''
+        ZFS dataset that box and service disks live under, as sparse zvols
+        (<dataset>/boxes/<name>, <dataset>/services/<name>; CYAC_ZFS). Its
+        pool must exist; cyac creates the datasets below it as needed.
+      '';
     };
 
     kernel = lib.mkOption {
@@ -118,10 +134,12 @@ in
   config = lib.mkIf cfg.enable {
     environment.systemPackages = [ cfg.package ];
     environment.variables.CYAC_DIR = cfg.stateDir;
+    environment.variables.CYAC_ZFS = cfg.dataset;
 
-    # loop: container-tier disks; tun: VM taps; bridge: each network's bridge.
+    # Disks are zvols. This needs networking.hostId, as any ZFS host does.
+    boot.supportedFilesystems.zfs = true;
+    # tun: VM taps; bridge: each network's bridge.
     boot.kernelModules = [
-      "loop"
       "tun"
       "bridge"
     ]
@@ -182,6 +200,7 @@ in
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
+      environment.CYAC_ZFS = cfg.dataset;
       environment.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
         if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor"
       );

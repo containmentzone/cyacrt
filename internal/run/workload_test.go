@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/containmentzone/cyacrt/internal/driver"
@@ -48,6 +49,20 @@ func seeded(t *testing.T, dir, name, meta string) {
 	}
 }
 
+// fakeZFS puts a zfs on PATH that logs its arguments and says every zvol
+// is 1 GiB, and returns the log.
+func fakeZFS(t *testing.T) string {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(bin, "log")
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\n[ \"$1\" = get ] && echo 1073741824\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "zfs"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return log
+}
+
 const sealed = "[Network]\nIndex=3\n"
 
 func TestBox(t *testing.T) {
@@ -57,7 +72,8 @@ func TestBox(t *testing.T) {
 			"[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
 	})
 	vm := &fakeRuntime{name: "vm", kind: driver.Tap}
-	r.State, r.Runtimes = t.TempDir(), []driver.Runtime{&fakeRuntime{name: "gone", missing: true}, vm}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "gone", missing: true}, vm}
+	zfs := fakeZFS(t)
 	seeded(t, r.State, "a", `{"init":["/sbin/init"],"env":["A=1"],"run_as":"app","cwd":"/srv"}`)
 
 	if err := r.Start(context.Background(), "cybox", "a"); err != nil {
@@ -79,6 +95,13 @@ func TestBox(t *testing.T) {
 	}
 	if m.CPUs != 1 || m.MemMiB != 2048 {
 		t.Errorf("cpus %d, mem %d", m.CPUs, m.MemMiB)
+	}
+	// The 1 GiB zvol grows to the default 10 GiB DiskSize.
+	if m.Disk != "/dev/zvol/tank/cyac/boxes/a" {
+		t.Errorf("disk %s", m.Disk)
+	}
+	if calls, _ := os.ReadFile(zfs); !strings.Contains(string(calls), "set volsize=10737418240 tank/cyac/boxes/a\n") {
+		t.Errorf("zvol not grown: %s", calls)
 	}
 	if f.ran[0] != "ip tuntap add dev cyb3-10 mode tap" {
 		t.Errorf("plan ran %q", f.ran)
@@ -102,7 +125,8 @@ func TestService(t *testing.T) {
 		"proxy.cyservice": "[Workload]\nImage=img\n\n[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
-	r.State, r.Runtimes = t.TempDir(), []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
+	fakeZFS(t)
 	seeded(t, filepath.Join(r.State, "services"), "proxy", `{"init":["/proxy"],"mode":"command"}`)
 
 	if err := r.Start(context.Background(), "cyservice", "proxy"); err == nil {
@@ -117,8 +141,8 @@ func TestService(t *testing.T) {
 	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "9.9.9.9" {
 		t.Errorf("link %+v, secrets %q, dns %q", m.Link, m.Secrets, m.Init.DNS)
 	}
-	if filepath.Dir(filepath.Dir(m.Disk)) != filepath.Join(r.State, "services") {
-		t.Errorf("service disk %s is outside the services tree", m.Disk)
+	if m.Disk != "/dev/zvol/tank/cyac/services/proxy" {
+		t.Errorf("service disk %s is outside the services dataset", m.Disk)
 	}
 }
 
