@@ -187,14 +187,19 @@ func (Runtime) Stop(m *driver.Machine) error {
 	return nil
 }
 
-// Grow tells Cloud Hypervisor the backing file changed size; the guest sees
-// a resized virtio-blk device and grows its own filesystem, like a cloud VM.
+// Grow tells Cloud Hypervisor the zvol changed size; the guest sees a
+// resized virtio-blk device and grows its own filesystem, like a cloud VM.
 func (Runtime) Grow(m *driver.Machine) error {
-	fi, err := os.Stat(m.Disk)
+	f, err := os.Open(m.Disk)
 	if err != nil {
 		return err
 	}
-	return api(m, "vm.resize-disk", map[string]any{"id": "rootfs", "desired_size": fi.Size()})
+	defer f.Close()
+	size, err := f.Seek(0, io.SeekEnd) // Stat says 0 for a block device
+	if err != nil {
+		return err
+	}
+	return api(m, "vm.resize-disk", map[string]any{"id": "rootfs", "desired_size": size})
 }
 
 // Command runs args through the guest's agent, by running "cyac

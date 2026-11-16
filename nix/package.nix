@@ -15,7 +15,9 @@
 }:
 
 let
-  # Everything cyac execs. cloud-hypervisor is only used on hosts with KVM.
+  # Everything cyac execs, but zfs: that has to match the host's kernel
+  # module, so it comes from the host (the NixOS module puts it on PATH).
+  # cloud-hypervisor is only used on hosts with KVM.
   runtimeTools = [
     iproute2
     nftables

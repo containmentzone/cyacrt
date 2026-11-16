@@ -25,8 +25,8 @@ var loginUserLabels = []string{"cyac.nullvoid.space/login-user", "exe.dev/login-
 var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
 // Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
-// scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it into a sparse
-// file of the requested size. It runs once per box; afterwards the disk is
+// scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it onto a sparse
+// zvol of the requested size. It runs once per box; afterwards the disk is
 // the box and the image is no longer consulted. progress gets a line per
 // step and, while unpacking, every few seconds.
 //
@@ -102,13 +102,12 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 		return err
 	}
 
-	disk := s.DiskPath(b.Name)
-	progress("writing a " + mib(sizeBytes) + " ext4 disk")
-	if err := createSparse(disk, sizeBytes); err != nil {
+	progress("writing a " + mib(sizeBytes) + " ext4 disk to " + s.volume(b.Name))
+	if err := s.createVolume(b.Name, sizeBytes); err != nil {
 		return err
 	}
-	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "cyac-root", "-d", scratch, disk).CombinedOutput(); err != nil {
-		os.Remove(disk)
+	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "cyac-root", "-d", scratch, s.DiskPath(b.Name)).CombinedOutput(); err != nil {
+		s.Destroy(b.Name)
 		return fmt.Errorf("mkfs.ext4: %v: %s", err, out)
 	}
 	return nil
@@ -218,12 +217,3 @@ func (c *counter) Read(p []byte) (int, error) {
 }
 
 func mib(n int64) string { return fmt.Sprintf("%d MiB", n>>20) }
-
-func createSparse(path string, size int64) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	return f.Truncate(size)
-}

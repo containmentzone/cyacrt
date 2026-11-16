@@ -9,7 +9,8 @@ The whole thing is meant to stay small enough to read in one sitting
 ## How it works
 
 **A box is a disk, not a container.** `cyac new` pulls an image once,
-unpacks it into a sparse ext4 file, and adds a few files: the hostname, an
+unpacks it onto an ext4 filesystem on a sparse ZFS zvol
+(`$CYAC_ZFS/boxes/<name>`), and adds a few files: the hostname, an
 `/etc/hosts` that resolves it, and an empty machine-id.
 Every start also writes a systemd-networkd config with the box's static IP
 (`/etc/systemd/network/10-cyac.network`), so the box follows cyac's subnet,
@@ -41,8 +42,8 @@ The same disk boots under one of two runtime drivers. At start, cyac uses the fi
 |---|---|---|
 | When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
 | Runs under | Cloud Hypervisor | runc |
-| Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | disk loop-mounted on the host |
-| Growing the disk | host extends the file, the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | host extends the file and runs online `resize2fs` |
+| Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | zvol mounted on the host |
+| Growing the disk | raising `DiskSize` grows the zvol on the next start; the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | raising `DiskSize` grows the zvol on the next start, and the host runs online `resize2fs` |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
 
 The runc runtime gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
@@ -180,7 +181,8 @@ cyac stop web && cyac rm web
 ## Host requirements
 
 Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
-`losetup`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`. You also need
+`zfs`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`, and a ZFS pool:
+`$CYAC_ZFS` names the dataset disks go under (e.g. `rpool/cyac`). You also need
 `runc` for the runc runtime (on a cgroup v2 host), or `cloud-hypervisor`,
 KVM and a guest kernel at `$CYAC_DIR/vmlinux` for the Cloud Hypervisor
 runtime. The guest kernel needs ext4, virtio-pci with virtio-blk/net,
@@ -193,11 +195,11 @@ to drop, allow `cyac0`.
 ## Nix
 
 `nix build` produces `cyac` wrapped with every tool it calls (runc,
-cloud-hypervisor, iproute2, nftables, util-linux, e2fsprogs, GNU tar), so it
-needs nothing else on PATH, and a static `cyac-init` in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
+cloud-hypervisor, iproute2, nftables, util-linux, e2fsprogs, GNU tar) but
+`zfs`, which has to match the host's kernel module and comes from the host, and a static `cyac-init` in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
 
-On NixOS, the module adds the CLI and `CYAC_DIR`, loads the `loop`, `tun`
-and `bridge` modules, enables IP forwarding, creates the state dir, runs
+On NixOS, the module adds the CLI, `CYAC_DIR` and `CYAC_ZFS` (from the
+required `dataset` option), enables ZFS, loads the `tun` and `bridge` modules, enables IP forwarding, creates the state dir, runs
 `cyac daemon` as `cyac.service` and links the guest kernel. `kernel` must be
 set: `"kvm"` or `"pvm"` sets up the host kernel for that and pins the daemon
 to `cloud-hypervisor` or `cloud-hypervisor-pvm` with `CYAC_RUNTIME`; `"none"` changes
@@ -216,6 +218,7 @@ nothing and leaves the choice to cyac's detection:
             enable = true;
             kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
             # guestKernel = ./vmlinux;   # default: built from the host kernel's source
+            dataset = "rpool/cyac";   # box disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here
               openFirewall = true;

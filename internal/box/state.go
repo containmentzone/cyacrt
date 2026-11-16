@@ -25,17 +25,19 @@ type Box struct {
 	User string `json:"user,omitempty"`
 }
 
-// Store is a tree of workload files:
+// Store is where a kind of workload keeps its files, and its disks as
+// ZFS zvols:
 //
-//	<dir>/disks/<name>.ext4        disk
+//	<dataset>/<name>               disk, at /dev/zvol/<dataset>/<name>
 //	<dir>/disks/<name>.json        what seeding learned from the image (Box)
 //	<dir>/run/<name>/              runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  console, across runs
 type Store struct {
-	Dir string
+	Dir     string
+	Dataset string
 }
 
-func (s Store) DiskPath(name string) string { return filepath.Join(s.Dir, "disks", name+".ext4") }
+func (s Store) DiskPath(name string) string { return "/dev/zvol/" + s.volume(name) }
 func (s Store) RunDir(name string) string   { return filepath.Join(s.Dir, "run", name) }
 func (s Store) ConsoleLog(name string) string {
 	return filepath.Join(s.Dir, "logs", name+".console.log")
