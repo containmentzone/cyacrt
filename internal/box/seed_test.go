@@ -5,6 +5,11 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/google/go-containerregistry/pkg/v1/empty"
+	"github.com/google/go-containerregistry/pkg/v1/mutate"
+	"github.com/google/go-containerregistry/pkg/v1/tarball"
 )
 
 func TestPickMode(t *testing.T) {
@@ -56,5 +61,27 @@ func TestPickMode(t *testing.T) {
 		if !tc.err && (b.Mode != tc.mode || !slices.Equal(b.Init, tc.args)) {
 			t.Errorf("%s: mode %q args %q, want %q %q", tc.name, b.Mode, b.Init, tc.mode, tc.args)
 		}
+	}
+}
+
+func TestPullTarball(t *testing.T) {
+	img, err := mutate.Config(empty.Image, v1.Config{Entrypoint: []string{"/bin/x"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "img.tar")
+	if err := tarball.WriteToFile(path, nil, img); err != nil {
+		t.Fatal(err)
+	}
+	got, err := pull(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := got.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(cfg.Config.Entrypoint, []string{"/bin/x"}) {
+		t.Errorf("entrypoint %q", cfg.Config.Entrypoint)
 	}
 }
