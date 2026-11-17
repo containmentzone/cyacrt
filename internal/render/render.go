@@ -294,6 +294,9 @@ func Box(c *conf.Config, b *conf.Box, tap bool) Plan {
 		p.up("ip", "-n", ns, "link", "set", "lo", "up")
 		p.up("ip", "-n", ns, "link", "set", "eth0", "address", MAC(b.Address))
 		p.up("ip", "-n", ns, "addr", "add", netip.PrefixFrom(b.Address, 24).String(), "dev", "eth0")
+		// No IPv6 link-local either, as networkd's LinkLocalAddressing=no
+		// does in a VM; see Networkd.
+		p.up("ip", "-n", ns, "link", "set", "eth0", "addrgenmode", "none")
 		p.up("ip", "-n", ns, "link", "set", "eth0", "up")
 		if n.Gateway != "" {
 			p.up("ip", "-n", ns, "route", "add", "default", "via", n.Router().String())
@@ -309,7 +312,10 @@ func Box(c *conf.Config, b *conf.Box, tap bool) Plan {
 
 // Networkd is the systemd-networkd config cyac writes into the box for
 // eth0 on every start. A sealed network gets no default route, and DNS is
-// always the host's responder on .2.
+// always the host's responder on .2. Networks are IPv4-only, so eth0 gets
+// no IPv6 address at all: with even a link-local one, glibc's
+// AI_ADDRCONFIG counts IPv6 as usable, and apt, curl and the like try
+// every AAAA record (and fail with "Network is unreachable") first.
 func Networkd(c *conf.Config, b *conf.Box) string {
 	n := c.Networks[b.Network]
 	var s strings.Builder
@@ -319,6 +325,7 @@ func Networkd(c *conf.Config, b *conf.Box) string {
 		fmt.Fprintf(&s, "Gateway=%s\n", n.Router())
 	}
 	fmt.Fprintf(&s, "DNS=%s\nDomains=%s\n", n.Host(), Domain(n))
+	s.WriteString("LinkLocalAddressing=no\nIPv6AcceptRA=no\n")
 	return s.String()
 }
 

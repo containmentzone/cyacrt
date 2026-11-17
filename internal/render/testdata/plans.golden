@@ -243,6 +243,7 @@ up:
   ip -n cybox-box-a link set lo up
   ip -n cybox-box-a link set eth0 address 02:c7:ac:00:01:0a
   ip -n cybox-box-a addr add 10.42.1.10/24 dev eth0
+  ip -n cybox-box-a link set eth0 addrgenmode none
   ip -n cybox-box-a link set eth0 up
   ip link set cyb1-10 master cyn1
   ip link set cyb1-10 up
@@ -281,6 +282,8 @@ Name=eth0
 Address=10.42.1.10/24
 DNS=10.42.1.2
 Domains=dev.cyac.internal
+LinkLocalAddressing=no
+IPv6AcceptRA=no
 
 ==> cybox site (VM) <==
 up:
@@ -319,6 +322,7 @@ up:
   ip -n cybox-site link set lo up
   ip -n cybox-site link set eth0 address 02:c7:ac:00:02:0a
   ip -n cybox-site addr add 10.42.2.10/24 dev eth0
+  ip -n cybox-site link set eth0 addrgenmode none
   ip -n cybox-site link set eth0 up
   ip -n cybox-site route add default via 10.42.2.1
   ip link set cyb2-10 master cyn2
@@ -359,4 +363,6 @@ Address=10.42.2.10/24
 Gateway=10.42.2.1
 DNS=10.42.2.2
 Domains=web.cyac.internal
+LinkLocalAddressing=no
+IPv6AcceptRA=no
 
