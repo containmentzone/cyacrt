@@ -154,7 +154,15 @@ in
       # could reach it), whatever stateDir says.
       "d /var/lib/cyac/conf 0700 root root -"
     ]
-    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}";
+    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}"
+    # The header-injecting proxy's image, at a path a cyservice's Image= can
+    # name that survives upgrades and garbage collection.
+    ++ [
+      "d ${cfg.stateDir}/images 0700 root root -"
+      "L+ ${cfg.stateDir}/images/cyac-inject.tar - - - - ${
+        self.packages.${pkgs.stdenv.hostPlatform.system}.cyac-inject-image
+      }"
+    ];
 
     # PVM: virt-pvm's host kernel, without page table isolation (PVM doesn't
     # support it), and kvm-pvm, which can't be loaded alongside kvm-intel or
