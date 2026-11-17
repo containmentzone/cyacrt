@@ -46,6 +46,37 @@ let
     "MEMCG"
     "BPF_SYSCALL"
     "CGROUP_BPF"
+    # Tailscale and other VPNs inside a box: a TUN device, policy routing
+    # (ip rule), and nftables with the xtables matches iptables-nft uses, so
+    # either of tailscale's firewall modes works. Legacy iptables tables
+    # are left out; recent kernels hide them behind NETFILTER_XTABLES_LEGACY.
+    "TUN"
+    "IPV6"
+    "IP_ADVANCED_ROUTER"
+    "IP_MULTIPLE_TABLES"
+    "IPV6_MULTIPLE_TABLES"
+    "NETFILTER"
+    "NETFILTER_ADVANCED"
+    "NF_CONNTRACK"
+    "NF_CONNTRACK_MARK"
+    "NF_NAT"
+    "NF_TABLES"
+    "NF_TABLES_INET"
+    "NF_TABLES_IPV4"
+    "NF_TABLES_IPV6"
+    "NFT_CT"
+    "NFT_NAT"
+    "NFT_MASQ"
+    "NFT_COMPAT"
+    "NETFILTER_XTABLES"
+    "NETFILTER_XT_MARK"
+    "NETFILTER_XT_CONNMARK"
+    "NETFILTER_XT_NAT"
+    "NETFILTER_XT_TARGET_MASQUERADE"
+    "NETFILTER_XT_MATCH_COMMENT"
+    "NETFILTER_XT_MATCH_CONNTRACK"
+    "IP_NF_IPTABLES"
+    "IP6_NF_IPTABLES"
   ]
   ++ lib.optionals stdenv.hostPlatform.isx86_64 [
     "PVH"

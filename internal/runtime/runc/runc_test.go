@@ -28,6 +28,10 @@ func TestConfinedSpec(t *testing.T) {
 		if cgroup == confined {
 			t.Errorf("confined=%v: cgroup mount=%v", confined, cgroup)
 		}
+		tun := slices.ContainsFunc(spec.Linux.Devices, func(d specs.LinuxDevice) bool { return d.Path == "/dev/net/tun" })
+		if tun == confined {
+			t.Errorf("confined=%v: /dev/net/tun=%v", confined, tun)
+		}
 	}
 }
 

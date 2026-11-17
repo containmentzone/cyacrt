@@ -180,6 +180,13 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 		initMounts = append(initMounts, specs.Mount{Destination: "/run/secrets", Type: "bind", Source: m.Secrets,
 			Options: []string{"rbind", "ro", "nosuid", "nodev", "noexec"}})
 	}
+	var devices []specs.LinuxDevice
+	if !m.Confined {
+		// A box gets /dev/net/tun so VPNs like tailscale can run in it,
+		// as they can in a VM.
+		mode := os.FileMode(0o666)
+		devices = []specs.LinuxDevice{{Path: "/dev/net/tun", Type: "c", Major: 10, Minor: 200, FileMode: &mode}}
+	}
 	return &specs.Spec{
 		Version:  specs.Version,
 		Root:     &specs.Root{Path: "rootfs"},
@@ -199,6 +206,7 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 				{Type: specs.MountNamespace}, {Type: specs.CgroupNamespace},
 				{Type: specs.NetworkNamespace, Path: m.Link.Netns},
 			},
+			Devices:     devices,
 			CgroupsPath: "/cyac/" + m.Name,
 			Resources: &specs.LinuxResources{
 				Memory: &specs.LinuxMemory{Limit: &mem},
