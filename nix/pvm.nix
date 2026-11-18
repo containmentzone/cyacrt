@@ -10,10 +10,6 @@
   fetchFromGitHub,
   fetchurl,
   buildLinux,
-  # The VM test builds only the modules it needs: building every driver
-  # takes longer than a CI job may run.
-  autoModules ? true,
-  extraConfig ? { },
 }:
 
 let
@@ -28,7 +24,7 @@ in
 {
   # NixOS's usual kernel config plus kvm-pvm. Boot it with pti=off.
   hostKernel = buildLinux {
-    inherit src version autoModules;
+    inherit src version;
     modDirVersion = version;
     structuredExtraConfig = with lib.kernel; {
       KVM_PVM = module;
@@ -36,8 +32,7 @@ in
       RANDOMIZE_MEMORY = lib.mkForce no;
       # This tree's Rust support predates nixpkgs' rustc.
       RUST = lib.mkForce no;
-    }
-    // extraConfig;
+    };
     # nixpkgs' common config names options this tree doesn't have.
     ignoreConfigErrors = true;
     extraMeta.platforms = [ "x86_64-linux" ];
