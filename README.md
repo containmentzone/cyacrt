@@ -1,69 +1,172 @@
 # cyacrt
 
-The cyac runtime, a small single-host take on exe.dev. Boxes that act like little VMs, built
-from any OCI image, behind an HTTPS proxy that is closed by default.
+The cyac runtime, a small single-host take on exe.dev. Boxes that act like
+little VMs, built from any OCI image, on networks you declare, behind an
+HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~3,300 lines of Go).
+(~5,200 lines of Go).
 
 ## How it works
 
-**A box is a disk, not a container.** `cyac new` pulls an image once,
-unpacks it onto an ext4 filesystem on a sparse ZFS zvol
-(`$CYAC_ZFS/boxes/<name>`), and adds a few files: the hostname, an
-`/etc/hosts` that resolves it, and an empty machine-id.
-Every start also writes a systemd-networkd config with the box's static IP
-(`/etc/systemd/network/10-cyac.network`), so the box follows cyac's subnet,
-and rewrites `/etc/resolv.conf`
-to point at the configured resolver (1.1.1.1), replacing a link to
-systemd-resolved's stub, so DNS works whether or not the image runs it.
-From then on the disk *is* the box. apt installs, files in `/root`, and
-everything else survive stop/start and host reboots.
+**Everything is a file.** cyac's only state is one ini file per object in
+`/var/lib/cyac/conf`, named `<name>.<kind>`. There are four kinds:
 
-**What runs in it** depends on the image's `ENTRYPOINT`+`CMD` (override
-it with `--init`). cyac picks one of three modes at seed time; `--mode`
-picks one by hand:
+- **cybox**: a box, a VM (or runc container) with its own disk, on one
+  network.
+- **cynetwork**: a bridge with a /24, `10.42.<Index>.0/24`. Boxes on the
+  same network can reach each other; what else they reach is exactly what
+  the network attaches: at most one gateway, and any number of services.
+- **cygateway**: a network namespace with one way out, either the host's
+  own route (`Kind=direct`) or a WireGuard tunnel (`Kind=wireguard`).
+- **cyservice**: a confined container that boxes reach on their network
+  and that leaves through its own gateway, for things like a proxy that
+  holds an API key the box never sees.
+
+```ini
+# out.cygateway
+[Gateway]
+Index=0
+Kind=direct
+
+# dev.cynetwork
+[Network]
+Index=1
+Attach=gateway:out
+
+# web.cybox
+[Workload]
+Image=ghcr.io/boldsoftware/exeuntu
+CPUs=2
+Memory=4G
+
+[Box]
+Network=dev
+Address=10.42.1.10
+DiskSize=25G
+Autostart=yes
+```
+
+`cyac-generator`, a systemd generator, turns the files into units at boot
+and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
+`cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
+its object, plus `cyac.target`, which starts every `Autostart=yes` box.
+The units depend on each other (a box `BindsTo` its network, a network its
+gateway), so systemd brings things up in order and takes them down in
+reverse, and a network or gateway goes away with the last thing on it. A
+file that doesn't parse, or refers to something missing or broken, still
+gets a unit, one that fails with the reason when started, so it shows up
+in `systemctl status`.
+
+Each unit runs `cyac run start|stop <kind> <name>`. That renders the
+object into a plan, a list of `ip` and `nft` commands to bring it up and
+another to take it down, and runs it. The down steps are recorded in
+`/run/cyac-run` before anything runs, so a stop removes exactly what that
+start created, even if the file changed in between. Boxes and services
+then run in the foreground of their unit.
+
+The full set of keys:
+
+| Kind | Section | Keys |
+|---|---|---|
+| cybox, cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPUs=` (default 1), `Memory=` (default 1G) |
+| cybox | `[Box]` | `Network=`, `Address=` (required), `DiskSize=` (default 10G), `Runtime=`, `Autostart=` |
+| cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
+| cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
+| cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
+
+Addresses and interface names come from the indexes in the files, never
+from what else exists, so an object's addresses never change under it.
+
+**A box is a disk, not a container.** On a box's first start, cyac pulls
+its image, unpacks it onto an ext4 filesystem on a sparse ZFS zvol
+(`$CYAC_ZFS/boxes/<name>`), and adds a few files: the hostname, an
+`/etc/hosts` that resolves it, and an empty machine-id. It saves the
+image's defaults (command, `Env`, `WorkingDir`, `USER`, login user) next to
+the disk, so later starts don't need the registry. Every start also writes
+a systemd-networkd config for `eth0` with the box's address, gateway and
+DNS, and an `/etc/resolv.conf` that points at the network's resolver. From
+then on the disk *is* the box. apt installs, files in `/root`, and
+everything else survive stops, starts and host reboots. Changing `Image=`
+afterwards does nothing to an existing disk. Raising `DiskSize=` grows the
+zvol on the next start (it never shrinks); a VM grows its own filesystem
+(exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`), and under runc the
+host runs an online `resize2fs`.
+
+**What runs in it** is the image's `ENTRYPOINT`+`CMD`, or `Exec=`. cyac
+picks one of three modes:
 
 - **init**: the command is named `init` or `systemd` (exeuntu's is
   `/usr/local/bin/init`, which starts systemd; a NixOS disk's `/sbin/init`
   is its stage 2), or the image has no command but has `/sbin/init`. It
   becomes PID 1, and the box behaves like a VM.
 - **command**: any other command, such as nginx. cyac-init is PID 1, like a
-  container runtime plus tini: it reaps orphans and runs the command with the
-  image's `Env`, `WorkingDir` and `USER`, sending its output to the console.
-  When the command exits, the box stops.
+  container runtime plus tini: it reaps orphans and runs the command with
+  the image's `Env`, `WorkingDir` and `USER` (or the file's), sending its
+  output to the console. When the command exits, the box stops.
 - **pause**: no command and no `/sbin/init`. cyac-init is PID 1 and runs
   nothing, like Kubernetes' pause container, so the box stays up for
   `cyac shell`.
 
-The same disk boots under one of two runtime drivers. At start, cyac uses the first one this host can run:
+The same disk boots under one of these runtimes. A box uses its
+`Runtime=`, else `CYAC_RUNTIME`, else the first one this host can run:
 
 | | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
 | When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
-| Runs under | Cloud Hypervisor | runc |
 | Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | zvol mounted on the host |
-| Growing the disk | raising `DiskSize` grows the zvol on the next start; the guest grows its own fs (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`) | raising `DiskSize` grows the zvol on the next start, and the host runs online `resize2fs` |
+| Link | a tap on the network's bridge | a veth into the box's own netns |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
 
-The runc runtime gives the box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
+The runc runtime gives a box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
-code on my own machine", not as a sandbox. Set `CYAC_RUNTIME=cloud-hypervisor`
-or `CYAC_RUNTIME=runc` to force one.
+code on my own machine", not as a sandbox.
 
-On a host without hardware virtualization, such as a cloud VM without nested
-virt, Cloud Hypervisor can still run on [PVM](#pvm-vms-without-hardware-virtualization).
-When the `kvm-pvm` module is loaded, cyac uses a third runtime,
-`cloud-hypervisor-pvm`, in place of `cloud-hypervisor`. It's the same VMM with the PVM
-guest kernel at `$CYAC_DIR/vmlinux-pvm`, because a normal guest kernel doesn't
-boot on PVM.
+On a host without hardware virtualization, such as a cloud VM without
+nested virt, Cloud Hypervisor can still run on
+[PVM](#pvm-vms-without-hardware-virtualization). When the `kvm-pvm` module
+is loaded, cyac uses `cloud-hypervisor-pvm` in place of `cloud-hypervisor`.
+It's the same VMM with the PVM guest kernel at `$CYAC_DIR/vmlinux-pvm`,
+because a normal guest kernel doesn't boot on PVM.
 
-**Networking.** One bridge, `cyac0`, on 10.42.0.0/16 (host is
-10.42.0.1), which the daemon creates when it starts and deletes when it
-exits. Box ports are bridge-isolated, so boxes can't reach each other.
-nftables keeps boxes off the host and off private and link-local ranges, and
-NATs everything else out. No ports are published. The proxy is the only way
-in.
+A fourth runtime, `runsc`, runs the same bundle under gVisor. It comes
+last for boxes, since systemd doesn't run under gVisor; services use it
+whenever `runsc` is installed, and runc otherwise.
+
+**Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
+leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the
+bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
+box can't take another's address, and a box's address is its identity.
+The host only answers DNS on `.2` and forwards nothing between the bridge
+and anything else; the only ways out are the ones the network attaches.
+Networks are IPv4-only: boxes get no IPv6 address at all, not even
+link-local.
+
+A gateway is a netns whose firewall forwards its legs out of its uplink
+and nowhere else, and never to private, CGNAT, link-local (cloud metadata)
+or other special-use ranges, nor to cyac's own `10.42.0.0/16`. A direct
+gateway has a /31 to the host in `10.42.254.0/24`, which the host
+masquerades out of its default route (or only `Uplink=`). A WireGuard
+gateway's interface is created in the host netns, so its encrypted
+packets use the host's routes, then moved into the gateway, where the
+tunnel is the only route. A network without a gateway is sealed: its boxes
+reach each other, its services and the proxy, and nothing else.
+
+A service gets a netns with a leg on every network that attaches it, at
+`.254` minus its index, and a /31 into its own gateway in
+`10.42.255.0/24` as its default route. The netns forwards nothing, and the
+container gets neither `CAP_NET_ADMIN` nor `CAP_SYS_ADMIN`, so a box can
+reach the service but never route through it. `Secret=` files reach the
+container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
+cyac itself never reads them.
+
+**DNS.** `cydns@<network>.socket` listens on the network's `.2`, and
+`cyac dns` answers for `<name>.<network>.cyac.internal` (boxes search that
+zone, so `<name>` works too) from the conf files, for the network's boxes
+and the services it attaches. Everything else is forwarded from inside the
+network's gateway, to its `DNS=` or 1.1.1.1, so a box can only resolve what
+its packets could reach. A sealed network gets no answers for outside
+names.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
 :443. `cyac expose <box> <port>` exposes one port of a box, always at
@@ -78,65 +181,61 @@ exposed host and never for anything else; :80 only answers ACME challenges
 and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
 idle; a box gets 5s to accept a connection and a minute to start
 answering. Bodies have no deadline, so uploads, streams and websockets
-work.
+work. Routes are kept in `$CYAC_DIR/routes`.
 
-**Daemon and CLI.** `cyac daemon` owns `$CYAC_DIR` (default
-`/var/lib/cyac`; one daemon per directory) and runs the proxy. Every other
-command is a client that sends JSON over HTTP to the daemon's unix socket,
-`$CYAC_SOCKET` (default `/run/cyac/cyac.sock`). `cyac shell` upgrades its
-connection to a raw terminal stream. The endpoints are listed in
-`internal/api`. The daemon logs to stderr (`journalctl -u cyac` under
-the NixOS module): which runtimes it can use and why not, every API call,
-and each box's lifecycle. `cyac new` prints the daemon's progress as it
-pulls, unpacks and boots.
+**Daemon and CLI.** `cyac daemon` runs the proxy and the API, and holds a
+lock on `$CYAC_DIR` (default `/var/lib/cyac`; one daemon per directory). It
+never touches the kernel or the conf files: boxes are whatever the files
+define, and they run in their own units, so they keep running when the
+daemon restarts. Every other command is a client that sends JSON over HTTP
+to the daemon's unix socket, `$CYAC_SOCKET` (default `/run/cyac/cyac.sock`).
+`cyac ls` lists the boxes in the conf with their status and route; `cyac
+start` and `cyac stop` are `systemctl start|stop cybox@<name>`; `cyac
+shell` and `cyac console` upgrade their connection to a raw terminal
+stream. The endpoints are listed in `internal/api`. A box's unit logs its
+plan's commands, the seed's progress and the runtime's lifecycle
+(`journalctl -u cybox@<name>`); the daemon logs every API call
+(`journalctl -u cyac`).
 
-**cyac-init.** Every VM boots into a small initramfs the daemon writes at
-each start, holding a static Go binary, `cyac-init`, and the box's config.
-As `/init` it mounts `/dev/vda`, mounts `/dev`, `/dev/pts`, `/proc`, `/sys`
+**cyac-init.** Every VM boots into a small initramfs written at each
+start, holding a static Go binary, `cyac-init`, and the box's config. As
+`/init` it mounts `/dev/vda`, mounts `/dev`, `/dev/pts`, `/proc`, `/sys`
 and a `/run` tmpfs into it (systemd and NixOS's stage 2 take these over),
-writes `resolv.conf` and the networkd config, copies itself to `/run/cyac`, and switches root. Then
-it starts the exec agent and runs the box's init or command, or nothing.
-Nothing of cyac's lives on the disk, so it can't go stale or be deleted by
-the box. Under runc, cyac-init is bind-mounted in as PID 1 for command and
-pause mode only.
+writes `resolv.conf` and the networkd config, copies itself to
+`/run/cyac`, and switches root. Then it starts the exec agent and runs the
+box's init or command, or nothing. Nothing of cyac's lives on the disk, so
+it can't go stale or be deleted by the box. Under runc, cyac-init is
+bind-mounted in as PID 1 for command and pause mode only.
 
 **Getting in.** `cyac shell` runs a command on a pty in the box. Under runc
 that is `runc exec`. In a VM the daemon reaches cyac-init's agent over
-Cloud Hypervisor's vsock device, which only the host can reach, so it needs no
-sshd, keys or guest network. The image can still run sshd for its own users.
-If the image names a login user, with the label `cyac.nullvoid.space/login-user`
-or else exe.dev's `exe.dev/login-user` (exeuntu sets it to `exedev`), the
-command runs as that user through `runuser --pty -l`; `cyac shell --root`
-skips that. Either way the command gets your `TERM`.
+Cloud Hypervisor's vsock device, which only the host can reach, so it needs
+no sshd, keys or guest network. The image can still run sshd for its own
+users. If the image names a login user, with the label
+`cyac.nullvoid.space/login-user` or else exe.dev's `exe.dev/login-user`,
+the command runs as that user through `runuser --pty -l`; `cyac shell
+--root` skips that. Either way the command gets your `TERM`.
 
 **Console.** A VM's serial console is always appended to
 `$CYAC_DIR/logs/<name>.console.log`, which survives stops and keeps one old
 copy past 8 MiB (checked at start). `cyac console <name>` shows its tail,
 follows it, and sends what you type to the serial port, where a getty or a
-command reading stdin gets it. Ctrl-] or Enter ~ . detaches
-(Ctrl-C and Ctrl-D go to the box). For a stopped box
-it shows the last output, which is where boot failures end up. Under runc
-the log only gets what PID 1 prints before it detaches from its stdio
-(systemd does so right away), so use `cyac shell` there.
+command reading stdin gets it. Ctrl-] or Enter ~ . detaches (Ctrl-C and
+Ctrl-D go to the box). For a stopped box it shows the last output, which is
+where boot failures end up; a box that fails to start also puts the
+console's last lines in its unit's error. Under runc the log only gets what
+PID 1 prints before it detaches from its stdio (systemd does so right
+away), so use `cyac shell` there.
 
 **Reboots and stops.** A guest reboot resets the VM in place; Cloud
-Hypervisor keeps running. A guest poweroff (ACPI) ends it. `cyac stop` asks
-the agent to run `cyac-init poweroff`, which sends PID 1 `SIGRTMIN+4`
-(systemd powers off; cyac-init stops the box), presses the ACPI power button
-for a guest without a working agent, and kills the VM after 30 seconds. The
-daemon checks every 2 seconds for boxes whose runtime exited without `cyac
-stop` (a poweroff, a crash, a command-mode box whose command exited, or any
-exit under runc) and leaves them stopped. Guest kernels boot without
-`panic=`, so a panicked guest halts rather than rebooting in a loop; its
-console log says why.
-
-**Boxes live with the daemon.** When the daemon gets SIGTERM it stops every
-box, all at once, and deletes their interfaces, the bridge and its nftables
-table. Each box record remembers whether the box was up (`cyac start` sets
-that, while `cyac stop` or the box exiting on its own clears it), so the
-next daemon start, including after a host reboot, starts those boxes again.
-It also stops anything a crashed daemon left running first, so it always
-starts from a clean slate.
+Hypervisor keeps running. A guest poweroff (ACPI) ends it, and so its unit.
+Stopping the unit (`cyac stop`, or the host shutting down) asks the agent
+to run `cyac-init poweroff`, which sends PID 1 `SIGRTMIN+4` (systemd powers
+off; cyac-init stops the box), presses the ACPI power button for a guest
+without a working agent, and kills the VM after 30 seconds. Guest kernels
+boot without `panic=`, so a panicked guest halts rather than rebooting in a
+loop; its console log says why. `Autostart=yes` boxes come back with
+`cyac.target` after a host reboot.
 
 **The socket has no authentication yet.** It is created mode 0600, so only
 root can use it, unless the daemon runs with `--group <g>`: then it is 0660
@@ -147,63 +246,86 @@ change before the API is reachable from anywhere but the host.
 
 ## Code layout
 
-Two interfaces in `internal/driver` are the seams:
+The path from a file to a running box goes through one package per stage,
+and the first three are pure, so each is tested by comparing text:
 
-- **`driver.Runtime`** boots a box's disk. It has two implementations,
-  `internal/runtime/cloudhypervisor` and `internal/runtime/runc`.
-- **`driver.Network`** gives a box an address and a link (a tap device or
-  a netns). Its implementation is `internal/network/bridge`.
+- `internal/conf` reads and checks the files.
+- `internal/units` turns them into units; `cmd/cyac-generator` writes
+  them.
+- `internal/render` turns one object into its plan of commands.
+- `internal/run` runs a plan, seeds and grows disks, and runs workloads.
 
-`internal/box` keeps box records, seeds disks and drives the lifecycle
-through those interfaces. `internal/proxy` is the front door.
+`driver.Runtime` in `internal/driver` is the seam between `run` and the
+runtimes: `internal/runtime/cloudhypervisor` and `internal/runtime/runc`
+(which is also `runsc`). `internal/box` builds disks from images.
+`internal/dns` is `cyac dns`. `internal/proxy` is the front door.
 `internal/server` serves the API in `internal/api` on the socket, and
-`internal/client` calls it. `cmd/cyac` is both the CLI and the daemon,
-and wires concrete drivers together. `cmd/cyac-init` is the static PID 1
-and exec agent described above; `internal/agent` holds what it shares with
-the daemon (its config, the initramfs, the exec protocol). A new runtime or network
-backend is one package that implements one interface, plus a line in
-`cmd/cyac/main.go`.
+`internal/client` calls it. `cmd/cyac` is the CLI, the daemon and the
+units' `cyac run` and `cyac dns`, and wires concrete runtimes together.
+`cmd/cyac-init` is the static PID 1 and exec agent described above;
+`internal/agent` holds what it shares with the host (its config, the
+initramfs, the exec protocol). A new runtime is one package that
+implements one interface, plus a line in `cmd/cyac/main.go`.
 
 ## Usage
+
+There is no command that writes the files yet; write them by hand.
 
 ```sh
 cyac daemon --domain boxes.example.com --acme-email you@example.com   # or let the NixOS module run it
 
-cyac new web --image ghcr.io/boldsoftware/exeuntu --size 25G   # seeds and starts
+$EDITOR /var/lib/cyac/conf/web.cybox   # and its network and gateway, as above
+systemctl daemon-reload
+
+cyac start web                      # seeds the disk on its first start
 cyac ls
 cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
 cyac expose web 8000                # https://web.boxes.example.com, prints a token
-cyac resize web 50G
-cyac stop web && cyac rm web
+cyac unexpose web
+cyac stop web
 ```
+
+To resize a box, raise its `DiskSize=` (or `Memory=`, `CPUs=`), run
+`systemctl daemon-reload` and restart it. To remove one, stop it, delete
+its file, and destroy its zvol with `zfs destroy $CYAC_ZFS/boxes/<name>`.
 
 ## Host requirements
 
-Linux, root, and these tools on PATH: `ip` (iproute2), `nft`, `mount`,
-`zfs`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`, and a ZFS pool:
-`$CYAC_ZFS` names the dataset disks go under (e.g. `rpool/cyac`). You also need
-`runc` for the runc runtime (on a cgroup v2 host), or `cloud-hypervisor`,
-KVM and a guest kernel at `$CYAC_DIR/vmlinux` for the Cloud Hypervisor
-runtime. The guest kernel needs ext4, virtio-pci with virtio-blk/net,
-`CONFIG_IP_PNP`, initramfs support (`CONFIG_BLK_DEV_INITRD`), vsock
-(`CONFIG_VIRTIO_VSOCKETS`), and on x86_64 a PVH entry point (`CONFIG_PVH`)
-and ACPI; the guest kernels the flake builds have them all. The daemon finds `cyac-init` next to
-its own binary, or at `$CYAC_INIT`. If another firewall (Docker, for example) sets the FORWARD policy
-to drop, allow `cyac0`.
+Linux with systemd, root, and these tools on PATH: `ip` (iproute2), `nft`,
+`mount`, `zfs`, `mkfs.ext4`, `e2fsck`, `resize2fs`, GNU `tar`, `sysctl`
+(procps), and `wg` for WireGuard gateways. A ZFS pool: `$CYAC_ZFS` names
+the dataset disks go under (e.g. `rpool/cyac`). You also need `runc` for
+the runc runtime (on a cgroup v2 host), or `cloud-hypervisor`, KVM and a
+guest kernel at `$CYAC_DIR/vmlinux` for the Cloud Hypervisor runtime, and
+optionally `runsc` for services. The guest kernel needs ext4, virtio-pci
+with virtio-blk/net, `CONFIG_IP_PNP`, initramfs support
+(`CONFIG_BLK_DEV_INITRD`), vsock (`CONFIG_VIRTIO_VSOCKETS`), and on x86_64
+a PVH entry point (`CONFIG_PVH`) and ACPI; the guest kernels the flake
+builds have them all, plus TUN, policy routing and nftables, so tailscale
+works in a box. `cyac` finds `cyac-init` next to its own binary, or at
+`$CYAC_INIT`, and the generator finds `cyac` next to itself. If another
+firewall drops forwarded traffic or input on the bridges (Docker, for
+example, or the NixOS firewall), allow `cyn*` to reach port 53 on the
+host and let the gateways' traffic through.
 
 ## Nix
 
-`nix build` produces `cyac` wrapped with every tool it calls (runc,
-cloud-hypervisor, iproute2, nftables, util-linux, e2fsprogs, GNU tar) but
-`zfs`, which has to match the host's kernel module and comes from the host, and a static `cyac-init` in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
+`nix build` produces `cyac` and `cyac-generator`, wrapped with every tool
+they call (runc, cloud-hypervisor, iproute2, nftables, util-linux,
+e2fsprogs, GNU tar, procps, wireguard-tools) but `zfs`, which has to match
+the host's kernel module and comes from the host, and a static `cyac-init`
+in `libexec/cyac`. `nix develop` gives you Go plus the same tools.
 
 On NixOS, the module adds the CLI, `CYAC_DIR` and `CYAC_ZFS` (from the
-required `dataset` option), enables ZFS, loads the `tun` and `bridge` modules, enables IP forwarding, creates the state dir, runs
-`cyac daemon` as `cyac.service` and links the guest kernel. `kernel` must be
-set: `"kvm"` or `"pvm"` sets up the host kernel for that and pins the daemon
-to `cloud-hypervisor` or `cloud-hypervisor-pvm` with `CYAC_RUNTIME`; `"none"` changes
-nothing and leaves the choice to cyac's detection:
+required `dataset` option), enables ZFS, loads the `tun` and `bridge`
+modules, enables IP forwarding, creates the state dir and
+`/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
+opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
+`cyac.service` and links the guest kernel. `kernel` must be set: `"kvm"`
+or `"pvm"` sets up the host kernel for that and pins boxes to
+`cloud-hypervisor` or `cloud-hypervisor-pvm` with `CYAC_RUNTIME`; `"none"`
+changes nothing and leaves the choice to cyac's detection:
 
 ```nix
 {
@@ -218,7 +340,7 @@ nothing and leaves the choice to cyac's detection:
             enable = true;
             kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
             # guestKernel = ./vmlinux;   # default: built from the host kernel's source
-            dataset = "rpool/cyac";   # box disks become zvols under it
+            dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here
               openFirewall = true;
@@ -236,8 +358,8 @@ nothing and leaves the choice to cyac's detection:
 ```
 
 If you set `networking.nftables.flushRuleset = true`, every firewall reload
-also drops cyac's table until the next `cyac start`. The module warns about
-this.
+also drops the tables cyac's gateway, network and box units load, until
+those units restart. The module warns about this.
 
 ### PVM: VMs without hardware virtualization
 
@@ -245,55 +367,65 @@ this.
 virtualizes using page tables rather than VMX/SVM. It's a nice-to-have:
 runc is the usual answer on hosts without KVM.
 `services.cyac.kernel = "pvm"` switches the host to virt-pvm's 6.12 kernel
-with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps `kvm-intel` and
-`kvm-amd` from loading, and links a PVM guest kernel (built from virt-pvm's
-guest config) to `$CYAC_DIR/vmlinux-pvm`. It's x86_64 only. The host kernel
-isn't in any binary cache, so the first build compiles it.
+with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps
+`kvm-intel` and `kvm-amd` from loading, and links a PVM guest kernel
+(built from virt-pvm's guest config) to `$CYAC_DIR/vmlinux-pvm`. It's
+x86_64 only. The host kernel isn't in any binary cache, so the first build
+compiles it.
 
 Stock Cloud Hypervisor is enough. Under PVM, cyac caps the guest's
 physical address width (`max_phys_bits=43`), as virt-pvm's Kata guide does.
 
 `nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
-VMX/SVM from the VM's CPU and boots small boxes and a NixOS disk under
-`cloud-hypervisor-pvm`, including an in-place reboot and a clean stop.
-The `pvm` workflow runs it on GitHub's runners, which have KVM for the
-outer VM, but only when started by hand, since building the kernel takes
-over an hour. Every PR runs gofmt, `go vet`, `go test` and staticcheck.
+VMX/SVM from the VM's CPU and boots boxes under `cloud-hypervisor-pvm`.
+It still sets boxes up the way the daemon did before the conf files, so it
+needs porting before it means anything again. The `pvm` workflow runs it on
+GitHub's runners, but only when started by hand, since building the kernel
+takes over an hour. Every PR runs gofmt, `go vet`, `go test` and
+staticcheck.
 
 ## What has been tested
 
-Tested in a sandbox with no KVM, using `jrei/systemd-ubuntu:24.04`:
+`go test` covers the pure stages by comparing their output with golden
+files (`internal/units/testdata`, `internal/render/testdata`) and checks
+every rendered nft script with `nft -c`.
 
-- seeding a disk
-- booting systemd under runc (`is-system-running` reports `running`)
-- reaching the box from the host
-- box-to-box and box-to-host traffic being blocked
-- every proxy auth path, header and cookie stripping, 404 for unknown hosts and 502 for stopped boxes
-- clean systemd halt on `stop`
-- persistence across stop/start
-- offline resize
-- `rm`
-- command and pause mode under runc, including an image `USER`
-  (`nginxinc/nginx-unprivileged`) and stopping each
+On a real NixOS host with KVM, before disks moved to zvols: seeding a box
+from the conf files, and its network coming up. Disks on zvols haven't
+run on a real ZFS host yet.
+
+Earlier, before the conf files, in a sandbox without KVM:
+
+- booting systemd under runc, and command and pause mode, including an
+  image `USER` (`nginxinc/nginx-unprivileged`)
+- every proxy auth path, header and cookie stripping, 404 for unknown hosts
+  and 502 for stopped boxes
+- clean systemd halt on stop, and persistence across stop/start
 - cyac-init's initramfs under qemu (TCG) with the flake's guest kernel: a
-  busybox disk in init, command and pause mode, and a NixOS disk booting to
-  its login prompt and shutting down cleanly (with the Firecracker-era
-  kernel arguments and Ctrl-Alt-Del stop)
+  busybox disk in all three modes, and a NixOS disk booting to its login
+  prompt and shutting down cleanly
 - the exec agent's protocol, over a pipe
 
 Not tested yet:
 
-- **The Cloud Hypervisor runtime, exec over vsock, and stop through the
-  agent.** There was no KVM in the sandbox; the PVM VM test covers them, run
-  by hand.
-- **Online resize under runc.** The sandbox lacked `CAP_SYS_RESOURCE`.
-- **exeuntu itself.** Its layer blobs weren't reachable from the sandbox. Check that its `/etc/fstab` root entry matches a bare ext4 filesystem on `/dev/vda`.
+- **Services, WireGuard gateways, and services under gVisor** on a real
+  host.
+- **Exec over vsock and stop through the agent** since the move to Cloud
+  Hypervisor; the PVM test needs porting first.
+- **Growing a disk**, online under runc or in a VM.
+- **exeuntu itself.** Check that its `/etc/fstab` root entry matches a
+  bare ext4 filesystem on `/dev/vda`.
+- **Real ACME issuance**, and a non-root `cyac` group member using the
+  socket.
 
 ## Not built yet
 
+- CLI commands that write the conf files (`cyac new` and friends), and
+  removing a box's disk.
 - Authentication on the API socket.
-- Terminal resizes after `cyac shell` starts, and passing its exit status back.
+- Terminal resizes after `cyac shell` starts, and passing its exit status
+  back.
 - An SSH front door.
 - Confining Cloud Hypervisor with its `--landlock` rules.
 - Auto-starting a box on request.
-- exe-style services on 169.254.169.254: one host proxy that holds secrets the box never sees. When that lands, it must pin each box's source IP to its interface, because boxes control their own IP.
+- Boxes on more than one network, and egress allowlists.
