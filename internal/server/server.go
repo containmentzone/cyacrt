@@ -6,7 +6,6 @@ package server
 
 import (
 	"bufio"
-	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -147,11 +146,7 @@ func (s *Server) unit(verb string) http.HandlerFunc {
 			reply(w, nil, err)
 			return
 		}
-		out, err := exec.Command("systemctl", verb, units.Name(conf.KindBox, name)).CombinedOutput()
-		if err != nil {
-			err = fmt.Errorf("systemctl %s: %v: %s", verb, err, bytes.TrimSpace(out))
-		}
-		reply(w, struct{}{}, err)
+		reply(w, struct{}{}, sh.Run("systemctl", verb, units.Name(conf.KindBox, name)))
 	}
 }
 
