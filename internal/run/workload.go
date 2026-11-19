@@ -19,7 +19,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
-// Defaults for what a file leaves out, as for `cyac new`.
+// Defaults for what a file leaves out.
 const (
 	defaultCPUs     = 1
 	defaultMemoryMB = 1024

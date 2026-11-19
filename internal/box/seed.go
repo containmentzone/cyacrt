@@ -1,7 +1,6 @@
 package box
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,6 +15,8 @@ import (
 	"github.com/google/go-containerregistry/pkg/crane"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
+
+	"github.com/containmentzone/cyacrt/internal/agent"
 )
 
 // loginUserLabels name the user `cyac shell` logs in as, in order of
@@ -28,10 +29,8 @@ var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 // scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it onto a sparse
 // zvol of the requested size. It runs once per box; afterwards the disk is
 // the box and the image is no longer consulted. progress gets a line per
-// step and, while unpacking, every few seconds.
-//
-// b.Mode asks for a mode ("init", "command" or "pause"); empty picks one
-// from the image (see pickMode). Seed replaces it with the mode picked.
+// step and, while unpacking, every few seconds. Seed fills in the rest of
+// b from the image, including the mode it picks (see pickMode).
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
 	img, err := crane.Pull(b.Image, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
@@ -51,9 +50,7 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	if err != nil {
 		return err
 	}
-	if len(b.Init) == 0 {
-		b.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
-	}
+	b.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
 	b.Env, b.Cwd, b.RunAs = cfg.Config.Env, cfg.Config.WorkingDir, cfg.Config.User
 	for _, label := range loginUserLabels {
 		if u := cfg.Config.Labels[label]; u != "" {
@@ -138,42 +135,30 @@ func writeBoxConfig(scratch string, b *Box) error {
 		return err
 	}
 	for name, content := range files {
-		if err := writeFile(root, name, []byte(content), 0o644); err != nil {
+		if err := agent.ReplaceFile(root, name, content); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// pickMode settles what runs b.Init, unless b.Mode already asks: an init
-// (named init or systemd, like exeuntu's /usr/local/bin/init) becomes PID
-// 1, any other command runs under cyac-init, like a container, and an
-// image with neither a command nor /sbin/init gets pause mode.
+// pickMode settles what runs b.Init: an init (named init or systemd, like
+// exeuntu's /usr/local/bin/init) becomes PID 1, any other command runs
+// under cyac-init, like a container, and an image with neither a command
+// nor /sbin/init gets pause mode.
 func pickMode(root *os.Root, b *Box) error {
-	want := b.Mode
-	b.Mode = ""
-	switch {
-	case want == "pause":
-		b.Mode, b.Init = "pause", nil
-		return nil
-	case len(b.Init) == 0 && want == "command":
-		return errors.New("the image has no command (pass --init to give one)")
-	case len(b.Init) == 0:
+	if len(b.Init) == 0 {
 		if _, err := root.Lstat("sbin/init"); err != nil {
-			if want == "init" {
-				return errors.New("the image has no command or /sbin/init (pass --init to give one)")
-			}
 			b.Mode = "pause"
 			return nil
 		}
 		b.Init = []string{"/sbin/init"}
 	}
-	if want == "command" || want == "" && ModeFor(b.Init) == "command" {
-		b.Mode = "command"
+	if b.Mode = ModeFor(b.Init); b.Mode == "command" {
 		return nil
 	}
 	if _, err := root.Lstat(strings.TrimPrefix(b.Init[0], "/")); err != nil {
-		return fmt.Errorf("init %s not found in image (pass --init to choose one): %w", b.Init[0], err)
+		return fmt.Errorf("init %s not found in image: %w", b.Init[0], err)
 	}
 	return nil
 }
@@ -186,22 +171,6 @@ func ModeFor(init []string) string {
 		return ""
 	}
 	return "command"
-}
-
-// writeFile replaces name in root, without following a symlink there.
-func writeFile(root *os.Root, name string, content []byte, mode os.FileMode) error {
-	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	f, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
-	if err != nil {
-		return err
-	}
-	_, err = f.Write(content)
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	return err
 }
 
 // counter counts the bytes read through it.

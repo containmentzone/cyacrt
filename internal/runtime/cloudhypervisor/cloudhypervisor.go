@@ -20,7 +20,6 @@ package cloudhypervisor
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -111,11 +110,6 @@ func (r Runtime) Start(m *driver.Machine) error {
 		// Cloud Hypervisor; PVM guests can't use the host's full width.
 		cpus += ",max_phys_bits=43"
 	}
-	ip := m.Addr.IP.As4()
-	mac := fmt.Sprintf("06:00:%02x:%02x:%02x:%02x", ip[0], ip[1], ip[2], ip[3])
-	if m.MAC != "" {
-		mac = m.MAC
-	}
 
 	log, in, err := driver.OpenConsole(m)
 	if err != nil {
@@ -136,7 +130,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 		// a guest rewriting the format probe, and ext4 rewrites block 0 (it holds
 		// the superblock) on every mount.
 		"--disk", "path="+m.Disk+",id=rootfs,image_type=raw",
-		"--net", fmt.Sprintf("tap=%s,mac=%s,id=eth0", m.Link.HostIface, mac),
+		"--net", fmt.Sprintf("tap=%s,mac=%s,id=eth0", m.Link.HostIface, m.MAC),
 		"--vsock", "cid=3,socket="+vsock(m),
 		"--serial", "tty",
 		"--console", "off",
@@ -174,7 +168,7 @@ func (Runtime) Stop(m *driver.Machine) error {
 	// ACPI power button covers a guest whose agent is gone, if systemd-logind
 	// runs there. Either way the VMM exits once the guest powers off.
 	agent.PowerOff(vsock(m))
-	api(m, "vm.power-button", nil)
+	api(m, "vm.power-button")
 	for range 60 {
 		if pid(m) == 0 {
 			return nil
@@ -185,21 +179,6 @@ func (Runtime) Stop(m *driver.Machine) error {
 		return syscall.Kill(p, syscall.SIGKILL)
 	}
 	return nil
-}
-
-// Grow tells Cloud Hypervisor the zvol changed size; the guest sees a
-// resized virtio-blk device and grows its own filesystem, like a cloud VM.
-func (Runtime) Grow(m *driver.Machine) error {
-	f, err := os.Open(m.Disk)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	size, err := f.Seek(0, io.SeekEnd) // Stat says 0 for a block device
-	if err != nil {
-		return err
-	}
-	return api(m, "vm.resize-disk", map[string]any{"id": "rootfs", "desired_size": size})
 }
 
 // Command runs args through the guest's agent, by running "cyac
@@ -240,8 +219,8 @@ func pid(m *driver.Machine) int {
 	return p
 }
 
-// api makes one PUT request to Cloud Hypervisor's API over its unix socket.
-func api(m *driver.Machine, action string, body any) error {
+// api makes one PUT request without a body to Cloud Hypervisor's API over its unix socket.
+func api(m *driver.Machine, action string) error {
 	sock := socket(m)
 	client := http.Client{
 		Timeout: 5 * time.Second,
@@ -249,19 +228,10 @@ func api(m *driver.Machine, action string, body any) error {
 			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
 		}},
 	}
-	var data io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		data = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest(http.MethodPut, "http://localhost/api/v1/"+action, data)
+	req, err := http.NewRequest(http.MethodPut, "http://localhost/api/v1/"+action, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

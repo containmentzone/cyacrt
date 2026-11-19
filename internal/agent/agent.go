@@ -52,14 +52,14 @@ func WriteNetConfig(dir string, c Config) error {
 	if err := root.MkdirAll("etc/systemd/network", 0o755); err != nil {
 		return err
 	}
-	if err := replaceFile(root, "etc/resolv.conf", "# written by cyac on every start\nnameserver "+c.DNS+"\n"); err != nil {
+	if err := ReplaceFile(root, "etc/resolv.conf", "# written by cyac on every start\nnameserver "+c.DNS+"\n"); err != nil {
 		return err
 	}
-	return replaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)
+	return ReplaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)
 }
 
 // replaceFile replaces name in root, without following a symlink there.
-func replaceFile(root *os.Root, name, content string) error {
+func ReplaceFile(root *os.Root, name, content string) error {
 	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 		return err
 	}
