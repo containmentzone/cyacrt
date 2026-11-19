@@ -5,7 +5,7 @@ little VMs, built from any OCI image, on networks you declare, behind an
 HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~5,200 lines of Go).
+(~5,100 lines of Go).
 
 ## How it works
 
