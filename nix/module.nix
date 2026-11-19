@@ -33,15 +33,6 @@ let
   };
 in
 {
-  imports = [
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "listen" ]
-      "The proxy always serves :80 and :443 now; set services.cyac.proxy.domain."
-    )
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "acme" ]
-      "The proxy always uses Let's Encrypt now; set services.cyac.proxy.domain."
-    )
-  ];
-
   options.services.cyac = {
     enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 
@@ -180,8 +171,6 @@ in
         assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
         message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
       }
-    ]
-    ++ [
       {
         assertion = config.security.acme.acceptTerms;
         message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
@@ -201,9 +190,6 @@ in
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       environment.CYAC_ZFS = cfg.dataset;
-      environment.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
-        if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor"
-      );
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [
