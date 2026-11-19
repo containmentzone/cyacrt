@@ -199,6 +199,9 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 	if err := st.Destroy(name); err != nil {
 		return nil, err
 	}
+	if w.Image == "" {
+		return nil, fmt.Errorf("no disk yet and no SeedImage= to seed one from")
+	}
 	b := &box.Box{Name: name, Image: w.Image}
 	if err := st.Seed(b, int64(diskMB)<<20, func(line string) { log.Print(line) }); err != nil {
 		return nil, err

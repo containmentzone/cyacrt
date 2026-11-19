@@ -12,7 +12,7 @@ func TestReload(t *testing.T) {
 	confDir, routes := t.TempDir(), filepath.Join(t.TempDir(), "routes")
 	for name, content := range map[string]string{
 		"dev.cynetwork": "[Network]\nIndex=1\n",
-		"a.cybox":       "[Workload]\nImage=i\n\n[Box]\nNetwork=dev\nAddress=10.42.1.10\n",
+		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
 	} {
 		if err := os.WriteFile(filepath.Join(confDir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)

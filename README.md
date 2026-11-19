@@ -35,12 +35,10 @@ Index=1
 Attach=gateway:out
 
 # web.cybox
-[Workload]
-Image=ghcr.io/boldsoftware/exeuntu
-CPUs=2
-Memory=4G
-
 [Box]
+SeedImage=ghcr.io/boldsoftware/exeuntu
+CPU=2
+Memory=4G
 Network=dev
 Address=10.42.1.10
 DiskSize=25G
@@ -69,8 +67,8 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox, cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPUs=` (default 1), `Memory=` (default 1G) |
-| cybox | `[Box]` | `Network=`, `Address=` (required), `DiskSize=` (default 10G), `Runtime=`, `Autostart=` |
+| cybox | `[Box]` | `Network=`, `Address=` (required), `SeedImage=` (required until the box has a disk), `Exec=`, `Env=`, `WorkingDirectory=`, `User=`, `CPU=`, `Memory=` (as for cyservice), `DiskSize=` (default 10G), `Runtime=`, `Autostart=` |
+| cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G) |
 | cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
@@ -87,8 +85,9 @@ the disk, so later starts don't need the registry. Every start also writes
 a systemd-networkd config for `eth0` with the box's address, gateway and
 DNS, and an `/etc/resolv.conf` that points at the network's resolver. From
 then on the disk *is* the box. apt installs, files in `/root`, and
-everything else survive stops, starts and host reboots. Changing `Image=`
-afterwards does nothing to an existing disk. Raising `DiskSize=` grows the
+everything else survive stops, starts and host reboots. That's why the key
+is `SeedImage=`: it's only read when the box has no disk yet, and can be
+changed or dropped afterwards without touching the disk. Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks); a VM grows its own filesystem
 (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`), and under runc the
 host runs an online `resize2fs`.
@@ -286,7 +285,7 @@ cyac unexpose web
 cyac stop web
 ```
 
-To resize a box, raise its `DiskSize=` (or `Memory=`, `CPUs=`), run
+To resize a box, raise its `DiskSize=` (or `Memory=`, `CPU=`), run
 `systemctl daemon-reload` and restart it. To remove one, stop it, delete
 its file, and destroy its zvol with `zfs destroy $CYAC_ZFS/boxes/<name>`.
 
