@@ -376,13 +376,8 @@ compiles it.
 Stock Cloud Hypervisor is enough. Under PVM, cyac caps the guest's
 physical address width (`max_phys_bits=43`), as virt-pvm's Kata guide does.
 
-`nix build .#checks.x86_64-linux.pvm -L` runs a NixOS VM test that hides
-VMX/SVM from the VM's CPU and boots boxes under `cloud-hypervisor-pvm`.
-It still sets boxes up the way the daemon did before the conf files, so it
-needs porting before it means anything again. The `pvm` workflow runs it on
-GitHub's runners, but only when started by hand, since building the kernel
-takes over an hour. Every PR runs gofmt, `go vet`, `go test` and
-staticcheck.
+Every PR runs gofmt, `go vet`, `go test` and staticcheck. There is no VM
+test; PVM and Cloud Hypervisor are tried on real hosts.
 
 ## What has been tested
 
@@ -411,7 +406,7 @@ Not tested yet:
 - **Services, WireGuard gateways, and services under gVisor** on a real
   host.
 - **Exec over vsock and stop through the agent** since the move to Cloud
-  Hypervisor; the PVM test needs porting first.
+  Hypervisor.
 - **Growing a disk**, online under runc or in a VM.
 - **exeuntu itself.** Check that its `/etc/fstab` root entry matches a
   bare ext4 filesystem on `/dev/vda`.

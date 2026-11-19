@@ -31,12 +31,6 @@
         )
       );
 
-      # Boots a box under cloud-hypervisor-pvm in a VM with no VMX. Needs KVM.
-      checks.x86_64-linux.pvm = import ./nix/test-pvm.nix {
-        inherit self;
-        pkgs = nixpkgs.legacyPackages.x86_64-linux;
-      };
-
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.system}.cyac ];
