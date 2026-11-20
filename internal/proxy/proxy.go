@@ -1,13 +1,14 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host is <box>.<root domain> for a box exposed
 // with `cyac expose`, and, unless that route is public, it carries the
-// route's token.
+// route's token. The root domain itself gets a splash page.
 package proxy
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,6 +33,11 @@ const (
 	cookieName = "cyac_token"
 	loginPath  = "/__cyac/login"
 )
+
+// splash is what the bare root domain shows.
+//
+//go:embed splash.html
+var splash []byte
 
 // Route exposes one port of a box at <name>.<root domain>. Nothing is
 // reachable without one.
@@ -135,25 +141,40 @@ func SaveRoute(dir, name string, r *Route) error {
 	return os.Rename(path+".tmp", path)
 }
 
-func (s *Server) lookup(host string) (target, bool) {
+func hostname(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	return strings.ToLower(host)
+}
+
+func (s *Server) isRoot(host string) bool {
+	return hostname(host) == strings.ToLower(s.Domain)
+}
+
+func (s *Server) lookup(host string) (target, bool) {
+	host = hostname(host)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	t, ok := s.routes[strings.ToLower(host)]
+	t, ok := s.routes[host]
 	return t, ok
 }
 
-// HostPolicy only lets ACME issue certificates for exposed hosts.
+// HostPolicy only lets ACME issue certificates for the root domain and
+// exposed hosts.
 func (s *Server) HostPolicy(_ context.Context, host string) error {
-	if _, ok := s.lookup(host); !ok {
+	if _, ok := s.lookup(host); !ok && !s.isRoot(host) {
 		return errors.New("unknown host")
 	}
 	return nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.isRoot(r.Host) && r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(splash)
+		return
+	}
 	t, ok := s.lookup(r.Host)
 	if !ok {
 		http.NotFound(w, r)

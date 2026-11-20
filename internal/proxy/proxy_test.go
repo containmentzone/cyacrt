@@ -1,8 +1,11 @@
 package proxy
 
 import (
+	"context"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -45,5 +48,36 @@ func TestReload(t *testing.T) {
 	s.Reload()
 	if _, ok := s.lookup("a.boxes.example.com"); ok {
 		t.Error("removed route still served")
+	}
+}
+
+// The bare root domain gets the splash page, and a certificate; anything
+// else on it, and unknown hosts, stay 404.
+func TestSplash(t *testing.T) {
+	s := &Server{Domain: "Boxes.Example.com"}
+	for _, c := range []struct {
+		host, path string
+		code       int
+	}{
+		{"boxes.example.com", "/", 200},
+		{"BOXES.example.com:443", "/", 200},
+		{"boxes.example.com", "/x", 404},
+		{"nope.boxes.example.com", "/", 404},
+		{"example.com", "/", 404},
+	} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest("GET", "http://"+c.host+c.path, nil))
+		if w.Code != c.code {
+			t.Errorf("%s%s: %d, want %d", c.host, c.path, w.Code, c.code)
+		}
+		if c.code == 200 && !strings.Contains(w.Body.String(), "Everything runs on CyberAcme") {
+			t.Errorf("%s: no splash", c.host)
+		}
+	}
+	if err := s.HostPolicy(context.Background(), "boxes.example.com"); err != nil {
+		t.Errorf("root domain refused: %v", err)
+	}
+	if err := s.HostPolicy(context.Background(), "nope.boxes.example.com"); err == nil {
+		t.Error("unknown host allowed")
 	}
 }
