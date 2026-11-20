@@ -249,31 +249,24 @@ func (c *Config) parseFile(path, kind, name string) error {
 }
 
 func (c *Config) parseNetwork(name string, f *fields) error {
-	n := &Network{Name: name}
-	idx, err := f.one("Index")
-	if err != nil {
-		return err
-	}
-	if n.Index, err = intIn(idx, "Index", 0, MaxNetworkIndex, true); err != nil {
-		return err
-	}
+	n := &Network{Name: name, Index: f.int("Index", 0, MaxNetworkIndex, true)}
 	for _, a := range f.all("Attach") {
 		kind, target, _ := strings.Cut(a, ":")
 		switch {
 		case !ValidName(target):
-			return bad("Attach", a, "want service:<name> or gateway:<name>")
+			f.fail(bad("Attach", a, "want service:<name> or gateway:<name>"))
 		case kind == "service":
 			if slices.Contains(n.Services, target) {
-				return bad("Attach", a, "given twice")
+				f.fail(bad("Attach", a, "given twice"))
 			}
 			n.Services = append(n.Services, target)
 		case kind == "gateway":
 			if n.Gateway != "" {
-				return fmt.Errorf("a network attaches at most one gateway")
+				f.fail(fmt.Errorf("a network attaches at most one gateway"))
 			}
 			n.Gateway = target
 		default:
-			return bad("Attach", a, "want service:<name> or gateway:<name>")
+			f.fail(bad("Attach", a, "want service:<name> or gateway:<name>"))
 		}
 	}
 	if err := f.done(); err != nil {
@@ -284,27 +277,14 @@ func (c *Config) parseNetwork(name string, f *fields) error {
 }
 
 func (c *Config) parseGateway(name string, f *fields) error {
-	g := &Gateway{Name: name}
-	var addr string
-	var err error
-	for _, kv := range []struct {
-		key string
-		dst *string
-	}{{"Kind", &g.Kind}, {"Config", &g.Config}, {"DNS", &g.DNS}, {"Address", &addr}, {"Uplink", &g.Out}} {
-		if *kv.dst, err = f.one(kv.key); err != nil {
-			return err
-		}
-	}
-	idx, err := f.one("Index")
-	if err != nil {
-		return err
-	}
-	if g.Index, err = intIn(idx, "Index", 0, MaxLinkIndex, true); err != nil {
-		return err
-	}
+	g := &Gateway{Name: name, Kind: f.one("Kind"), Config: f.one("Config"), DNS: f.one("DNS")}
+	addr := f.one("Address")
+	g.Out = f.one("Uplink")
+	g.Index = f.int("Index", 0, MaxLinkIndex, true)
 	if err := f.done(); err != nil {
 		return err
 	}
+	var err error
 	switch g.Kind {
 	case "direct":
 		if g.Config != "" || addr != "" {
@@ -342,41 +322,21 @@ var ifname = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
 var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
 func (c *Config) parseService(name string, wf, f *fields) error {
-	s := &Service{Name: name}
-	var err error
-	if s.Workload, err = parseWorkload(wf, "Image", true); err != nil {
-		return err
-	}
+	s := &Service{Name: name, Workload: parseWorkload(wf, "Image", true)}
 	if err := wf.done(); err != nil {
 		return err
 	}
-	idx, err := f.one("Index")
-	if err != nil {
-		return err
+	s.Index = f.int("Index", 0, MaxLinkIndex, true)
+	if s.Gateway = f.one("Gateway"); !ValidName(s.Gateway) {
+		f.fail(fmt.Errorf("[Service] needs Gateway=<name>"))
 	}
-	if s.Index, err = intIn(idx, "Index", 0, MaxLinkIndex, true); err != nil {
-		return err
-	}
-	if s.Gateway, err = f.one("Gateway"); err != nil {
-		return err
-	}
-	if !ValidName(s.Gateway) {
-		return fmt.Errorf("[Service] needs Gateway=<name>")
-	}
-	port, err := f.one("Port")
-	if err != nil {
-		return err
-	}
-	if s.Port, err = intIn(port, "Port", 1, 65535, true); err != nil {
-		return err
-	}
+	s.Port = f.int("Port", 1, 65535, true)
 	for _, v := range f.all("Secret") {
 		n, p, _ := strings.Cut(v, ":")
 		if !secretName.MatchString(n) || !filepath.IsAbs(p) {
-			return bad("Secret", v, "want NAME:/absolute/path")
-		}
-		if slices.ContainsFunc(s.Secrets, func(x Secret) bool { return x.Name == n }) {
-			return bad("Secret", v, "name given twice")
+			f.fail(bad("Secret", v, "want NAME:/absolute/path"))
+		} else if slices.ContainsFunc(s.Secrets, func(x Secret) bool { return x.Name == n }) {
+			f.fail(bad("Secret", v, "name given twice"))
 		}
 		s.Secrets = append(s.Secrets, Secret{n, p})
 	}
@@ -389,41 +349,18 @@ func (c *Config) parseService(name string, wf, f *fields) error {
 
 // parseBox reads a cybox, which has all its keys in [Box].
 func (c *Config) parseBox(name string, f *fields) error {
-	b := &Box{Name: name}
+	b := &Box{Name: name, Workload: parseWorkload(f, "SeedImage", false)}
+	if b.Network = f.one("Network"); !ValidName(b.Network) {
+		f.fail(fmt.Errorf("[Box] needs Network=<name>"))
+	}
+	addr := f.one("Address")
 	var err error
-	if b.Workload, err = parseWorkload(f, "SeedImage", false); err != nil {
-		return err
-	}
-	if b.Network, err = f.one("Network"); err != nil {
-		return err
-	}
-	if !ValidName(b.Network) {
-		return fmt.Errorf("[Box] needs Network=<name>")
-	}
-	addr, err := f.one("Address")
-	if err != nil {
-		return err
-	}
 	if b.Address, err = netip.ParseAddr(addr); err != nil || !b.Address.Is4() {
-		return fmt.Errorf("[Box] needs Address= with an IPv4 address, got %q", addr)
+		f.fail(fmt.Errorf("[Box] needs Address= with an IPv4 address, got %q", addr))
 	}
-	if b.Runtime, err = f.one("Runtime"); err != nil {
-		return err
-	}
-	disk, err := f.one("DiskSize")
-	if err != nil {
-		return err
-	}
-	if b.DiskMB, err = sizeMB(disk, "DiskSize"); err != nil {
-		return err
-	}
-	auto, err := f.one("Autostart")
-	if err != nil {
-		return err
-	}
-	if b.Autostart, err = boolean(auto, "Autostart"); err != nil {
-		return err
-	}
+	b.Runtime = f.one("Runtime")
+	b.DiskMB = f.size("DiskSize")
+	b.Autostart = f.bool("Autostart")
 	if err := f.done(); err != nil {
 		return err
 	}
@@ -432,50 +369,28 @@ func (c *Config) parseBox(name string, f *fields) error {
 }
 
 // parseWorkload takes the workload keys from f, with the image under
-// imageKey, and leaves the rest of f to the caller.
-func parseWorkload(f *fields, imageKey string, needImage bool) (Workload, error) {
-	var w Workload
-	var err error
-	if w.Image, err = f.one(imageKey); err != nil {
-		return w, err
-	}
+// imageKey, and leaves the rest of f to the caller. Errors go to f.
+func parseWorkload(f *fields, imageKey string, needImage bool) Workload {
+	w := Workload{Image: f.one(imageKey)}
 	if needImage && w.Image == "" {
-		return w, fmt.Errorf("[%s] needs %s=", f.section, imageKey)
+		f.fail(fmt.Errorf("[%s] needs %s=", f.section, imageKey))
 	}
-	exec, err := f.one("Exec")
-	if err != nil {
-		return w, err
-	}
+	exec := f.one("Exec")
+	var err error
 	if w.Exec, err = splitWords(exec); err != nil {
-		return w, bad("Exec", exec, err.Error())
+		f.fail(bad("Exec", exec, err.Error()))
 	}
 	w.Env = f.all("Env")
 	for _, kv := range w.Env {
 		if k, _, ok := strings.Cut(kv, "="); !ok || k == "" {
-			return w, bad("Env", kv, "want KEY=VALUE")
+			f.fail(bad("Env", kv, "want KEY=VALUE"))
 		}
 	}
-	if w.WorkDir, err = f.one("WorkingDirectory"); err != nil {
-		return w, err
-	}
-	if w.User, err = f.one("User"); err != nil {
-		return w, err
-	}
-	cpus, err := f.one("CPU")
-	if err != nil {
-		return w, err
-	}
-	if w.CPUs, err = intIn(cpus, "CPU", 1, 256, false); err != nil {
-		return w, err
-	}
-	mem, err := f.one("Memory")
-	if err != nil {
-		return w, err
-	}
-	if w.MemoryMB, err = sizeMB(mem, "Memory"); err != nil {
-		return w, err
-	}
-	return w, nil
+	w.WorkDir = f.one("WorkingDirectory")
+	w.User = f.one("User")
+	w.CPUs = f.int("CPU", 1, 256, false)
+	w.MemoryMB = f.size("Memory")
+	return w
 }
 
 // check resolves references between objects. It drops every object that

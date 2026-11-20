@@ -61,10 +61,19 @@ func parseINI(r io.Reader) ([]section, error) {
 
 // fields is the view a primitive's parser has of one section: it takes the
 // keys it knows, and whatever is left over is an error, so a typo never
-// silently means "unset".
+// silently means "unset". Errors stick: the parser reads every key, and
+// done reports the first error.
 type fields struct {
 	section string
 	byKey   map[string][]entry
+	err     error
+}
+
+// fail records err, unless an earlier error is recorded or err is nil.
+func (f *fields) fail(err error) {
+	if f.err == nil {
+		f.err = err
+	}
 }
 
 func newFields(s section) *fields {
@@ -76,16 +85,38 @@ func newFields(s section) *fields {
 }
 
 // one takes key, which may appear at most once.
-func (f *fields) one(key string) (string, error) {
+func (f *fields) one(key string) string {
 	es := f.byKey[key]
 	delete(f.byKey, key)
-	switch len(es) {
-	case 0:
-		return "", nil
-	case 1:
-		return es[0].value, nil
+	if len(es) == 0 {
+		return ""
 	}
-	return "", fmt.Errorf("line %d: [%s] %s= given more than once", es[1].line, f.section, key)
+	if len(es) > 1 {
+		f.fail(fmt.Errorf("line %d: [%s] %s= given more than once", es[1].line, f.section, key))
+	}
+	return es[0].value
+}
+
+// int takes key as a number from lo to hi; unset is 0, or an error if
+// required.
+func (f *fields) int(key string, lo, hi int, required bool) int {
+	v, err := intIn(f.one(key), key, lo, hi, required)
+	f.fail(err)
+	return v
+}
+
+// size takes key as a size in MiB (see sizeMB); unset is 0.
+func (f *fields) size(key string) int {
+	v, err := sizeMB(f.one(key), key)
+	f.fail(err)
+	return v
+}
+
+// bool takes key as yes or no; unset is no.
+func (f *fields) bool(key string) bool {
+	v, err := boolean(f.one(key), key)
+	f.fail(err)
+	return v
 }
 
 // all takes every value of key, in file order.
@@ -98,8 +129,11 @@ func (f *fields) all(key string) []string {
 	return vs
 }
 
-// done reports the first key nobody took.
+// done reports the first error, or else the first key nobody took.
 func (f *fields) done() error {
+	if f.err != nil {
+		return f.err
+	}
 	var first *entry
 	for _, es := range f.byKey {
 		if first == nil || es[0].line < first.line {
