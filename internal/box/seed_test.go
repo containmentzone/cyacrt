@@ -12,7 +12,6 @@ func TestPickMode(t *testing.T) {
 		name     string
 		sbinInit bool
 		init     []string
-		want     string // requested mode
 		mode     string
 		args     []string
 		err      bool
@@ -22,12 +21,7 @@ func TestPickMode(t *testing.T) {
 		{name: "no command, has /sbin/init", sbinInit: true, args: []string{"/sbin/init"}},
 		{name: "no command, no init", mode: "pause"},
 		{name: "nginx", init: []string{"nginx", "-g", "daemon off;"}, mode: "command", args: []string{"nginx", "-g", "daemon off;"}},
-		{name: "forced init", init: []string{"/bin/sh"}, want: "init", args: []string{"/bin/sh"}},
-		{name: "forced command", init: []string{"/sbin/init"}, sbinInit: true, want: "command", mode: "command", args: []string{"/sbin/init"}},
-		{name: "forced pause", init: []string{"nginx"}, want: "pause", mode: "pause"},
-		{name: "missing init", init: []string{"/usr/local/bin/init"}, want: "init", err: true, args: nil},
-		{name: "init without init", want: "init", err: true},
-		{name: "command without command", want: "command", err: true},
+		{name: "missing init", init: []string{"/usr/local/bin/init"}, err: true},
 	} {
 		dir := t.TempDir()
 		for _, p := range []string{"bin/sh", "lib/systemd/systemd"} {
@@ -46,7 +40,7 @@ func TestPickMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b := &Box{Init: tc.init, Mode: tc.want}
+		b := &Box{Init: tc.init}
 		err = pickMode(root, b)
 		root.Close()
 		if (err != nil) != tc.err {

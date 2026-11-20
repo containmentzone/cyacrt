@@ -25,8 +25,8 @@ type Machine struct {
 	MemMiB     int
 	Addr       Addr // a VM's address, for its kernel command line
 	Link       Link // built by the render plan before Runtime.Start
-	// MAC is eth0's address when the network pins one (VMs only: a
-	// container's netns already has it). Empty lets the runtime pick.
+	// MAC is eth0's address, which the bridge pins (VMs only: a
+	// container's netns already has it).
 	MAC string
 	// Secrets is a host directory a container sees read-only at
 	// /run/secrets, or empty (runc only).
@@ -92,8 +92,6 @@ type Runtime interface {
 	Running(m *Machine) bool
 	// Cleanup removes leftovers of a stopped or crashed run. Idempotent.
 	Cleanup(m *Machine)
-	// Grow makes an already extended zvol visible at its new size.
-	Grow(m *Machine) error
 	// Command returns a command that runs args inside the box when started
 	// with a terminal on its stdio (the daemon attaches a pty).
 	Command(m *Machine, args []string) (*exec.Cmd, error)

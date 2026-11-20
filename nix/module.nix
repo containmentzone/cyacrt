@@ -12,8 +12,6 @@ self:
 
 let
   cfg = config.services.cyac;
-  pvm = cfg.kernel == "pvm";
-  vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
   # For the generated cybox@ and cyservice@ units: added to them, not
   # replacing them.
   workloadDropin = {
@@ -27,21 +25,10 @@ let
       CYAC_DIR = cfg.stateDir;
       CYAC_ZFS = cfg.dataset;
     }
-    // lib.optionalAttrs (cfg.kernel == "kvm" || pvm) {
-      CYAC_RUNTIME = if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor";
-    };
+    // lib.optionalAttrs (cfg.kernel == "kvm") { CYAC_RUNTIME = "cloud-hypervisor"; };
   };
 in
 {
-  imports = [
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "listen" ]
-      "The proxy always serves :80 and :443 now; set services.cyac.proxy.domain."
-    )
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "acme" ]
-      "The proxy always uses Let's Encrypt now; set services.cyac.proxy.domain."
-    )
-  ];
-
   options.services.cyac = {
     enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 
@@ -71,7 +58,6 @@ in
       type = lib.types.nullOr (
         lib.types.enum [
           "kvm"
-          "pvm"
           "none"
         ]
       );
@@ -82,31 +68,25 @@ in
         - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
           loads them). Pins cyac to the cloud-hypervisor runtime. The guest
           kernel is built from the host kernel's source by default.
-        - pvm: no hardware virtualization needed, e.g. a cloud VM without
-          nested virt. Boots the host into virt-pvm's kernel with pti=off,
-          loads kvm-pvm instead of kvm-intel/kvm-amd, and pins cyac to the
-          cloud-hypervisor-pvm runtime. x86_64 only.
         - none: leaves the kernel alone and lets cyac pick a runtime itself
-          (cloud-hypervisor, cloud-hypervisor-pvm, then runc).
+          (cloud-hypervisor, then runc).
       '';
     };
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default =
-        if pvm then
-          self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel
-        else if cfg.kernel == "kvm" then
+        if cfg.kernel == "kvm" then
           pkgs.callPackage ./guest-kernel.nix { inherit (config.boot.kernelPackages.kernel) src version; }
         else
           null;
       defaultText = lib.literalMD ''
         for "kvm", a guest vmlinux built from the host kernel's source
-        (`boot.kernelPackages.kernel`); for "pvm", the PVM guest kernel
+        (`boot.kernelPackages.kernel`)
       '';
       description = ''
         Guest kernel (uncompressed vmlinux) for Cloud Hypervisor, linked to
-        stateDir/vmlinux, or stateDir/vmlinux-pvm with kernel = "pvm".
+        stateDir/vmlinux.
       '';
     };
 
@@ -142,8 +122,7 @@ in
     boot.kernelModules = [
       "tun"
       "bridge"
-    ]
-    ++ lib.optional pvm "kvm-pvm";
+    ];
     # cyac sets this itself on start; declaring it keeps NixOS from fighting it.
     boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkDefault 1;
 
@@ -154,34 +133,17 @@ in
       # could reach it), whatever stateDir says.
       "d /var/lib/cyac/conf 0700 root root -"
     ]
-    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}";
+    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.guestKernel}";
 
-    # PVM: virt-pvm's host kernel, without page table isolation (PVM doesn't
-    # support it), and kvm-pvm, which can't be loaded alongside kvm-intel or
-    # kvm-amd.
-    boot.kernelPackages = lib.mkIf pvm (
-      pkgs.linuxPackagesFor self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-host-kernel
-    );
-    boot.kernelParams = lib.mkIf pvm [ "pti=off" ];
-    boot.blacklistedKernelModules = lib.mkIf pvm [
-      "kvm-intel"
-      "kvm-amd"
-    ];
     assertions = [
       {
         assertion = cfg.kernel != null;
-        message = ''services.cyac.kernel must be set: "kvm", "pvm" or "none".'';
-      }
-      {
-        assertion = !pvm || pkgs.stdenv.hostPlatform.isx86_64;
-        message = "services.cyac: kernel = \"pvm\" is x86_64-only.";
+        message = ''services.cyac.kernel must be set: "kvm" or "none".'';
       }
       {
         assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
         message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
       }
-    ]
-    ++ [
       {
         assertion = config.security.acme.acceptTerms;
         message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
@@ -201,9 +163,6 @@ in
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       environment.CYAC_ZFS = cfg.dataset;
-      environment.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
-        if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor"
-      );
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [

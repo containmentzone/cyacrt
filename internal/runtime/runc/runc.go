@@ -74,9 +74,10 @@ func (r Runtime) Start(m *driver.Machine) error {
 	if err := sh.Run("mount", m.Disk, rootfs(m)); err != nil {
 		return err
 	}
-	// The zvol may have grown since the last start (DiskSize); a
-	// container can't grow its filesystem itself.
-	if err := r.Grow(m); err != nil {
+	// The zvol may have grown since the last start (DiskSize). A container
+	// can't be trusted with its block device, so the host grows the
+	// filesystem, online; this does nothing if it already fills the zvol.
+	if err := sh.Run("resize2fs", m.Disk); err != nil {
 		return err
 	}
 	if err := agent.WriteNetConfig(rootfs(m), m.Init); err != nil {
@@ -140,13 +141,6 @@ func (r Runtime) Running(m *driver.Machine) bool {
 func (r Runtime) Cleanup(m *driver.Machine) {
 	r.run("delete", "--force", containerID(m))
 	sh.Run("umount", rootfs(m))
-}
-
-// Grow resizes the mounted filesystem to its zvol from the host, online. A
-// container can't be trusted with its block device, so the box can't do
-// this itself. It does nothing if the filesystem already fills the zvol.
-func (Runtime) Grow(m *driver.Machine) error {
-	return sh.Run("resize2fs", m.Disk)
 }
 
 func (r Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {

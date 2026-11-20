@@ -5,7 +5,7 @@ little VMs, built from any OCI image, on networks you declare, behind an
 HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~5,200 lines of Go).
+(~5,100 lines of Go).
 
 ## How it works
 
@@ -121,14 +121,7 @@ The runc runtime gives a box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox.
 
-On a host without hardware virtualization, such as a cloud VM without
-nested virt, Cloud Hypervisor can still run on
-[PVM](#pvm-vms-without-hardware-virtualization). When the `kvm-pvm` module
-is loaded, cyac uses `cloud-hypervisor-pvm` in place of `cloud-hypervisor`.
-It's the same VMM with the PVM guest kernel at `$CYAC_DIR/vmlinux-pvm`,
-because a normal guest kernel doesn't boot on PVM.
-
-A fourth runtime, `runsc`, runs the same bundle under gVisor. It comes
+A third runtime, `runsc`, runs the same bundle under gVisor. It comes
 last for boxes, since systemd doesn't run under gVisor; services use it
 whenever `runsc` is installed, and runc otherwise.
 
@@ -322,9 +315,8 @@ modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
 opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
 `cyac.service` and links the guest kernel. `kernel` must be set: `"kvm"`
-or `"pvm"` sets up the host kernel for that and pins boxes to
-`cloud-hypervisor` or `cloud-hypervisor-pvm` with `CYAC_RUNTIME`; `"none"`
-changes nothing and leaves the choice to cyac's detection:
+pins boxes to `cloud-hypervisor` with `CYAC_RUNTIME`; `"none"` leaves the
+choice to cyac's detection:
 
 ```nix
 {
@@ -337,7 +329,7 @@ changes nothing and leaves the choice to cyac's detection:
         {
           services.cyac = {
             enable = true;
-            kernel = "kvm";   # or "pvm", or "none" to leave the kernel alone
+            kernel = "kvm";   # or "none" to let cyac pick a runtime
             # guestKernel = ./vmlinux;   # default: built from the host kernel's source
             dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
@@ -360,23 +352,8 @@ If you set `networking.nftables.flushRuleset = true`, every firewall reload
 also drops the tables cyac's gateway, network and box units load, until
 those units restart. The module warns about this.
 
-### PVM: VMs without hardware virtualization
-
-[PVM](https://github.com/virt-pvm) is an out-of-tree KVM backend that
-virtualizes using page tables rather than VMX/SVM. It's a nice-to-have:
-runc is the usual answer on hosts without KVM.
-`services.cyac.kernel = "pvm"` switches the host to virt-pvm's 6.12 kernel
-with `pti=off`, loads `kvm-pvm` (which serves `/dev/kvm`), keeps
-`kvm-intel` and `kvm-amd` from loading, and links a PVM guest kernel
-(built from virt-pvm's guest config) to `$CYAC_DIR/vmlinux-pvm`. It's
-x86_64 only. The host kernel isn't in any binary cache, so the first build
-compiles it.
-
-Stock Cloud Hypervisor is enough. Under PVM, cyac caps the guest's
-physical address width (`max_phys_bits=43`), as virt-pvm's Kata guide does.
-
 Every PR runs gofmt, `go vet`, `go test` and staticcheck. There is no VM
-test; PVM and Cloud Hypervisor are tried on real hosts.
+test; Cloud Hypervisor is tried on real hosts.
 
 ## What has been tested
 

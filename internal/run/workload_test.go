@@ -35,7 +35,6 @@ func (f *fakeRuntime) Start(m *driver.Machine) error                        { f.
 func (f *fakeRuntime) Stop(*driver.Machine) error                           { return nil }
 func (f *fakeRuntime) Running(*driver.Machine) bool                         { return false }
 func (f *fakeRuntime) Cleanup(m *driver.Machine)                            { f.cleanedUp = append(f.cleanedUp, m.RunDir) }
-func (f *fakeRuntime) Grow(*driver.Machine) error                           { return nil }
 func (f *fakeRuntime) Command(*driver.Machine, []string) (*exec.Cmd, error) { return nil, nil }
 
 // seeded pretends name's disk was seeded from an image with these defaults.
