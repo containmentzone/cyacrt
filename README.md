@@ -163,14 +163,15 @@ names.
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
 :443. `cyac expose <box> <port>` exposes one port of a box, always at
 `<box>.<root domain>`; the root domain is the daemon's required
-`--domain`. A request for any other host gets a 404. Unless a route is
+`--domain`. The root domain itself answers `/` with a splash page; a
+request for any other host or path gets a 404. Unless a route is
 `--public`, the request also needs that route's token, as
 `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
 visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
 any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
 certificates are requested on demand, at the first TLS handshake for an
-exposed host and never for anything else; :80 only answers ACME challenges
-and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
+exposed host or the root domain and never for anything else; :80 only
+answers ACME challenges and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
 idle; a box gets 5s to accept a connection and a minute to start
 answering. Bodies have no deadline, so uploads, streams and websockets
 work. Routes are kept in `$CYAC_DIR/routes`.
