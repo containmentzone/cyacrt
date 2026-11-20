@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -171,5 +172,70 @@ func TestServe(t *testing.T) {
 	}
 	if _, addrs := parse(t, buf[:n]); len(addrs) != 1 {
 		t.Errorf("tcp: %v", addrs)
+	}
+}
+
+// forward asks again when a UDP packet is lost, and over TCP when the
+// UDP answer is truncated.
+func TestForwardRetries(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	l, err := net.Listen("tcp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	answer := func(query []byte, truncate bool) []byte {
+		var p dnsmessage.Parser
+		h, _ := p.Start(query)
+		q, _ := p.Question()
+		if truncate {
+			ans := reply(h, &q, dnsmessage.RCodeSuccess, nil)
+			ans[2] |= 0x02
+			return ans
+		}
+		addr := netip.MustParseAddr("192.0.2.1")
+		return reply(h, &q, dnsmessage.RCodeSuccess, &addr)
+	}
+	var udp atomic.Int32
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if udp.Add(1) > 1 { // the first packet is lost
+				pc.WriteTo(answer(buf[:n], true), from)
+			}
+		}
+	}()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			var size [2]byte
+			c.Read(size[:])
+			q := make([]byte, int(size[0])<<8|int(size[1]))
+			c.Read(q)
+			ans := answer(q, false)
+			c.Write(append([]byte{byte(len(ans) >> 8), byte(len(ans))}, ans...))
+			c.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ans, err := forward(ctx, net.Dial, pc.LocalAddr().String(), query(t, "example.com.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, addrs := parse(t, ans); len(addrs) != 1 || truncated(ans) || udp.Load() != 2 {
+		t.Errorf("addrs %v, truncated %v, udp tries %d", addrs, truncated(ans), udp.Load())
 	}
 }
