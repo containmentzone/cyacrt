@@ -8,12 +8,6 @@
 // A guest reboot resets the VM in place. A guest poweroff (ACPI) ends the
 // cloud-hypervisor process, which is how the daemon sees a box stop itself.
 //
-// With PVM set it is the "cloud-hypervisor-pvm" runtime: the same VMM on a
-// host without hardware virtualization (a cloud VM without nested virt)
-// whose /dev/kvm comes from the out-of-tree kvm-pvm module. PVM needs a PVM
-// guest kernel, and a normal guest kernel won't boot on it, so the two
-// runtimes are mutually exclusive and each has its own kernel.
-//
 // TODO: confine Cloud Hypervisor with its --landlock rules.
 package cloudhypervisor
 
@@ -43,7 +37,6 @@ const binary = "cloud-hypervisor"
 type Runtime struct {
 	Kernel string // guest kernel: a PVH vmlinux on x86_64
 	Init   string // static cyac-init binary
-	PVM    bool
 }
 
 var _ driver.Runtime = Runtime{}
@@ -54,20 +47,9 @@ func pidFile(m *driver.Machine) string           { return filepath.Join(m.RunDir
 func vsock(m *driver.Machine) string             { return filepath.Join(m.RunDir, "v.sock") }
 func (Runtime) Cleanup(m *driver.Machine)        {}
 func (r Runtime) Running(m *driver.Machine) bool { return pid(m) > 0 }
-
-func (r Runtime) Name() string {
-	if r.PVM {
-		return binary + "-pvm"
-	}
-	return binary
-}
+func (Runtime) Name() string                     { return binary }
 
 func (r Runtime) Available() error {
-	if pvm := pvmHost(); pvm && !r.PVM {
-		return errors.New("/dev/kvm is kvm-pvm, which needs the PVM guest kernel")
-	} else if !pvm && r.PVM {
-		return errors.New("kvm-pvm is not loaded")
-	}
 	kvm, err := os.OpenFile("/dev/kvm", os.O_RDWR, 0)
 	if err != nil {
 		return err
@@ -104,12 +86,6 @@ func (r Runtime) Start(m *driver.Machine) error {
 	}
 	cmdline := fmt.Sprintf("console=ttyS0 ip=%s::%s:%s:%s:eth0:off",
 		m.Addr.IP, gw, mask, m.Name)
-	cpus := fmt.Sprintf("boot=%d", m.CPUs)
-	if r.PVM {
-		// virt-pvm's guide caps the guest's physical address width for
-		// Cloud Hypervisor; PVM guests can't use the host's full width.
-		cpus += ",max_phys_bits=43"
-	}
 
 	log, in, err := driver.OpenConsole(m)
 	if err != nil {
@@ -124,7 +100,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 		"--kernel", r.Kernel,
 		"--initramfs", initrd,
 		"--cmdline", cmdline,
-		"--cpus", cpus,
+		"--cpus", fmt.Sprintf("boot=%d", m.CPUs),
 		"--memory", fmt.Sprintf("size=%dM", m.MemMiB),
 		// image_type=raw: without it, Cloud Hypervisor guards sector 0 against
 		// a guest rewriting the format probe, and ext4 rewrites block 0 (it holds
@@ -189,13 +165,6 @@ func (Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
 		return nil, err
 	}
 	return exec.Command(self, append([]string{"agent-exec", vsock(m)}, args...)...), nil
-}
-
-// pvmHost reports whether /dev/kvm would be served by kvm-pvm. It can't be
-// loaded alongside kvm-intel or kvm-amd.
-func pvmHost() bool {
-	exists := func(mod string) bool { _, err := os.Stat("/sys/module/" + mod); return err == nil }
-	return exists("kvm_pvm") && !exists("kvm_intel") && !exists("kvm_amd")
 }
 
 // pid returns the Cloud Hypervisor pid if that process is still the one we

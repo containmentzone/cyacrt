@@ -63,7 +63,7 @@ Boxes, networks, gateways and services are files in /var/lib/cyac/conf
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac), and box and
 service disks as zvols under the ZFS dataset $CYAC_ZFS (e.g. rpool/cyac).
-CYAC_RUNTIME=cloud-hypervisor, cloud-hypervisor-pvm or runc forces a runtime.
+CYAC_RUNTIME=cloud-hypervisor, runc or runsc forces a runtime.
 `
 
 func main() {
@@ -165,7 +165,6 @@ func runtimes(dir string) ([]driver.Runtime, error) {
 	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
 	return []driver.Runtime{
 		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
-		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
 		runc.Runtime{Init: init},
 		// Last, so a box only gets it by asking: systemd doesn't run
 		// under gVisor. Services prefer it (see run.Runner.service).
