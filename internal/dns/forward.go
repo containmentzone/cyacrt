@@ -25,24 +25,30 @@ const udpTry = 2 * time.Second
 // thread leaves it, so the query takes the gateway's route out (its
 // uplink or its tunnel) and nothing else.
 func ViaGateway(ctx context.Context, gw *conf.Gateway, query []byte) ([]byte, error) {
-	upstream := gw.DNS
-	if upstream == "" {
-		upstream = DefaultUpstream
+	var upstreams []string
+	for _, ip := range DefaultUpstreams {
+		upstreams = append(upstreams, net.JoinHostPort(ip, "53"))
+	}
+	if gw.DNS != "" {
+		upstreams = []string{net.JoinHostPort(gw.DNS, "53")}
 	}
 	ns := "/run/netns/" + render.GatewayNetns(gw.Name)
 	dial := func(network, addr string) (net.Conn, error) { return dialIn(ns, network, addr) }
-	return forward(ctx, dial, net.JoinHostPort(upstream, "53"), query)
+	return forward(ctx, dial, upstreams, query)
 }
 
-// forward asks addr over UDP, once more if the first packet goes
-// unanswered, and over TCP if the answer was truncated. Without the
+// forward asks the first upstream over UDP, the next one (or the same,
+// if there is only one) if the first packet goes unanswered, and the one
+// that answered over TCP if its answer was truncated. Without the
 // TCP step a client that retries over TCP itself (glibc does, for
 // answers over 512 bytes) gets the same truncated, usually empty,
 // answer again, which it takes for "no such records".
-func forward(ctx context.Context, dial func(network, addr string) (net.Conn, error), addr string, query []byte) ([]byte, error) {
+func forward(ctx context.Context, dial func(network, addr string) (net.Conn, error), upstreams []string, query []byte) ([]byte, error) {
 	var ans []byte
 	var err error
-	for range 2 {
+	var addr string
+	for try := range 2 {
+		addr = upstreams[try%len(upstreams)]
 		if ans, err = exchange(ctx, dial, "udp", addr, query); err == nil || ctx.Err() != nil {
 			break
 		}
