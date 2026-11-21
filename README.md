@@ -315,9 +315,10 @@ required `dataset` option), enables ZFS, loads the `tun` and `bridge`
 modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
 opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
-`cyac.service` and links the guest kernel. `kernel` must be set: `"kvm"`
-pins boxes to `cloud-hypervisor` with `CYAC_RUNTIME`; `"none"` leaves the
-choice to cyac's detection:
+`cyac.service` and links the guest kernel, if there is one. cyac picks the
+runtime itself: `cloud-hypervisor` when `/dev/kvm` and a guest kernel are
+there, else `runc`. `buildGuestKernel` builds one from the host kernel's
+source:
 
 ```nix
 {
@@ -330,8 +331,8 @@ choice to cyac's detection:
         {
           services.cyac = {
             enable = true;
-            kernel = "kvm";   # or "none" to let cyac pick a runtime
-            # guestKernel = ./vmlinux;   # default: built from the host kernel's source
+            buildGuestKernel = true;   # for Cloud Hypervisor; leave off without KVM
+            # guestKernel = ./vmlinux;   # or bring your own
             dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here

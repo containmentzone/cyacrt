@@ -1,7 +1,7 @@
 # Host setup for cyac on NixOS. Import via the flake:
 #
 #   imports = [ cyacrt.nixosModules.default ];
-#   services.cyac = { enable = true; kernel = "none"; };
+#   services.cyac = { enable = true; dataset = "rpool/cyac"; };
 self:
 {
   config,
@@ -24,11 +24,16 @@ let
     environment = {
       CYAC_DIR = cfg.stateDir;
       CYAC_ZFS = cfg.dataset;
-    }
-    // lib.optionalAttrs (cfg.kernel == "kvm") { CYAC_RUNTIME = "cloud-hypervisor"; };
+    };
   };
 in
 {
+  imports = [
+    (lib.mkRemovedOptionModule [ "services" "cyac" "kernel" ]
+      "cyac picks its runtime itself now. Set services.cyac.buildGuestKernel = true for Cloud Hypervisor."
+    )
+  ];
+
   options.services.cyac = {
     enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 
@@ -54,35 +59,22 @@ in
       '';
     };
 
-    kernel = lib.mkOption {
-      type = lib.types.nullOr (
-        lib.types.enum [
-          "kvm"
-          "none"
-        ]
-      );
-      default = null;
-      description = ''
-        How the host kernel provides virtualization. Must be set.
-
-        - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
-          loads them). Pins cyac to the cloud-hypervisor runtime. The guest
-          kernel is built from the host kernel's source by default.
-        - none: leaves the kernel alone and lets cyac pick a runtime itself
-          (cloud-hypervisor, then runc).
-      '';
-    };
+    buildGuestKernel = lib.mkEnableOption ''
+      building a guest kernel from the host kernel's source
+      (`boot.kernelPackages.kernel`) as the default guestKernel. Without a
+      guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
+      runc'';
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default =
-        if cfg.kernel == "kvm" then
+        if cfg.buildGuestKernel then
           pkgs.callPackage ./guest-kernel.nix { inherit (config.boot.kernelPackages.kernel) src version; }
         else
           null;
       defaultText = lib.literalMD ''
-        for "kvm", a guest vmlinux built from the host kernel's source
-        (`boot.kernelPackages.kernel`)
+        with buildGuestKernel, a guest vmlinux built from the host kernel's
+        source (`boot.kernelPackages.kernel`); otherwise none
       '';
       description = ''
         Guest kernel (uncompressed vmlinux) for Cloud Hypervisor, linked to
@@ -136,14 +128,6 @@ in
     ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.guestKernel}";
 
     assertions = [
-      {
-        assertion = cfg.kernel != null;
-        message = ''services.cyac.kernel must be set: "kvm" or "none".'';
-      }
-      {
-        assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
-        message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
-      }
       {
         assertion = config.security.acme.acceptTerms;
         message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
@@ -209,9 +193,11 @@ in
       iptables -w -I nixos-fw -i cyn+ -p tcp --dport 53 -j nixos-fw-accept
     '';
 
-    warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
-      services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
-      and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
-    '';
+    warnings =
+      lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset)
+        ''
+          services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
+          and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
+        '';
   };
 }
