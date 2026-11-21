@@ -239,3 +239,46 @@ func TestForwardRetries(t *testing.T) {
 		t.Errorf("addrs %v, truncated %v, udp tries %d", addrs, truncated(ans), udp.Load())
 	}
 }
+
+// Forwarded answers are served from the cache while fresh, and after
+// that only when upstream fails.
+func TestCache(t *testing.T) {
+	calls, fail := 0, false
+	s := server(t, "dev", func(_ context.Context, _ *conf.Gateway, q []byte) ([]byte, error) {
+		calls++
+		if fail {
+			return nil, errors.New("down")
+		}
+		var p dnsmessage.Parser
+		h, _ := p.Start(q)
+		qq, _ := p.Question()
+		addr := netip.MustParseAddr("192.0.2.1")
+		return reply(h, &qq, dnsmessage.RCodeSuccess, &addr), nil
+	})
+	ask := func(id uint16) []byte {
+		q := query(t, "Example.com.", dnsmessage.TypeA)
+		q[0], q[1] = byte(id>>8), byte(id)
+		ans := s.Answer(context.Background(), q)
+		if ans[0] != q[0] || ans[1] != q[1] {
+			t.Fatalf("answer has ID %x%x, want %x", ans[0], ans[1], id)
+		}
+		return ans
+	}
+	ask(1) // cached with ID 1, served below with 7
+	if _, addrs := parse(t, ask(7)); len(addrs) != 1 || calls != 1 {
+		t.Fatalf("fresh: addrs %v, %d calls", addrs, calls)
+	}
+
+	// Expire it: now it is asked for again, and served stale when that fails.
+	for k, e := range s.cache.entries {
+		e.fresh = time.Now().Add(-time.Second)
+		s.cache.entries[k] = e
+	}
+	fail = true
+	if rcode, addrs := parse(t, ask(7)); rcode != dnsmessage.RCodeSuccess || len(addrs) != 1 || calls != 2 {
+		t.Fatalf("stale: %v %v, %d calls", rcode, addrs, calls)
+	}
+	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "other.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
+		t.Errorf("uncached failure: %v", rcode)
+	}
+}

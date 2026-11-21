@@ -44,6 +44,7 @@ type Server struct {
 	gw     *conf.Gateway         // nil: sealed
 
 	logged time.Time // last failure logged
+	cache  cache
 }
 
 // logf logs a failure to the journal, at most once a second, so a box
@@ -119,11 +120,20 @@ func (s *Server) Answer(ctx context.Context, query []byte) []byte {
 	if gw == nil || s.Forward == nil {
 		return reply(h, &q, dnsmessage.RCodeRefused, nil)
 	}
+	key := gw.Name + " " + name + " " + q.Type.String() + " " + q.Class.String()
+	cached, fresh := s.cache.get(key, h.ID)
+	if fresh {
+		return cached
+	}
 	ans, err := s.Forward(ctx, gw, query)
 	if err != nil {
-		s.logf("%s %s via gateway %s: %v", q.Name, q.Type, gw.Name, err)
+		s.logf("%s %s via gateway %s: %v (stale answer: %v)", q.Name, q.Type, gw.Name, err, cached != nil)
+		if cached != nil {
+			return cached
+		}
 		return reply(h, &q, dnsmessage.RCodeServerFailure, nil)
 	}
+	s.cache.put(key, ans)
 	return ans
 }
 
