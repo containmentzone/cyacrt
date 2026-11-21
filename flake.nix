@@ -16,7 +16,7 @@
           cyac = pkgs.callPackage ./nix/package.nix { };
           default = cyac;
           # A Cloud Hypervisor guest vmlinux from nixpkgs' default kernel. On NixOS,
-          # services.cyac.kernel = "kvm" builds one from the host's kernel.
+          # services.cyac.buildGuestKernel builds one from the host's kernel.
           guest-kernel = pkgs.callPackage ./nix/guest-kernel.nix { inherit (pkgs.linux) src version; };
         }
       );
