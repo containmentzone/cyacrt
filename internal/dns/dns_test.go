@@ -231,7 +231,7 @@ func TestForwardRetries(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	ans, err := forward(ctx, net.Dial, pc.LocalAddr().String(), query(t, "example.com.", dnsmessage.TypeA))
+	ans, err := forward(ctx, net.Dial, []string{pc.LocalAddr().String()}, query(t, "example.com.", dnsmessage.TypeA))
 	if err != nil {
 		t.Fatal(err)
 	}
