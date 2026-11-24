@@ -329,9 +329,10 @@ Secret=key:/var/lib/secrets/nanogpt
 ```
 
 Add `Attach=service:nanogpt` to the box's `.cynetwork`, run `systemctl
-daemon-reload` and `systemctl start cyservice@nanogpt` (a box starts its
-network's services when it starts, but an already running one doesn't), and
-from the box:
+daemon-reload` and `systemctl restart cyservice@nanogpt` (a service makes
+its network legs when it starts, so a running one needs a restart to join a
+new network). The first start seeds the service's disk, so give it a few
+seconds before calling it from the box:
 
 ```sh
 curl http://nanogpt.<network>.cyac.internal/chat/completions -d @req.json
