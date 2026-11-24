@@ -19,7 +19,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
-// Defaults for what a file leaves out, as for `cyac new`.
+// Defaults for what a file leaves out.
 const (
 	defaultCPUs     = 1
 	defaultMemoryMB = 1024
@@ -33,13 +33,12 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	if err != nil {
 		return err
 	}
-	st := r.store(conf.KindBox)
-	img, err := image(st, b.Name, b.Workload, orDefault(b.DiskMB, defaultDiskMB))
+	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, orDefault(b.DiskMB, defaultDiskMB))
 	if err != nil {
 		return err
 	}
 	n := c.Networks[b.Network]
-	m := machine(st, b.Name, b.Workload, img)
+	m := machine(r.bare(conf.KindBox, b.Name), b.Workload, img)
 	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits(), DNS: n.Host().String()}
 	if n.Gateway != "" {
 		m.Addr.Gateway = n.Router()
@@ -68,12 +67,11 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 			return err
 		}
 	}
-	st := r.store(conf.KindService)
-	img, err := image(st, s.Name, s.Workload, defaultDiskMB)
+	img, err := image(r.store(conf.KindService), s.Name, s.Workload, defaultDiskMB)
 	if err != nil {
 		return err
 	}
-	m := machine(st, s.Name, s.Workload, img)
+	m := machine(r.bare(conf.KindService, s.Name), s.Workload, img)
 	m.Confined = true
 	m.Link.Netns = netnsPath(render.ServiceNetns(s.Name))
 	// Names resolve through the gateway's resolver if it names one, and
@@ -133,8 +131,7 @@ func (r *Runner) run(ctx context.Context, rt driver.Runtime, m *driver.Machine) 
 
 // cleanup removes what any runtime may have left of a workload's run.
 func (r *Runner) cleanup(kind, name string) {
-	st := r.store(kind)
-	m := &driver.Machine{Name: name, Disk: st.DiskPath(name), RunDir: st.RunDir(name)}
+	m := r.bare(kind, name)
 	for _, rt := range r.Runtimes {
 		rt.Cleanup(m)
 	}
@@ -149,6 +146,15 @@ func (r *Runner) store(kind string) box.Store {
 		return box.Store{Dir: filepath.Join(r.State, "services"), Dataset: r.Dataset + "/services"}
 	}
 	return box.Store{Dir: r.State, Dataset: r.Dataset + "/boxes"}
+}
+
+// bare is kind/name's machine with only its paths filled in.
+func (r *Runner) bare(kind, name string) *driver.Machine {
+	st := r.store(kind)
+	return &driver.Machine{
+		Name: name, Disk: st.DiskPath(name), RunDir: st.RunDir(name),
+		ConsoleLog: st.ConsoleLog(name), ConsoleIn: st.ConsoleIn(name),
+	}
 }
 
 // runtime returns the runtime named want, else the one CYAC_RUNTIME
@@ -179,14 +185,10 @@ func (r *Runner) runtime(want string) (driver.Runtime, error) {
 // the image's defaults next to the disk, so later starts don't need the
 // registry; the file only ever changes when the disk is seeded again.
 func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, error) {
-	meta := filepath.Join(st.Dir, "disks", name+".json")
-	data, err := os.ReadFile(meta)
+	meta := imagePath(st, name)
+	b, err := loadImage(meta)
 	if err == nil {
-		var b box.Box
-		if err := json.Unmarshal(data, &b); err != nil {
-			return nil, err
-		}
-		return &b, st.Grow(name, int64(diskMB)<<20)
+		return b, st.Grow(name, int64(diskMB)<<20)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -199,11 +201,15 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 	if err := st.Destroy(name); err != nil {
 		return nil, err
 	}
-	b := &box.Box{Name: name, Image: w.Image}
+	if w.Image == "" {
+		return nil, fmt.Errorf("no disk yet and no SeedImage= to seed one from")
+	}
+	b = &box.Box{Name: name, Image: w.Image}
 	if err := st.Seed(b, int64(diskMB)<<20, func(line string) { log.Print(line) }); err != nil {
 		return nil, err
 	}
-	if data, err = json.MarshalIndent(b, "", "  "); err != nil {
+	data, err := json.MarshalIndent(b, "", "  ")
+	if err != nil {
 		return nil, err
 	}
 	if err := os.WriteFile(meta+".tmp", data, 0o600); err != nil {
@@ -212,9 +218,20 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 	return b, os.Rename(meta+".tmp", meta)
 }
 
-// machine is the runtime's view of a workload: the image's defaults with
-// the file's settings on top.
-func machine(st box.Store, name string, w conf.Workload, img *box.Box) *driver.Machine {
+func imagePath(st box.Store, name string) string { return filepath.Join(st.Dir, "disks", name+".json") }
+
+func loadImage(path string) (*box.Box, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var b box.Box
+	return &b, json.Unmarshal(data, &b)
+}
+
+// machine fills in m, a bare machine, for the runtime: the image's
+// defaults with the file's settings on top.
+func machine(m *driver.Machine, w conf.Workload, img *box.Box) *driver.Machine {
 	init := agent.Config{Mode: img.Mode, Args: img.Init, Env: append(img.Env, w.Env...), Cwd: img.Cwd, User: img.RunAs}
 	if len(w.Exec) > 0 {
 		init.Args, init.Mode = w.Exec, box.ModeFor(w.Exec)
@@ -225,11 +242,8 @@ func machine(st box.Store, name string, w conf.Workload, img *box.Box) *driver.M
 	if w.User != "" {
 		init.User = w.User
 	}
-	return &driver.Machine{
-		Name: name, Disk: st.DiskPath(name), RunDir: st.RunDir(name),
-		ConsoleLog: st.ConsoleLog(name), ConsoleIn: st.ConsoleIn(name),
-		Init: init, CPUs: orDefault(w.CPUs, defaultCPUs), MemMiB: orDefault(w.MemoryMB, defaultMemoryMB),
-	}
+	m.Init, m.CPUs, m.MemMiB = init, orDefault(w.CPUs, defaultCPUs), orDefault(w.MemoryMB, defaultMemoryMB)
+	return m
 }
 
 // consoleSince is the last 2 KiB the console logged after offset from:

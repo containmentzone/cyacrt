@@ -1,7 +1,7 @@
 # An uncompressed guest vmlinux for Cloud Hypervisor, built from any kernel
-# source (e.g. the host's, so guest and host match). Without a configfile it
-# starts from defconfig plus kvm_guest.config. Either way, everything a box
-# needs is built in: there are no modules on the box's disk.
+# source (e.g. the host's, so guest and host match), from defconfig plus
+# kvm_guest.config. Everything a box needs is built in: there are no modules
+# on the box's disk.
 {
   lib,
   stdenv,
@@ -14,8 +14,6 @@
   python3,
   src,
   version,
-  configfile ? null,
-  pname ? "cyac-guest-vmlinux",
 }:
 
 let
@@ -84,7 +82,8 @@ let
   ];
 in
 stdenv.mkDerivation {
-  inherit pname src version;
+  pname = "cyac-guest-vmlinux";
+  inherit src version;
   nativeBuildInputs = [
     bc
     bison
@@ -96,7 +95,7 @@ stdenv.mkDerivation {
   ];
   postPatch = "patchShebangs scripts";
   configurePhase = ''
-    ${if configfile == null then "make defconfig kvm_guest.config" else "cp ${configfile} .config"}
+    make defconfig kvm_guest.config
     scripts/config ${lib.concatMapStringsSep " " (o: "-e " + o) needed} -d DEBUG_INFO -e DEBUG_INFO_NONE
     make olddefconfig
     for o in ${toString needed}; do

@@ -1,7 +1,6 @@
 package run
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 
@@ -16,11 +15,7 @@ import (
 // Running returns the runtime kind/name runs under and the machine to
 // reach it through, or nil if it isn't running.
 func (r *Runner) Running(kind, name string) (driver.Runtime, *driver.Machine) {
-	st := r.store(kind)
-	m := &driver.Machine{
-		Name: name, Disk: st.DiskPath(name), RunDir: st.RunDir(name),
-		ConsoleLog: st.ConsoleLog(name), ConsoleIn: st.ConsoleIn(name),
-	}
+	m := r.bare(kind, name)
 	rtName, err := os.ReadFile(filepath.Join(m.RunDir, "runtime"))
 	if err != nil {
 		return nil, nil
@@ -36,19 +31,15 @@ func (r *Runner) Running(kind, name string) (driver.Runtime, *driver.Machine) {
 // Image returns the image defaults saved when kind/name's disk was
 // seeded, or nil before the first start.
 func (r *Runner) Image(kind, name string) *box.Box {
-	data, err := os.ReadFile(filepath.Join(r.store(kind).Dir, "disks", name+".json"))
+	b, err := loadImage(imagePath(r.store(kind), name))
 	if err != nil {
 		return nil
 	}
-	var b box.Box
-	if json.Unmarshal(data, &b) != nil {
-		return nil
-	}
-	return &b
+	return b
 }
 
 // Console returns the paths of kind/name's console log and input FIFO.
 func (r *Runner) Console(kind, name string) (log, in string) {
-	st := r.store(kind)
-	return st.ConsoleLog(name), st.ConsoleIn(name)
+	m := r.bare(kind, name)
+	return m.ConsoleLog, m.ConsoleIn
 }

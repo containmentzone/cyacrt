@@ -5,11 +5,13 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,6 +34,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
+	"github.com/containmentzone/cyacrt/internal/localca"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/run"
 	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
@@ -45,7 +49,10 @@ const usage = `usage: cyac <command> [args]
   stop <name>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
-  expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
+  expose <name> [<pname>=<port>...]
+                                serve each <pname>=<port> at https://<pname>.<name>.<root domain>,
+                                on top of the image's cyac.nullvoid.space/expose.<pname>=<port>
+                                labels; prints the token they all need
   unexpose <name>
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
@@ -54,7 +61,9 @@ const usage = `usage: cyac <command> [args]
                                 runs in the foreground)
 
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
-                                the proxy serves :80 and :443 with Let's Encrypt;
+         [--local-ca | --ca-cert <pem> --ca-key <pem>]
+                                the proxy serves :80 and :443 with Let's Encrypt,
+                                or with a local CA (offline hosts; http://<root>/ca.crt);
                                 --group lets that group use the socket, like docker's
 
 Boxes, networks, gateways and services are files in /var/lib/cyac/conf
@@ -63,7 +72,7 @@ Boxes, networks, gateways and services are files in /var/lib/cyac/conf
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac), and box and
 service disks as zvols under the ZFS dataset $CYAC_ZFS (e.g. rpool/cyac).
-CYAC_RUNTIME=cloud-hypervisor, cloud-hypervisor-pvm or runc forces a runtime.
+CYAC_RUNTIME=cloud-hypervisor, runc or runsc forces a runtime.
 `
 
 func main() {
@@ -165,7 +174,6 @@ func runtimes(dir string) ([]driver.Runtime, error) {
 	init := env("CYAC_INIT", filepath.Join(filepath.Dir(self), "cyac-init"))
 	return []driver.Runtime{
 		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
-		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux-pvm"), Init: init, PVM: true},
 		runc.Runtime{Init: init},
 		// Last, so a box only gets it by asking: systemd doesn't run
 		// under gVisor. Services prefer it (see run.Runner.service).
@@ -197,11 +205,11 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		for _, b := range boxes {
 			route := ""
 			if r := b.Route; r != nil {
-				vis := "token"
-				if r.Public {
-					vis = "public"
+				var hosts []string
+				for _, h := range slices.Sorted(maps.Keys(r.Hosts)) {
+					hosts = append(hosts, fmt.Sprintf("%s→:%d", h, r.Hosts[h]))
 				}
-				route = fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis)
+				route = strings.Join(hosts, " ")
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", b.Name, b.Network, b.IP, b.Status, b.Image, route)
 		}
@@ -223,20 +231,32 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
-		public := fs.Bool("public", false, "no token required")
-		pos := parse(fs, args, 2)
-		port, err := strconv.Atoi(pos[1])
-		if err != nil {
-			return fmt.Errorf("bad port %q", pos[1])
+		pos := positional(fs, args)
+		if len(pos) < 1 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		ports := map[string]int{}
+		for _, a := range pos[1:] {
+			name, p, ok := strings.Cut(a, "=")
+			port, err := strconv.Atoi(p)
+			if !ok || err != nil {
+				return fmt.Errorf("bad port %q, want <name>=<port>", a)
+			}
+			if _, dup := ports[name]; dup {
+				return fmt.Errorf("port %q named twice", name)
+			}
+			ports[name] = port
 		}
 		var e api.Exposed
-		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Port: port, Public: *public}, &e); err != nil {
+		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports}, &e); err != nil {
 			return err
 		}
-		fmt.Printf("https://%s\n", e.Host)
-		if e.Token != "" {
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", e.Token, e.Host, e.Token)
+		for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
+			fmt.Printf("https://%s → :%d\n", h, e.Hosts[h])
+			fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Token)
 		}
+		fmt.Printf("token: %s\n", e.Token)
 		return nil
 
 	case "unexpose":
@@ -253,9 +273,12 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 // and the proxy on the network.
 func daemon(socket string, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
+	domain := fs.String("domain", "", "proxy: root domain; box b's port p answers at p.b.<domain> (required)")
 	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
 	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
+	localCA := fs.Bool("local-ca", false, "proxy: issue certificates from a local CA in $CYAC_DIR/ca, made on first start, instead of Let's Encrypt")
+	caCert := fs.String("ca-cert", "", "proxy: local CA certificate (PEM); with --ca-key, use this CA instead of making one")
+	caKey := fs.String("ca-key", "", "proxy: local CA private key (PEM)")
 	parse(fs, args, 0)
 	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
 	if !validDomain.MatchString(*domain) {
@@ -308,18 +331,41 @@ func daemon(socket string, args []string) error {
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 
-	// Certificates are only requested on demand, during the first TLS
+	// Certificates are only issued on demand, during the first TLS
 	// handshake for an exposed host; HostPolicy refuses every other name.
-	m := &autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		Email:      *email,
-		HostPolicy: px.HostPolicy,
-		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
-	}
-	// :80 answers ACME challenges and redirects everything else to HTTPS.
-	go func() { log.Fatal(proxyServer(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
 	https := proxyServer(":443", px)
-	https.TLSConfig = m.TLSConfig()
+	var http80 http.Handler
+	if *localCA || *caCert != "" || *caKey != "" {
+		var ca *localca.CA
+		if *caCert != "" || *caKey != "" {
+			if *caCert == "" || *caKey == "" {
+				return errors.New("--ca-cert and --ca-key go together")
+			}
+			ca, err = localca.Load(*caCert, *caKey)
+		} else {
+			ca, err = localca.LoadOrCreate(filepath.Join(dir, "ca"), *domain)
+		}
+		if err != nil {
+			return err
+		}
+		ca.HostPolicy = px.HostPolicy
+		https.TLSConfig = &tls.Config{GetCertificate: ca.GetCertificate}
+		// :80 hands out the CA certificate on the root domain, for
+		// clients to trust, and redirects everything else to HTTPS.
+		http80 = caHandler(*domain, ca.PEM())
+		slog.Info("local CA", "sha256", ca.Fingerprint(), "url", "http://"+*domain+"/ca.crt")
+	} else {
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			Email:      *email,
+			HostPolicy: px.HostPolicy,
+			Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
+		}
+		https.TLSConfig = m.TLSConfig()
+		// :80 answers ACME challenges and redirects everything else to HTTPS.
+		http80 = m.HTTPHandler(nil)
+	}
+	go func() { log.Fatal(proxyServer(":80", http80).ListenAndServe()) }()
 	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
 	go func() { log.Fatal(https.ListenAndServeTLS("", "")) }()
 
@@ -328,6 +374,23 @@ func daemon(socket string, args []string) error {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	slog.Info("exiting", "signal", <-sigs)
 	return nil
+}
+
+// caHandler serves the local CA certificate at http://<domain>/ca.crt and
+// redirects every other request to HTTPS.
+func caHandler(domain string, caPEM []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
+		if strings.EqualFold(host, domain) && r.URL.Path == "/ca.crt" {
+			w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+			w.Write(caPEM)
+			return
+		}
+		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusFound)
+	})
 }
 
 // lock takes an exclusive lock on dir for the life of the process, so
@@ -391,6 +454,16 @@ func listenUnix(path, group string) (net.Listener, error) {
 
 // parse handles flags before or after positional args and requires exactly n of them.
 func parse(fs *flag.FlagSet, args []string, n int) []string {
+	pos := positional(fs, args)
+	if len(pos) != n {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	return pos
+}
+
+// positional parses args with flags anywhere and returns the rest.
+func positional(fs *flag.FlagSet, args []string) []string {
 	var pos []string
 	for {
 		fs.Parse(args)
@@ -399,10 +472,6 @@ func parse(fs *flag.FlagSet, args []string, n int) []string {
 		}
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
-	}
-	if len(pos) != n {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
 	}
 	return pos
 }

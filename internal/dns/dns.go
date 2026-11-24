@@ -9,6 +9,7 @@ package dns
 import (
 	"context"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"strings"
@@ -21,8 +22,9 @@ import (
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
-// DefaultUpstream is the resolver for a gateway without DNS=.
-const DefaultUpstream = "1.1.1.1"
+// DefaultUpstreams are the resolvers for a gateway without DNS=, in the
+// order they are tried.
+var DefaultUpstreams = []string{"1.1.1.1", "1.0.0.1"}
 
 // Forward sends a raw query upstream through gateway gw and returns the
 // raw reply.
@@ -40,6 +42,21 @@ type Server struct {
 	zone   string                // "<network>.cyac.internal."
 	names  map[string]netip.Addr // fully qualified, lower case
 	gw     *conf.Gateway         // nil: sealed
+
+	logged time.Time // last failure logged
+	cache  cache
+}
+
+// logf logs a failure to the journal, at most once a second, so a box
+// asking in a loop can't flood it.
+func (s *Server) logf(format string, args ...any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if time.Since(s.logged) < time.Second {
+		return
+	}
+	s.logged = time.Now()
+	log.Printf(format, args...)
 }
 
 // load refreshes the zone from the conf if it is more than a second old.
@@ -103,10 +120,20 @@ func (s *Server) Answer(ctx context.Context, query []byte) []byte {
 	if gw == nil || s.Forward == nil {
 		return reply(h, &q, dnsmessage.RCodeRefused, nil)
 	}
+	key := gw.Name + " " + name + " " + q.Type.String() + " " + q.Class.String()
+	cached, fresh := s.cache.get(key, h.ID)
+	if fresh {
+		return cached
+	}
 	ans, err := s.Forward(ctx, gw, query)
 	if err != nil {
+		s.logf("%s %s via gateway %s: %v (stale answer: %v)", q.Name, q.Type, gw.Name, err, cached != nil)
+		if cached != nil {
+			return cached
+		}
 		return reply(h, &q, dnsmessage.RCodeServerFailure, nil)
 	}
+	s.cache.put(key, ans)
 	return ans
 }
 

@@ -1,7 +1,7 @@
 # Host setup for cyac on NixOS. Import via the flake:
 #
 #   imports = [ cyacrt.nixosModules.default ];
-#   services.cyac = { enable = true; kernel = "none"; };
+#   services.cyac = { enable = true; dataset = "rpool/cyac"; };
 self:
 {
   config,
@@ -12,8 +12,8 @@ self:
 
 let
   cfg = config.services.cyac;
-  pvm = cfg.kernel == "pvm";
-  vmlinux = if pvm then "vmlinux-pvm" else "vmlinux";
+  localCA = cfg.proxy.localCA;
+  ownCA = localCA.enable && localCA.certFile != null;
   # For the generated cybox@ and cyservice@ units: added to them, not
   # replacing them.
   workloadDropin = {
@@ -26,19 +26,13 @@ let
     environment = {
       CYAC_DIR = cfg.stateDir;
       CYAC_ZFS = cfg.dataset;
-    }
-    // lib.optionalAttrs (cfg.kernel == "kvm" || pvm) {
-      CYAC_RUNTIME = if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor";
     };
   };
 in
 {
   imports = [
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "listen" ]
-      "The proxy always serves :80 and :443 now; set services.cyac.proxy.domain."
-    )
-    (lib.mkRemovedOptionModule [ "services" "cyac" "proxy" "acme" ]
-      "The proxy always uses Let's Encrypt now; set services.cyac.proxy.domain."
+    (lib.mkRemovedOptionModule [ "services" "cyac" "kernel" ]
+      "cyac picks its runtime itself now. Set services.cyac.buildGuestKernel = true for Cloud Hypervisor."
     )
   ];
 
@@ -67,46 +61,26 @@ in
       '';
     };
 
-    kernel = lib.mkOption {
-      type = lib.types.nullOr (
-        lib.types.enum [
-          "kvm"
-          "pvm"
-          "none"
-        ]
-      );
-      default = null;
-      description = ''
-        How the host kernel provides virtualization. Must be set.
-
-        - kvm: hardware KVM (kvm-intel/kvm-amd, as your hardware config
-          loads them). Pins cyac to the cloud-hypervisor runtime. The guest
-          kernel is built from the host kernel's source by default.
-        - pvm: no hardware virtualization needed, e.g. a cloud VM without
-          nested virt. Boots the host into virt-pvm's kernel with pti=off,
-          loads kvm-pvm instead of kvm-intel/kvm-amd, and pins cyac to the
-          cloud-hypervisor-pvm runtime. x86_64 only.
-        - none: leaves the kernel alone and lets cyac pick a runtime itself
-          (cloud-hypervisor, cloud-hypervisor-pvm, then runc).
-      '';
-    };
+    buildGuestKernel = lib.mkEnableOption ''
+      building a guest kernel from the host kernel's source
+      (`boot.kernelPackages.kernel`) as the default guestKernel. Without a
+      guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
+      runc'';
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default =
-        if pvm then
-          self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-guest-kernel
-        else if cfg.kernel == "kvm" then
+        if cfg.buildGuestKernel then
           pkgs.callPackage ./guest-kernel.nix { inherit (config.boot.kernelPackages.kernel) src version; }
         else
           null;
       defaultText = lib.literalMD ''
-        for "kvm", a guest vmlinux built from the host kernel's source
-        (`boot.kernelPackages.kernel`); for "pvm", the PVM guest kernel
+        with buildGuestKernel, a guest vmlinux built from the host kernel's
+        source (`boot.kernelPackages.kernel`); otherwise none
       '';
       description = ''
         Guest kernel (uncompressed vmlinux) for Cloud Hypervisor, linked to
-        stateDir/vmlinux, or stateDir/vmlinux-pvm with kernel = "pvm".
+        stateDir/vmlinux.
       '';
     };
 
@@ -115,12 +89,39 @@ in
         type = lib.types.str;
         example = "boxes.example.com";
         description = ''
-          Root domain for exposed boxes: `cyac expose web 8000` serves
-          https://web.<domain>. Point a wildcard DNS record for it at this
-          host. The proxy always serves :80 and :443 and gets Let's Encrypt
+          Root domain for exposed boxes: `cyac expose web app=8000`
+          serves https://app.web.<domain>. Point a wildcard DNS record
+          (*.<domain>) at this host. The proxy always serves :80 and :443 and gets Let's Encrypt
           certificates on demand, using security.acme.defaults.email when
-          set; it requires security.acme.acceptTerms.
+          set; it requires security.acme.acceptTerms, unless localCA is on.
         '';
+      };
+
+      localCA = {
+        enable = lib.mkEnableOption ''
+          certificates from a local CA instead of Let's Encrypt, for hosts
+          without internet access. Without certFile and keyFile, the daemon
+          makes a CA on first start, limited to the root domain, in
+          stateDir/ca. Clients trust it by fetching http://<domain>/ca.crt
+          and checking it against the SHA-256 the daemon logs'';
+
+        certFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          example = "/etc/cyac/ca.crt";
+          description = "Your own CA certificate (PEM), with keyFile.";
+        };
+
+        keyFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/run/secrets/cyac-ca.key";
+          description = ''
+            Private key (PEM) of certFile. A path as a string, read at
+            runtime through systemd's LoadCredential, so it stays out of
+            the nix store.
+          '';
+        };
       };
 
       openFirewall = lib.mkOption {
@@ -142,8 +143,7 @@ in
     boot.kernelModules = [
       "tun"
       "bridge"
-    ]
-    ++ lib.optional pvm "kvm-pvm";
+    ];
     # cyac sets this itself on start; declaring it keeps NixOS from fighting it.
     boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkDefault 1;
 
@@ -154,7 +154,7 @@ in
       # could reach it), whatever stateDir says.
       "d /var/lib/cyac/conf 0700 root root -"
     ]
-    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/${vmlinux} - - - - ${cfg.guestKernel}"
+    ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.guestKernel}"
     # The header-injecting proxy's image, at a path a cyservice's Image= can
     # name that survives upgrades and garbage collection.
     ++ [
@@ -164,35 +164,18 @@ in
       }"
     ];
 
-    # PVM: virt-pvm's host kernel, without page table isolation (PVM doesn't
-    # support it), and kvm-pvm, which can't be loaded alongside kvm-intel or
-    # kvm-amd.
-    boot.kernelPackages = lib.mkIf pvm (
-      pkgs.linuxPackagesFor self.packages.${pkgs.stdenv.hostPlatform.system}.pvm-host-kernel
-    );
-    boot.kernelParams = lib.mkIf pvm [ "pti=off" ];
-    boot.blacklistedKernelModules = lib.mkIf pvm [
-      "kvm-intel"
-      "kvm-amd"
-    ];
     assertions = [
       {
-        assertion = cfg.kernel != null;
-        message = ''services.cyac.kernel must be set: "kvm", "pvm" or "none".'';
+        assertion = localCA.enable || config.security.acme.acceptTerms;
+        message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true (or proxy.localCA.enable).";
       }
       {
-        assertion = !pvm || pkgs.stdenv.hostPlatform.isx86_64;
-        message = "services.cyac: kernel = \"pvm\" is x86_64-only.";
+        assertion = (localCA.certFile == null) == (localCA.keyFile == null);
+        message = "services.cyac: proxy.localCA.certFile and keyFile go together.";
       }
       {
-        assertion = cfg.kernel != "kvm" || cfg.guestKernel != null;
-        message = ''services.cyac: kernel = "kvm" needs a guestKernel.'';
-      }
-    ]
-    ++ [
-      {
-        assertion = config.security.acme.acceptTerms;
-        message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
+        assertion = localCA.certFile == null || localCA.enable;
+        message = "services.cyac: proxy.localCA.certFile is set, but proxy.localCA.enable is not.";
       }
     ];
 
@@ -209,9 +192,6 @@ in
       after = [ "network-online.target" ];
       environment.CYAC_DIR = cfg.stateDir;
       environment.CYAC_ZFS = cfg.dataset;
-      environment.CYAC_RUNTIME = lib.mkIf (cfg.kernel == "kvm" || pvm) (
-        if pvm then "cloud-hypervisor-pvm" else "cloud-hypervisor"
-      );
       serviceConfig = {
         ExecStart = lib.escapeShellArgs (
           [
@@ -222,11 +202,23 @@ in
             "--group"
             "cyac"
           ]
-          ++ lib.optionals (config.security.acme.defaults.email != null) [
+          ++ lib.optionals (!localCA.enable && config.security.acme.defaults.email != null) [
             "--acme-email"
             config.security.acme.defaults.email
           ]
+          ++ lib.optional (localCA.enable && localCA.certFile == null) "--local-ca"
+          # %d is the unit's credentials directory.
+          ++ lib.optionals ownCA [
+            "--ca-cert"
+            "%d/ca.crt"
+            "--ca-key"
+            "%d/ca.key"
+          ]
         );
+        LoadCredential = lib.mkIf ownCA [
+          "ca.crt:${localCA.certFile}"
+          "ca.key:${localCA.keyFile}"
+        ];
         RuntimeDirectory = "cyac";
         # The socket inside is 0660 root:cyac.
         RuntimeDirectoryMode = "0755";
@@ -258,9 +250,11 @@ in
       iptables -w -I nixos-fw -i cyn+ -p tcp --dport 53 -j nixos-fw-accept
     '';
 
-    warnings = lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset) ''
-      services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
-      and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
-    '';
+    warnings =
+      lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset)
+        ''
+          services.cyac: networking.nftables.flushRuleset wipes the nft tables cyac's gateway, network
+          and box units load, on every firewall reload, until those units restart. Consider flushRuleset = false.
+        '';
   };
 }

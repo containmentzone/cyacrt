@@ -2,6 +2,9 @@ package dns
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
+	"io"
 	"net"
 	"runtime"
 	"time"
@@ -12,16 +15,57 @@ import (
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
-// ViaGateway is the Forward that asks the gateway's resolver over UDP
-// from a socket opened inside the gateway's netns. The socket keeps that
-// netns after the thread leaves it, so the query takes the gateway's
-// route out (its uplink or its tunnel) and nothing else.
+// udpTry is how long one UDP attempt waits for the upstream before
+// asking again. Clients give up after 5s, so two tries and a TCP
+// fallback still answer before they do.
+const udpTry = 2 * time.Second
+
+// ViaGateway is the Forward that asks the gateway's resolver from sockets
+// opened inside the gateway's netns. A socket keeps that netns after the
+// thread leaves it, so the query takes the gateway's route out (its
+// uplink or its tunnel) and nothing else.
 func ViaGateway(ctx context.Context, gw *conf.Gateway, query []byte) ([]byte, error) {
-	upstream := gw.DNS
-	if upstream == "" {
-		upstream = DefaultUpstream
+	var upstreams []string
+	for _, ip := range DefaultUpstreams {
+		upstreams = append(upstreams, net.JoinHostPort(ip, "53"))
 	}
-	c, err := dialIn("/run/netns/"+render.GatewayNetns(gw.Name), net.JoinHostPort(upstream, "53"))
+	if gw.DNS != "" {
+		upstreams = []string{net.JoinHostPort(gw.DNS, "53")}
+	}
+	ns := "/run/netns/" + render.GatewayNetns(gw.Name)
+	dial := func(network, addr string) (net.Conn, error) { return dialIn(ns, network, addr) }
+	return forward(ctx, dial, upstreams, query)
+}
+
+// forward asks the first upstream over UDP, the next one (or the same,
+// if there is only one) if the first packet goes unanswered, and the one
+// that answered over TCP if its answer was truncated. Without the
+// TCP step a client that retries over TCP itself (glibc does, for
+// answers over 512 bytes) gets the same truncated, usually empty,
+// answer again, which it takes for "no such records".
+func forward(ctx context.Context, dial func(network, addr string) (net.Conn, error), upstreams []string, query []byte) ([]byte, error) {
+	var ans []byte
+	var err error
+	var addr string
+	for try := range 2 {
+		addr = upstreams[try%len(upstreams)]
+		if ans, err = exchange(ctx, dial, "udp", addr, query); err == nil || ctx.Err() != nil {
+			break
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	if truncated(ans) {
+		return exchange(ctx, dial, "tcp", addr, query)
+	}
+	return ans, nil
+}
+
+// exchange sends one query over a new connection and reads one answer
+// with the same ID. A UDP attempt waits at most udpTry.
+func exchange(ctx context.Context, dial func(network, addr string) (net.Conn, error), network, addr string, query []byte) ([]byte, error) {
+	c, err := dial(network, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -30,22 +74,49 @@ func ViaGateway(ctx context.Context, gw *conf.Gateway, query []byte) ([]byte, er
 	if !ok {
 		deadline = time.Now().Add(5 * time.Second)
 	}
+	if try := time.Now().Add(udpTry); network == "udp" && try.Before(deadline) {
+		deadline = try
+	}
 	c.SetDeadline(deadline)
-	if _, err := c.Write(query); err != nil {
-		return nil, err
+
+	var ans []byte
+	if network == "udp" {
+		if _, err := c.Write(query); err != nil {
+			return nil, err
+		}
+		buf := make([]byte, 65535)
+		n, err := c.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		ans = buf[:n]
+	} else {
+		msg := binary.BigEndian.AppendUint16(nil, uint16(len(query)))
+		if _, err := c.Write(append(msg, query...)); err != nil {
+			return nil, err
+		}
+		var size [2]byte
+		if _, err := io.ReadFull(c, size[:]); err != nil {
+			return nil, err
+		}
+		ans = make([]byte, binary.BigEndian.Uint16(size[:]))
+		if _, err := io.ReadFull(c, ans); err != nil {
+			return nil, err
+		}
 	}
-	buf := make([]byte, 65535)
-	n, err := c.Read(buf)
-	if err != nil {
-		return nil, err
+	if len(ans) < 12 || len(query) < 2 || ans[0] != query[0] || ans[1] != query[1] {
+		return nil, errors.New("upstream answer is short or has the wrong ID")
 	}
-	return buf[:n], nil
+	return ans, nil
 }
 
-// dialIn opens a UDP socket to addr inside the netns at path. It runs on
-// a thread of its own that never leaves that netns: the goroutine exits
-// still locked to it, so Go discards the thread instead of reusing it.
-func dialIn(path, addr string) (net.Conn, error) {
+// truncated reports whether a DNS message has the TC flag set.
+func truncated(msg []byte) bool { return len(msg) > 2 && msg[2]&0x02 != 0 }
+
+// dialIn connects to addr inside the netns at path. It runs on a thread
+// of its own that never leaves that netns: the goroutine exits still
+// locked to it, so Go discards the thread instead of reusing it.
+func dialIn(path, network, addr string) (net.Conn, error) {
 	type result struct {
 		c   net.Conn
 		err error
@@ -64,7 +135,7 @@ func dialIn(path, addr string) (net.Conn, error) {
 			done <- result{nil, err}
 			return
 		}
-		c, err := net.Dial("udp", addr)
+		c, err := net.DialTimeout(network, addr, 3*time.Second)
 		done <- result{c, err}
 	}()
 	r := <-done

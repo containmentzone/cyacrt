@@ -103,14 +103,18 @@ func switchRoot() error {
 	if err := os.MkdirAll("/newroot/run/cyac", 0o755); err != nil {
 		return err
 	}
-	if err := copyFile("/init", "/newroot"+self, 0o755); err != nil {
+	bin, err := os.ReadFile("/init")
+	if err != nil {
 		return err
 	}
-	if err := copyFile("/cyac.json", "/newroot"+configPath, 0o644); err != nil {
+	if err := os.WriteFile("/newroot"+self, bin, 0o755); err != nil {
 		return err
 	}
 	data, err := os.ReadFile("/cyac.json")
 	if err != nil {
+		return err
+	}
+	if err := os.WriteFile("/newroot"+configPath, data, 0o644); err != nil {
 		return err
 	}
 	var cfg agent.Config
@@ -346,23 +350,6 @@ func powerOff(vm bool, reason string) {
 	syscall.Mount("", "/", "", syscall.MS_REMOUNT|syscall.MS_RDONLY, "")
 	syscall.Reboot(syscall.LINUX_REBOOT_CMD_POWER_OFF)
 	select {}
-}
-
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 func logf(format string, args ...any) {

@@ -35,7 +35,6 @@ func (f *fakeRuntime) Start(m *driver.Machine) error                        { f.
 func (f *fakeRuntime) Stop(*driver.Machine) error                           { return nil }
 func (f *fakeRuntime) Running(*driver.Machine) bool                         { return false }
 func (f *fakeRuntime) Cleanup(m *driver.Machine)                            { f.cleanedUp = append(f.cleanedUp, m.RunDir) }
-func (f *fakeRuntime) Grow(*driver.Machine) error                           { return nil }
 func (f *fakeRuntime) Command(*driver.Machine, []string) (*exec.Cmd, error) { return nil, nil }
 
 // seeded pretends name's disk was seeded from an image with these defaults.
@@ -68,8 +67,8 @@ const sealed = "[Network]\nIndex=3\n"
 func TestBox(t *testing.T) {
 	r, f := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox": "[Workload]\nImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n\n" +
-			"[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
+		"a.cybox": "[Box]\nSeedImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n" +
+			"Network=lab\nAddress=10.42.3.10\n",
 	})
 	vm := &fakeRuntime{name: "vm", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "gone", missing: true}, vm}
@@ -115,6 +114,25 @@ func TestBox(t *testing.T) {
 	}
 	if _, err := os.Stat(m.RunDir); !os.IsNotExist(err) {
 		t.Errorf("run dir left: %v", err)
+	}
+}
+
+// A box without SeedImage= starts from the disk it has, and can't start
+// without one.
+func TestBoxNoSeedImage(t *testing.T) {
+	r, _ := runner(t, map[string]string{
+		"lab.cynetwork": sealed,
+		"a.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
+	})
+	vm := &fakeRuntime{name: "vm", kind: driver.Tap}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
+	fakeZFS(t)
+	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "SeedImage=") {
+		t.Fatalf("got %v, want a missing SeedImage= error", err)
+	}
+	seeded(t, r.State, "a", `{"init":["/sbin/init"]}`)
+	if err := r.Start(context.Background(), "cybox", "a"); err != nil {
+		t.Fatal(err)
 	}
 }
 

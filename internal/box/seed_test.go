@@ -17,7 +17,6 @@ func TestPickMode(t *testing.T) {
 		name     string
 		sbinInit bool
 		init     []string
-		want     string // requested mode
 		mode     string
 		args     []string
 		err      bool
@@ -27,12 +26,7 @@ func TestPickMode(t *testing.T) {
 		{name: "no command, has /sbin/init", sbinInit: true, args: []string{"/sbin/init"}},
 		{name: "no command, no init", mode: "pause"},
 		{name: "nginx", init: []string{"nginx", "-g", "daemon off;"}, mode: "command", args: []string{"nginx", "-g", "daemon off;"}},
-		{name: "forced init", init: []string{"/bin/sh"}, want: "init", args: []string{"/bin/sh"}},
-		{name: "forced command", init: []string{"/sbin/init"}, sbinInit: true, want: "command", mode: "command", args: []string{"/sbin/init"}},
-		{name: "forced pause", init: []string{"nginx"}, want: "pause", mode: "pause"},
-		{name: "missing init", init: []string{"/usr/local/bin/init"}, want: "init", err: true, args: nil},
-		{name: "init without init", want: "init", err: true},
-		{name: "command without command", want: "command", err: true},
+		{name: "missing init", init: []string{"/usr/local/bin/init"}, err: true},
 	} {
 		dir := t.TempDir()
 		for _, p := range []string{"bin/sh", "lib/systemd/systemd"} {
@@ -51,7 +45,7 @@ func TestPickMode(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		b := &Box{Init: tc.init, Mode: tc.want}
+		b := &Box{Init: tc.init}
 		err = pickMode(root, b)
 		root.Close()
 		if (err != nil) != tc.err {
@@ -83,5 +77,21 @@ func TestPullTarball(t *testing.T) {
 	}
 	if !slices.Equal(cfg.Config.Entrypoint, []string{"/bin/x"}) {
 		t.Errorf("entrypoint %q", cfg.Config.Entrypoint)
+	}
+}
+
+func TestExposes(t *testing.T) {
+	got, err := exposes(map[string]string{
+		"cyac.nullvoid.space/expose":      "8000", // no name: ignored
+		"cyac.nullvoid.space/expose.pi":   "8787",
+		"cyac.nullvoid.space/exposed":     "x", // not ours
+		"cyac.nullvoid.space/login-user":  "ubuntu",
+		"org.opencontainers.image.source": "x",
+	})
+	if err != nil || len(got) != 1 || got["pi"] != 8787 {
+		t.Errorf("got %v, %v", got, err)
+	}
+	if _, err := exposes(map[string]string{"cyac.nullvoid.space/expose.web": "http"}); err == nil {
+		t.Error("took a port that isn't a number")
 	}
 }

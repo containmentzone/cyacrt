@@ -32,15 +32,7 @@ func New(socket string) *Client {
 
 // Do sends in (if non-nil) as JSON and decodes the reply into out (if non-nil).
 func (c *Client) Do(method, path string, in, out any) error {
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest(method, "http://cyac"+path, body)
+	req, err := request(method, path, in)
 	if err != nil {
 		return err
 	}
@@ -50,11 +42,7 @@ func (c *Client) Do(method, path string, in, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		var e api.Error
-		if json.NewDecoder(resp.Body).Decode(&e) != nil || e.Error == "" {
-			return errors.New(resp.Status)
-		}
-		return errors.New(e.Error)
+		return apiError(resp)
 	}
 	if out == nil {
 		return nil
@@ -172,15 +160,7 @@ func rawTerminal() func() {
 // upgrade POSTs body (if non-nil) to path asking to switch to token, and
 // returns the raw connection once the daemon answers 101.
 func (c *Client) upgrade(path, token string, body any) (net.Conn, *bufio.Reader, error) {
-	var r io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return nil, nil, err
-		}
-		r = bytes.NewReader(b)
-	}
-	req, err := http.NewRequest("POST", "http://cyac"+path, r)
+	req, err := request("POST", path, body)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -204,11 +184,29 @@ func (c *Client) upgrade(path, token string, body any) (net.Conn, *bufio.Reader,
 	}
 	if resp.StatusCode != http.StatusSwitchingProtocols {
 		defer conn.Close()
-		var e api.Error
-		if json.NewDecoder(resp.Body).Decode(&e) != nil || e.Error == "" {
-			return nil, nil, errors.New(resp.Status)
-		}
-		return nil, nil, errors.New(e.Error)
+		return nil, nil, apiError(resp)
 	}
 	return conn, br, nil
+}
+
+// request is a request to the daemon with body (if non-nil) as JSON.
+func request(method, path string, body any) (*http.Request, error) {
+	var r io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		r = bytes.NewReader(b)
+	}
+	return http.NewRequest(method, "http://cyac"+path, r)
+}
+
+// apiError is the error a failed response carries, or its status.
+func apiError(resp *http.Response) error {
+	var e api.Error
+	if json.NewDecoder(resp.Body).Decode(&e) != nil || e.Error == "" {
+		return errors.New(resp.Status)
+	}
+	return errors.New(e.Error)
 }

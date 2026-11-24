@@ -40,7 +40,7 @@ const (
 	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
 	prx = "[Workload]\nImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n\n" +
 		"[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
-	bx = "[Workload]\nImage=example/box\nCPUs=2\nMemory=4G\n\n[Box]\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
+	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
 )
 
 func TestLoad(t *testing.T) {
@@ -116,10 +116,13 @@ func TestFileErrors(t *testing.T) {
 		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=0\n", "Port=0"},
 		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
 		{"x.cyservice", "[Workload]\nImage=i\nExec=sh -c 'oops\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
-		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\n", "needs Address="},
-		{"x.cybox", "[Workload]\nImage=i\nMemory=lots\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
-		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
-		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "needs Address="},
+		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
+		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "unknown section [Workload]"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key Image="},
+		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
 		{"x.cygateway", "[Gateway]\nIndex=0\nKind=direct\n", "Index=0: already used by cygateway out"},
 		{"x.cyservice", strings.Replace(prx, "Index=0", "Index=128", 1), "from 0 to 127"},

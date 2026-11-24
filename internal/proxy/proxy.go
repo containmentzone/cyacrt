@@ -1,13 +1,20 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
-// reaches a box only if its Host is <box>.<root domain> for a box exposed
-// with `cyac expose`, and, unless that route is public, it carries the
-// route's token.
+// reaches a box only if its Host is one of the hosts of a box exposed with
+// `cyac expose` (see Hosts), and it carries the box's token. The root domain itself gets a splash page.
+//
+// Every host sits under one root domain, so to a browser they are all the
+// same site: cookies can be scoped to the root, and SameSite does nothing
+// between boxes. The proxy can't make the root a public suffix, so it
+// stands in for one where it can: it refuses cookie-authenticated requests
+// that another host started (see fromElsewhere), keeps its own cookie on
+// one host (__Host-), and keeps boxes' cookies on their own host too.
 package proxy
 
 import (
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,21 +37,39 @@ import (
 )
 
 const (
-	cookieName = "cyac_token"
+	// cookieName's __Host- prefix makes browsers refuse it with a Domain,
+	// so no other host can set or shadow it.
+	cookieName = "__Host-cyac_token"
+	oldCookie  = "cyac_token" // before the prefix; never forwarded either
 	loginPath  = "/__cyac/login"
 )
 
-// Route exposes one port of a box at <name>.<root domain>. Nothing is
-// reachable without one.
+// splash is what the bare root domain shows.
+//
+//go:embed splash.html
+var splash []byte
+
+// Route exposes a box's named ports. Nothing is reachable without one.
 type Route struct {
-	Port      int    `json:"port"`
-	Public    bool   `json:"public,omitempty"`
-	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+	// Ports maps names to ports in the box; see Hosts.
+	Ports     map[string]int `json:"ports,omitempty"`
+	TokenHash string         `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+}
+
+// Hosts returns the hosts box answers at under domain, with their ports:
+// <name>.<box>.<domain> for each named port.
+func Hosts(box, domain string, r Route) map[string]int {
+	hosts := map[string]int{}
+	for name, port := range r.Ports {
+		hosts[strings.ToLower(name+"."+box+"."+domain)] = port
+	}
+	return hosts
 }
 
 type target struct {
-	Route
-	IP netip.Addr
+	IP        netip.Addr
+	Port      int
+	TokenHash string
 }
 
 // transport reaches boxes on their networks. Boxes are local, so connecting is
@@ -62,7 +88,7 @@ var transport = &http.Transport{
 type Server struct {
 	Conf   string // conf dir: where boxes and their addresses come from
 	Routes string // route dir (see SaveRoute)
-	// Domain is the root domain; box b answers at <b>.<Domain>.
+	// Domain is the root domain; port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 
 	mu     sync.RWMutex
@@ -82,8 +108,12 @@ func (s *Server) Reload() error {
 	}
 	routes := map[string]target{}
 	for name, r := range saved {
-		if b := c.Boxes[name]; b != nil {
-			routes[name+"."+strings.ToLower(s.Domain)] = target{Route: r, IP: b.Address}
+		b := c.Boxes[name]
+		if b == nil {
+			continue
+		}
+		for host, port := range Hosts(name, s.Domain, r) {
+			routes[host] = target{IP: b.Address, Port: port, TokenHash: r.TokenHash}
 		}
 	}
 	s.mu.Lock()
@@ -135,25 +165,42 @@ func SaveRoute(dir, name string, r *Route) error {
 	return os.Rename(path+".tmp", path)
 }
 
-func (s *Server) lookup(host string) (target, bool) {
+func hostname(host string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
+	return strings.ToLower(host)
+}
+
+func (s *Server) isRoot(host string) bool {
+	return hostname(host) == strings.ToLower(s.Domain)
+}
+
+func (s *Server) lookup(host string) (target, bool) {
+	host = hostname(host)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	t, ok := s.routes[strings.ToLower(host)]
+	t, ok := s.routes[host]
 	return t, ok
 }
 
-// HostPolicy only lets ACME issue certificates for exposed hosts.
+// HostPolicy only lets ACME issue certificates for the root domain and
+// exposed hosts.
 func (s *Server) HostPolicy(_ context.Context, host string) error {
-	if _, ok := s.lookup(host); !ok {
+	if _, ok := s.lookup(host); !ok && !s.isRoot(host) {
 		return errors.New("unknown host")
 	}
 	return nil
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Opt every host out of document.domain and into its own agent cluster.
+	w.Header().Set("Origin-Agent-Cluster", "?1")
+	if s.isRoot(r.Host) && r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write(splash)
+		return
+	}
 	t, ok := s.lookup(r.Host)
 	if !ok {
 		http.NotFound(w, r)
@@ -166,9 +213,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok, fromHeader := tokenFrom(r)
-	if !t.Public && !validToken(t.Route, tok) {
+	if !validToken(t.TokenHash, tok) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="cyac"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// Browsers add the cookie, and remembered basic auth, to requests from
+	// any host under the root, box or not; only this host's own pages may
+	// use them. A bearer token is never added for you.
+	bearer := strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer && fromElsewhere(r) {
+		http.Error(w, "cross-origin request refused", http.StatusForbidden)
 		return
 	}
 
@@ -187,7 +242,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if fromHeader {
 				pr.Out.Header.Del("Authorization")
 			}
-			stripCookie(pr.Out, cookieName)
+			stripCookies(pr.Out, cookieName, oldCookie)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Origin-Agent-Cluster") // ours is already set
+			// What we let through depends on fetch metadata, so a browser
+			// mustn't hand a sibling what it cached for this host's pages.
+			resp.Header.Add("Vary", "Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest")
+			for i, c := range resp.Header["Set-Cookie"] {
+				resp.Header["Set-Cookie"][i] = hostOnly(c)
+			}
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("proxy %s: %v", r.Host, err)
@@ -200,13 +265,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // login trades ?token= for a cookie so browsers don't need basic auth.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, t target) {
 	tok := r.URL.Query().Get("token")
-	if !t.Public && !validToken(t.Route, tok) {
+	if !validToken(t.TokenHash, tok) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: "/",
-		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -226,19 +291,57 @@ func tokenFrom(r *http.Request) (tok string, fromHeader bool) {
 	return "", false
 }
 
-func validToken(rt Route, tok string) bool {
-	if tok == "" || rt.TokenHash == "" {
+func validToken(hash, tok string) bool {
+	if tok == "" || hash == "" {
 		return false
 	}
 	sum := sha256.Sum256([]byte(tok))
-	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(rt.TokenHash)) == 1
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(hash)) == 1
 }
 
-func stripCookie(r *http.Request, name string) {
+// fromElsewhere reports whether a page on another origin started r, such
+// as another box's page fetching from or opening a websocket to this one.
+// A link or redirect from elsewhere may still open a page here, but not
+// inside a frame.
+func fromElsewhere(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return false
+	case "":
+		// Not a browser, or one too old to say: go by Origin, which
+		// browsers send with websockets and anything but GET and HEAD.
+		o := r.Header.Get("Origin")
+		if o == "" {
+			return false
+		}
+		u, err := url.Parse(o)
+		return err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, r.Host)
+	default:
+		safe := r.Method == http.MethodGet || r.Method == http.MethodHead
+		return !safe || r.Header.Get("Sec-Fetch-Mode") != "navigate" ||
+			r.Header.Get("Sec-Fetch-Dest") != "document"
+	}
+}
+
+// hostOnly drops the Domain attribute from a Set-Cookie value, so a box
+// can't set cookies for its siblings or the root.
+func hostOnly(setCookie string) string {
+	parts := strings.Split(setCookie, ";")
+	kept := parts[:1]
+	for _, p := range parts[1:] {
+		name, _, _ := strings.Cut(p, "=")
+		if !strings.EqualFold(strings.TrimSpace(name), "domain") {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ";")
+}
+
+func stripCookies(r *http.Request, names ...string) {
 	cookies := r.Cookies()
 	r.Header.Del("Cookie")
 	for _, c := range cookies {
-		if c.Name != name {
+		if !slices.Contains(names, c.Name) {
 			r.AddCookie(c)
 		}
 	}

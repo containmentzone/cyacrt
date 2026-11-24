@@ -86,7 +86,8 @@ type Gateway struct {
 }
 
 // Workload is what cybox and cyservice share: an OCI image and how to run
-// it.
+// it. A box's Image (SeedImage=) is only used to seed a disk that doesn't
+// exist yet, so it may be empty.
 type Workload struct {
 	Image    string
 	Exec     []string // overrides the image's ENTRYPOINT+CMD
@@ -236,7 +237,7 @@ func (c *Config) parseFile(path, kind, name string) error {
 	case KindService:
 		err = c.parseService(name, take("Workload"), take("Service"))
 	case KindBox:
-		err = c.parseBox(name, take("Workload"), take("Box"))
+		err = c.parseBox(name, take("Box"))
 	}
 	if err != nil {
 		return err
@@ -343,7 +344,10 @@ var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 func (c *Config) parseService(name string, wf, f *fields) error {
 	s := &Service{Name: name}
 	var err error
-	if s.Workload, err = parseWorkload(wf); err != nil {
+	if s.Workload, err = parseWorkload(wf, "Image", true); err != nil {
+		return err
+	}
+	if err := wf.done(); err != nil {
 		return err
 	}
 	idx, err := f.one("Index")
@@ -383,10 +387,11 @@ func (c *Config) parseService(name string, wf, f *fields) error {
 	return nil
 }
 
-func (c *Config) parseBox(name string, wf, f *fields) error {
+// parseBox reads a cybox, which has all its keys in [Box].
+func (c *Config) parseBox(name string, f *fields) error {
 	b := &Box{Name: name}
 	var err error
-	if b.Workload, err = parseWorkload(wf); err != nil {
+	if b.Workload, err = parseWorkload(f, "SeedImage", false); err != nil {
 		return err
 	}
 	if b.Network, err = f.one("Network"); err != nil {
@@ -426,14 +431,16 @@ func (c *Config) parseBox(name string, wf, f *fields) error {
 	return nil
 }
 
-func parseWorkload(f *fields) (Workload, error) {
+// parseWorkload takes the workload keys from f, with the image under
+// imageKey, and leaves the rest of f to the caller.
+func parseWorkload(f *fields, imageKey string, needImage bool) (Workload, error) {
 	var w Workload
 	var err error
-	if w.Image, err = f.one("Image"); err != nil {
+	if w.Image, err = f.one(imageKey); err != nil {
 		return w, err
 	}
-	if w.Image == "" {
-		return w, fmt.Errorf("[Workload] needs Image=")
+	if needImage && w.Image == "" {
+		return w, fmt.Errorf("[%s] needs %s=", f.section, imageKey)
 	}
 	exec, err := f.one("Exec")
 	if err != nil {
@@ -454,11 +461,11 @@ func parseWorkload(f *fields) (Workload, error) {
 	if w.User, err = f.one("User"); err != nil {
 		return w, err
 	}
-	cpus, err := f.one("CPUs")
+	cpus, err := f.one("CPU")
 	if err != nil {
 		return w, err
 	}
-	if w.CPUs, err = intIn(cpus, "CPUs", 1, 256, false); err != nil {
+	if w.CPUs, err = intIn(cpus, "CPU", 1, 256, false); err != nil {
 		return w, err
 	}
 	mem, err := f.one("Memory")
@@ -468,7 +475,7 @@ func parseWorkload(f *fields) (Workload, error) {
 	if w.MemoryMB, err = sizeMB(mem, "Memory"); err != nil {
 		return w, err
 	}
-	return w, f.done()
+	return w, nil
 }
 
 // check resolves references between objects. It drops every object that

@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -23,8 +24,8 @@ func server(t *testing.T, network string, fwd Forward) *Server {
 		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n",
 		"lab.cynetwork":   "[Network]\nIndex=2\n",
 		"proxy.cyservice": "[Workload]\nImage=i\n\n[Service]\nIndex=0\nGateway=out\nPort=8080\n",
-		"a.cybox":         "[Workload]\nImage=i\n\n[Box]\nNetwork=dev\nAddress=10.42.1.10\n",
-		"b.cybox":         "[Workload]\nImage=i\n\n[Box]\nNetwork=lab\nAddress=10.42.2.10\n",
+		"a.cybox":         "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
+		"b.cybox":         "[Box]\nSeedImage=i\nNetwork=lab\nAddress=10.42.2.10\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -171,5 +172,113 @@ func TestServe(t *testing.T) {
 	}
 	if _, addrs := parse(t, buf[:n]); len(addrs) != 1 {
 		t.Errorf("tcp: %v", addrs)
+	}
+}
+
+// forward asks again when a UDP packet is lost, and over TCP when the
+// UDP answer is truncated.
+func TestForwardRetries(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	l, err := net.Listen("tcp", pc.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	answer := func(query []byte, truncate bool) []byte {
+		var p dnsmessage.Parser
+		h, _ := p.Start(query)
+		q, _ := p.Question()
+		if truncate {
+			ans := reply(h, &q, dnsmessage.RCodeSuccess, nil)
+			ans[2] |= 0x02
+			return ans
+		}
+		addr := netip.MustParseAddr("192.0.2.1")
+		return reply(h, &q, dnsmessage.RCodeSuccess, &addr)
+	}
+	var udp atomic.Int32
+	go func() {
+		buf := make([]byte, 512)
+		for {
+			n, from, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if udp.Add(1) > 1 { // the first packet is lost
+				pc.WriteTo(answer(buf[:n], true), from)
+			}
+		}
+	}()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			var size [2]byte
+			c.Read(size[:])
+			q := make([]byte, int(size[0])<<8|int(size[1]))
+			c.Read(q)
+			ans := answer(q, false)
+			c.Write(append([]byte{byte(len(ans) >> 8), byte(len(ans))}, ans...))
+			c.Close()
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	ans, err := forward(ctx, net.Dial, []string{pc.LocalAddr().String()}, query(t, "example.com.", dnsmessage.TypeA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, addrs := parse(t, ans); len(addrs) != 1 || truncated(ans) || udp.Load() != 2 {
+		t.Errorf("addrs %v, truncated %v, udp tries %d", addrs, truncated(ans), udp.Load())
+	}
+}
+
+// Forwarded answers are served from the cache while fresh, and after
+// that only when upstream fails.
+func TestCache(t *testing.T) {
+	calls, fail := 0, false
+	s := server(t, "dev", func(_ context.Context, _ *conf.Gateway, q []byte) ([]byte, error) {
+		calls++
+		if fail {
+			return nil, errors.New("down")
+		}
+		var p dnsmessage.Parser
+		h, _ := p.Start(q)
+		qq, _ := p.Question()
+		addr := netip.MustParseAddr("192.0.2.1")
+		return reply(h, &qq, dnsmessage.RCodeSuccess, &addr), nil
+	})
+	ask := func(id uint16) []byte {
+		q := query(t, "Example.com.", dnsmessage.TypeA)
+		q[0], q[1] = byte(id>>8), byte(id)
+		ans := s.Answer(context.Background(), q)
+		if ans[0] != q[0] || ans[1] != q[1] {
+			t.Fatalf("answer has ID %x%x, want %x", ans[0], ans[1], id)
+		}
+		return ans
+	}
+	ask(1) // cached with ID 1, served below with 7
+	if _, addrs := parse(t, ask(7)); len(addrs) != 1 || calls != 1 {
+		t.Fatalf("fresh: addrs %v, %d calls", addrs, calls)
+	}
+
+	// Expire it: now it is asked for again, and served stale when that fails.
+	for k, e := range s.cache.entries {
+		e.fresh = time.Now().Add(-time.Second)
+		s.cache.entries[k] = e
+	}
+	fail = true
+	if rcode, addrs := parse(t, ask(7)); rcode != dnsmessage.RCodeSuccess || len(addrs) != 1 || calls != 2 {
+		t.Fatalf("stale: %v %v, %d calls", rcode, addrs, calls)
+	}
+	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "other.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
+		t.Errorf("uncached failure: %v", rcode)
 	}
 }
