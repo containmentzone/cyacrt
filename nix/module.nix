@@ -12,6 +12,8 @@ self:
 
 let
   cfg = config.services.cyac;
+  localCA = cfg.proxy.localCA;
+  ownCA = localCA.enable && localCA.certFile != null;
   # For the generated cybox@ and cyservice@ units: added to them, not
   # replacing them.
   workloadDropin = {
@@ -91,8 +93,35 @@ in
           serves https://app.web.<domain>. Point a wildcard DNS record
           (*.<domain>) at this host. The proxy always serves :80 and :443 and gets Let's Encrypt
           certificates on demand, using security.acme.defaults.email when
-          set; it requires security.acme.acceptTerms.
+          set; it requires security.acme.acceptTerms, unless localCA is on.
         '';
+      };
+
+      localCA = {
+        enable = lib.mkEnableOption ''
+          certificates from a local CA instead of Let's Encrypt, for hosts
+          without internet access. Without certFile and keyFile, the daemon
+          makes a CA on first start, limited to the root domain, in
+          stateDir/ca. Clients trust it by fetching http://<domain>/ca.crt
+          and checking it against the SHA-256 the daemon logs'';
+
+        certFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.path;
+          default = null;
+          example = "/etc/cyac/ca.crt";
+          description = "Your own CA certificate (PEM), with keyFile.";
+        };
+
+        keyFile = lib.mkOption {
+          type = lib.types.nullOr lib.types.str;
+          default = null;
+          example = "/run/secrets/cyac-ca.key";
+          description = ''
+            Private key (PEM) of certFile. A path as a string, read at
+            runtime through systemd's LoadCredential, so it stays out of
+            the nix store.
+          '';
+        };
       };
 
       openFirewall = lib.mkOption {
@@ -129,8 +158,16 @@ in
 
     assertions = [
       {
-        assertion = config.security.acme.acceptTerms;
-        message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true.";
+        assertion = localCA.enable || config.security.acme.acceptTerms;
+        message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true (or proxy.localCA.enable).";
+      }
+      {
+        assertion = (localCA.certFile == null) == (localCA.keyFile == null);
+        message = "services.cyac: proxy.localCA.certFile and keyFile go together.";
+      }
+      {
+        assertion = localCA.certFile == null || localCA.enable;
+        message = "services.cyac: proxy.localCA.certFile is set, but proxy.localCA.enable is not.";
       }
     ];
 
@@ -157,11 +194,23 @@ in
             "--group"
             "cyac"
           ]
-          ++ lib.optionals (config.security.acme.defaults.email != null) [
+          ++ lib.optionals (!localCA.enable && config.security.acme.defaults.email != null) [
             "--acme-email"
             config.security.acme.defaults.email
           ]
+          ++ lib.optional (localCA.enable && localCA.certFile == null) "--local-ca"
+          # %d is the unit's credentials directory.
+          ++ lib.optionals ownCA [
+            "--ca-cert"
+            "%d/ca.crt"
+            "--ca-key"
+            "%d/ca.key"
+          ]
         );
+        LoadCredential = lib.mkIf ownCA [
+          "ca.crt:${localCA.certFile}"
+          "ca.key:${localCA.keyFile}"
+        ];
         RuntimeDirectory = "cyac";
         # The socket inside is 0660 root:cyac.
         RuntimeDirectoryMode = "0755";
