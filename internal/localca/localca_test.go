@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -31,6 +32,9 @@ func TestLocalCA(t *testing.T) {
 		}
 		if _, err := c.Leaf.Verify(x509.VerifyOptions{DNSName: host, Roots: roots}); err != nil {
 			t.Errorf("%s: %v", host, err)
+		}
+		if len(c.Certificate) != 2 {
+			t.Errorf("%s: chain has %d certificates, want leaf and CA", host, len(c.Certificate))
 		}
 		if again, _ := ca.GetCertificate(&tls.ClientHelloInfo{ServerName: host}); again != c {
 			t.Errorf("%s: leaf not cached", host)
@@ -61,5 +65,13 @@ func TestLocalCA(t *testing.T) {
 	}
 	if _, err := Load(filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key")); err != nil {
 		t.Error(err)
+	}
+
+	// A key left without its certificate (a failed first start) is replaced.
+	if err := os.Remove(filepath.Join(dir, "ca.crt")); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := LoadOrCreate(dir, "boxes.example.com"); err != nil || again.Fingerprint() == ca.Fingerprint() {
+		t.Errorf("recovering from a lone key: %v", err)
 	}
 }

@@ -35,6 +35,7 @@ const (
 // handshake for it.
 type CA struct {
 	cert   *x509.Certificate
+	chain  [][]byte // cert and any intermediates above it, sent after each leaf
 	signer crypto.Signer
 	// HostPolicy refuses hosts that get no certificate, as autocert's does.
 	HostPolicy func(context.Context, string) error
@@ -50,24 +51,26 @@ func Load(certFile, keyFile string) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("local CA: %w", err)
 	}
-	if !kp.Leaf.IsCA {
+	cert, err := x509.ParseCertificate(kp.Certificate[0])
+	if err != nil {
+		return nil, fmt.Errorf("local CA: %w", err)
+	}
+	if !cert.IsCA {
 		return nil, fmt.Errorf("local CA: %s is not a CA certificate", certFile)
 	}
 	signer, ok := kp.PrivateKey.(crypto.Signer)
 	if !ok {
 		return nil, fmt.Errorf("local CA: %s: unsupported key type", keyFile)
 	}
-	return &CA{cert: kp.Leaf, signer: signer}, nil
+	return &CA{cert: cert, chain: kp.Certificate, signer: signer}, nil
 }
 
 // LoadOrCreate loads dir/ca.crt and dir/ca.key, first generating them if
-// neither exists. A generated CA is name-constrained to domain and its
+// ca.crt doesn't exist (a key without it is a CA nobody trusts yet). A generated CA is name-constrained to domain and its
 // subdomains, so trusting it can't vouch for any other site.
 func LoadOrCreate(dir, domain string) (*CA, error) {
 	certFile, keyFile := filepath.Join(dir, "ca.crt"), filepath.Join(dir, "ca.key")
-	_, errC := os.Stat(certFile)
-	_, errK := os.Stat(keyFile)
-	if errors.Is(errC, os.ErrNotExist) && errors.Is(errK, os.ErrNotExist) {
+	if _, err := os.Stat(certFile); errors.Is(err, os.ErrNotExist) {
 		if err := create(dir, certFile, keyFile, domain); err != nil {
 			return nil, fmt.Errorf("local CA: %w", err)
 		}
@@ -111,7 +114,7 @@ func create(dir, certFile, keyFile, domain string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	// The key first: a certificate without it would stop the next start.
+	// The key first, so ca.crt only exists once both do.
 	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
 		return err
 	}
@@ -177,7 +180,7 @@ func (ca *CA) issue(host string) (*tls.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
+	return &tls.Certificate{Certificate: append([][]byte{der}, ca.chain...), PrivateKey: key, Leaf: leaf}, nil
 }
 
 func serial() *big.Int {
