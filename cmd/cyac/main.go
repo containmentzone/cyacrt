@@ -52,7 +52,10 @@ const usage = `usage: cyac <command> [args]
   expose <name> [<pname>=<port>...]
                                 serve each <pname>=<port> at https://<pname>.<name>.<root domain>,
                                 on top of the image's cyac.nullvoid.space/expose.<pname>=<port>
-                                labels; prints the token they all need
+                                labels; prints each host's token, which
+                                stays the same until regen (or unexpose)
+  regen <name> [<pname>...]     new tokens for those ports (default: all);
+                                the old ones stop working
   unexpose <name>
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
@@ -252,11 +255,20 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports}, &e); err != nil {
 			return err
 		}
-		for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
-			fmt.Printf("https://%s → :%d\n", h, e.Hosts[h])
-			fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Token)
+		printExposed(e)
+		return nil
+
+	case "regen":
+		pos := positional(fs, args)
+		if len(pos) < 1 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
 		}
-		fmt.Printf("token: %s\n", e.Token)
+		var e api.Exposed
+		if err := c.Do("POST", "/v1/boxes/"+pos[0]+"/route/regen", api.Regen{Names: pos[1:]}, &e); err != nil {
+			return err
+		}
+		printExposed(e)
 		return nil
 
 	case "unexpose":
@@ -474,4 +486,12 @@ func positional(fs *flag.FlagSet, args []string) []string {
 		args = fs.Args()[1:]
 	}
 	return pos
+}
+
+func printExposed(e api.Exposed) {
+	for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
+		fmt.Printf("https://%s → :%d\n", h, e.Hosts[h].Port)
+		fmt.Printf("  token:   %s\n", e.Hosts[h].Token)
+		fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Hosts[h].Token)
+	}
 }

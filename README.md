@@ -167,9 +167,11 @@ nothing. On top of those it exposes the image's default ports, from labels
 `cyac.nullvoid.space/expose.<name>=<port>`, read when the disk is seeded; a port given on the command line wins over a label of the
 same name. The root domain is the daemon's required `--domain`, and one
 wildcard record, `*.<root domain>`, covers every host. Running `expose`
-again replaces the box's ports and token. The root domain itself answers
+again replaces the box's ports; each host keeps its own token until
+`cyac regen <box> [<name>...]` replaces it (or `unexpose` drops it), so
+`expose` is also how to see the tokens again. The root domain itself answers
 `/` with a splash page; a request for any other host or path gets a 404.
-Every request needs the box's token,
+Every request needs its host's token,
 as `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
 visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
 any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
@@ -178,7 +180,8 @@ exposed host or the root domain and never for anything else; :80 only
 answers ACME challenges and redirects to HTTPS. Clients get 10s to send headers and 2 minutes
 idle; a box gets 5s to accept a connection and a minute to start
 answering. Bodies have no deadline, so uploads, streams and websockets
-work. Routes are kept in `$CYAC_DIR/routes`.
+work. Routes and their tokens are kept in `$CYAC_DIR/routes`, readable by root only. The login
+cookie lasts 30 days.
 
 **Local CA.** A host without internet access can't reach Let's Encrypt;
 `cyac daemon --local-ca` issues the same on-demand certificates from a local
@@ -290,7 +293,8 @@ cyac start web                      # seeds the disk on its first start
 cyac ls
 cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
-cyac expose web app=8000           # https://app.web.… and the image's defaults; prints a token
+cyac expose web app=8000           # https://app.web.… and the image's defaults; prints their tokens
+cyac regen web app                  # a new token for app.web.…
 cyac unexpose web
 cyac stop web
 ```

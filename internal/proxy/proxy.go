@@ -1,6 +1,6 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host is one of the hosts of a box exposed with
-// `cyac expose` (see Hosts), and it carries the box's token. The root domain itself gets a splash page.
+// `cyac expose` (see Hosts), and it carries that host's token. The root domain itself gets a splash page.
 //
 // Every host sits under one root domain, so to a browser they are all the
 // same site: cookies can be scoped to the root, and SameSite does nothing
@@ -52,8 +52,11 @@ var splash []byte
 // Route exposes a box's named ports. Nothing is reachable without one.
 type Route struct {
 	// Ports maps names to ports in the box; see Hosts.
-	Ports     map[string]int `json:"ports,omitempty"`
-	TokenHash string         `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+	Ports map[string]int `json:"ports,omitempty"`
+	// Tokens maps the same names to their bearer tokens, kept until
+	// regenerated (the route file is root's, 0600). A name without one
+	// isn't served.
+	Tokens map[string]string `json:"tokens,omitempty"`
 }
 
 // Hosts returns the hosts box answers at under domain, with their ports:
@@ -61,9 +64,14 @@ type Route struct {
 func Hosts(box, domain string, r Route) map[string]int {
 	hosts := map[string]int{}
 	for name, port := range r.Ports {
-		hosts[strings.ToLower(name+"."+box+"."+domain)] = port
+		hosts[Host(name, box, domain)] = port
 	}
 	return hosts
+}
+
+// Host is where port name of box answers: <name>.<box>.<domain>.
+func Host(name, box, domain string) string {
+	return strings.ToLower(name + "." + box + "." + domain)
 }
 
 type target struct {
@@ -112,8 +120,13 @@ func (s *Server) Reload() error {
 		if b == nil {
 			continue
 		}
-		for host, port := range Hosts(name, s.Domain, r) {
-			routes[host] = target{IP: b.Address, Port: port, TokenHash: r.TokenHash}
+		for pname, port := range r.Ports {
+			tok := r.Tokens[pname]
+			if tok == "" {
+				continue
+			}
+			sum := sha256.Sum256([]byte(tok))
+			routes[Host(pname, name, s.Domain)] = target{IP: b.Address, Port: port, TokenHash: hex.EncodeToString(sum[:])}
 		}
 	}
 	s.mu.Lock()
@@ -271,6 +284,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, t target) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: "/",
+		MaxAge:   30 * 24 * 3600, // the token outlives browser restarts; regen revokes it
 		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
