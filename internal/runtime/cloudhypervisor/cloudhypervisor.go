@@ -8,6 +8,11 @@
 // A guest reboot resets the VM in place. A guest poweroff (ACPI) ends the
 // cloud-hypervisor process, which is how the daemon sees a box stop itself.
 //
+// On a host without hardware virtualization, /dev/kvm can come from the
+// out-of-tree kvm-pvm module (https://github.com/virt-pvm). The VMM is the
+// same; Kernel must then be a PVM guest kernel, which the NixOS module's
+// pvm option links in place of the usual one.
+//
 // TODO: confine Cloud Hypervisor with its --landlock rules.
 package cloudhypervisor
 
@@ -87,6 +92,13 @@ func (r Runtime) Start(m *driver.Machine) error {
 	cmdline := fmt.Sprintf("console=ttyS0 ip=%s::%s:%s:%s:eth0:off",
 		m.Addr.IP, gw, mask, m.Name)
 
+	cpus := fmt.Sprintf("boot=%d", m.CPUs)
+	if _, err := os.Stat("/sys/module/kvm_pvm"); err == nil {
+		// A PVM guest only sees part of the physical address space, and
+		// Cloud Hypervisor puts devices at its top (virt-pvm/linux#1).
+		cpus += ",max_phys_bits=43"
+	}
+
 	log, in, err := driver.OpenConsole(m)
 	if err != nil {
 		return err
@@ -100,7 +112,7 @@ func (r Runtime) Start(m *driver.Machine) error {
 		"--kernel", r.Kernel,
 		"--initramfs", initrd,
 		"--cmdline", cmdline,
-		"--cpus", fmt.Sprintf("boot=%d", m.CPUs),
+		"--cpus", cpus,
 		"--memory", fmt.Sprintf("size=%dM", m.MemMiB),
 		// image_type=raw: without it, Cloud Hypervisor guards sector 0 against
 		// a guest rewriting the format probe, and ext4 rewrites block 0 (it holds

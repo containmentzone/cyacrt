@@ -14,6 +14,7 @@ let
   cfg = config.services.cyac;
   localCA = cfg.proxy.localCA;
   ownCA = localCA.enable && localCA.certFile != null;
+  pvm = pkgs.callPackage ./pvm.nix { };
   # For the generated cybox@ and cyservice@ units: added to them, not
   # replacing them.
   workloadDropin = {
@@ -67,16 +68,29 @@ in
       guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
       runc'';
 
+    pvm = lib.mkEnableOption ''
+      PVM, for hosts without hardware virtualization such as a cloud VM
+      without nested virt (https://github.com/virt-pvm; x86_64, not
+      upstream). Adds virt-pvm's out-of-tree kvm.ko and kvm-pvm.ko, built
+      against boot.kernelPackages (which must be 6.18), boots with nokaslr,
+      pti=off and fred=off as kvm-pvm requires, and makes the PVM guest
+      kernel the default guestKernel. On a CPU without the cpuid_fault flag
+      (e.g. AMD Zen 3), also set
+      boot.extraModprobeConfig = "options kvm-pvm cpuid_intercept=0"'';
+
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default =
-        if cfg.buildGuestKernel then
+        if cfg.pvm then
+          pvm.guestKernel
+        else if cfg.buildGuestKernel then
           pkgs.callPackage ./guest-kernel.nix { inherit (config.boot.kernelPackages.kernel) src version; }
         else
           null;
       defaultText = lib.literalMD ''
-        with buildGuestKernel, a guest vmlinux built from the host kernel's
-        source (`boot.kernelPackages.kernel`); otherwise none
+        with pvm, virt-pvm's PVM guest kernel; with buildGuestKernel, a
+        guest vmlinux built from the host kernel's source
+        (`boot.kernelPackages.kernel`); otherwise none
       '';
       description = ''
         Guest kernel (uncompressed vmlinux) for Cloud Hypervisor, linked to
@@ -143,6 +157,19 @@ in
     boot.kernelModules = [
       "tun"
       "bridge"
+    ]
+    ++ lib.optional cfg.pvm "kvm-pvm";
+    # PVM: kvm-pvm serves /dev/kvm in place of kvm-intel or kvm-amd, which
+    # it can't be loaded alongside, and needs these off in the host kernel.
+    boot.extraModulePackages = lib.optional cfg.pvm (pvm.hostModules config.boot.kernelPackages);
+    boot.blacklistedKernelModules = lib.optionals cfg.pvm [
+      "kvm-intel"
+      "kvm-amd"
+    ];
+    boot.kernelParams = lib.optionals cfg.pvm [
+      "nokaslr"
+      "pti=off"
+      "fred=off"
     ];
     # cyac sets this itself on start; declaring it keeps NixOS from fighting it.
     boot.kernel.sysctl."net.ipv4.ip_forward" = lib.mkDefault 1;
@@ -165,6 +192,14 @@ in
     ];
 
     assertions = [
+      {
+        assertion = !cfg.pvm || pkgs.stdenv.hostPlatform.isx86_64;
+        message = "services.cyac.pvm is x86_64-only.";
+      }
+      {
+        assertion = !cfg.pvm || lib.versions.majorMinor config.boot.kernelPackages.kernel.version == "6.18";
+        message = "services.cyac.pvm needs a 6.18 kernel: virt-pvm's out-of-tree patches target 6.18.";
+      }
       {
         assertion = localCA.enable || config.security.acme.acceptTerms;
         message = "services.cyac: the proxy uses Let's Encrypt, so it needs security.acme.acceptTerms = true (or proxy.localCA.enable).";

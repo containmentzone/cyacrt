@@ -387,7 +387,15 @@ opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
 `cyac.service` and links the guest kernel, if there is one. cyac picks the
 runtime itself: `cloud-hypervisor` when `/dev/kvm` and a guest kernel are
 there, else `runc`. `buildGuestKernel` builds one from the host kernel's
-source:
+source.
+
+A host without hardware virtualization (a cloud VM without nested virt)
+can still run Cloud Hypervisor through [PVM](https://github.com/virt-pvm),
+which isn't upstream: `pvm = true` adds virt-pvm's out-of-tree `kvm.ko`
+and `kvm-pvm.ko` for the host's 6.18 kernel, boots with `nokaslr pti=off
+fred=off`, and links virt-pvm's PVM guest kernel. On a CPU without the
+`cpuid_fault` flag, also set
+`boot.extraModprobeConfig = "options kvm-pvm cpuid_intercept=0";`.
 
 ```nix
 {
@@ -461,6 +469,8 @@ Not tested yet:
 - **Growing a disk**, online under runc or in a VM.
 - **exeuntu itself.** Check that its `/etc/fstab` root entry matches a
   bare ext4 filesystem on `/dev/vda`.
+- **PVM** at all: the modules build against nixpkgs' 6.18 kernel, but
+  haven't been loaded, and virt-pvm calls AMD hosts unqualified.
 - **Real ACME issuance**, and a non-root `cyac` group member using the
   socket.
 
