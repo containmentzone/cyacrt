@@ -2,9 +2,15 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -98,5 +104,88 @@ func TestSplash(t *testing.T) {
 	}
 	if err := s.HostPolicy(context.Background(), "nope.boxes.example.com"); err == nil {
 		t.Error("unknown host allowed")
+	}
+}
+
+// Requests that another host's page starts don't get to use the cookie,
+// the box never sees the proxy's cookie, and a box's cookies stay on its
+// own host.
+func TestCrossHost(t *testing.T) {
+	box := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := r.Cookie(cookieName); err == nil {
+			t.Error("box got the proxy cookie")
+		}
+		if _, err := r.Cookie(oldCookie); err == nil {
+			t.Error("box got the old proxy cookie")
+		}
+		w.Header().Set("Origin-Agent-Cluster", "?0")
+		w.Header().Add("Set-Cookie", "s=1; Path=/; Domain=boxes.example.com; HttpOnly")
+		w.Header().Add("Set-Cookie", "t=2; domain=.example.com")
+	}))
+	defer box.Close()
+	ap := netip.MustParseAddrPort(strings.TrimPrefix(box.URL, "http://"))
+	sum := sha256.Sum256([]byte("tok"))
+	s := &Server{Domain: "boxes.example.com", routes: map[string]target{
+		"pi.b.boxes.example.com": {IP: ap.Addr(), Port: int(ap.Port()), TokenHash: hex.EncodeToString(sum[:])},
+	}}
+
+	for _, c := range []struct {
+		name, method string
+		hdr          map[string]string
+		headerAuth   bool
+		code         int
+	}{
+		{"own page", "POST", map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}, false, 200},
+		{"typed in", "GET", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}, false, 200},
+		{"link from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, false, 200},
+		{"fetch from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}, false, 403},
+		{"websocket from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "websocket", "Origin": "https://evil.boxes.example.com"}, false, 403},
+		{"form post from a sibling", "POST", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, false, 403},
+		{"old browser, sibling origin", "POST", map[string]string{"Origin": "https://evil.boxes.example.com"}, false, 403},
+		{"old browser, own origin", "POST", map[string]string{"Origin": "https://pi.b.boxes.example.com"}, false, 200},
+		{"not a browser", "POST", nil, false, 200},
+		{"basic auth from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "websocket", "Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("x:tok"))}, true, 403},
+		{"bearer from anywhere", "POST", map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://x.example"}, true, 200},
+	} {
+		r := httptest.NewRequest(c.method, "https://pi.b.boxes.example.com/ws", nil)
+		for k, v := range c.hdr {
+			r.Header.Set(k, v)
+		}
+		if c.headerAuth {
+			if r.Header.Get("Authorization") == "" {
+				r.Header.Set("Authorization", "Bearer tok")
+			}
+		} else {
+			r.AddCookie(&http.Cookie{Name: cookieName, Value: "tok"})
+		}
+		r.AddCookie(&http.Cookie{Name: oldCookie, Value: "tok"})
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, r)
+		if w.Code != c.code {
+			t.Errorf("%s: %d, want %d", c.name, w.Code, c.code)
+		}
+		if got := w.Header().Values("Origin-Agent-Cluster"); len(got) != 1 || got[0] != "?1" {
+			t.Errorf("%s: Origin-Agent-Cluster %q", c.name, got)
+		}
+		if c.code != 200 {
+			continue
+		}
+		want := []string{"s=1; Path=/; HttpOnly", "t=2"}
+		if got := w.Header().Values("Set-Cookie"); !slices.Equal(got, want) {
+			t.Errorf("%s: Set-Cookie %q, want %q", c.name, got, want)
+		}
+	}
+}
+
+func TestLoginCookie(t *testing.T) {
+	sum := sha256.Sum256([]byte("tok"))
+	s := &Server{Domain: "boxes.example.com", routes: map[string]target{
+		"pi.b.boxes.example.com": {TokenHash: hex.EncodeToString(sum[:])},
+	}}
+	w := httptest.NewRecorder()
+	s.ServeHTTP(w, httptest.NewRequest("GET", "https://pi.b.boxes.example.com"+loginPath+"?token=tok", nil))
+	c := w.Result().Cookies()
+	if len(c) != 1 || c[0].Name != cookieName || !c[0].Secure || c[0].Domain != "" || c[0].Path != "/" {
+		t.Errorf("login cookie %+v", c)
 	}
 }

@@ -1,6 +1,13 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host is one of the hosts of a box exposed with
 // `cyac expose` (see Hosts), and it carries the box's token. The root domain itself gets a splash page.
+//
+// Every host sits under one root domain, so to a browser they are all the
+// same site: cookies can be scoped to the root, and SameSite does nothing
+// between boxes. The proxy can't make the root a public suffix, so it
+// stands in for one where it can: it refuses cookie-authenticated requests
+// that another host started (see fromElsewhere), keeps its own cookie on
+// one host (__Host-), and keeps boxes' cookies on their own host too.
 package proxy
 
 import (
@@ -20,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,7 +37,10 @@ import (
 )
 
 const (
-	cookieName = "cyac_token"
+	// cookieName's __Host- prefix makes browsers refuse it with a Domain,
+	// so no other host can set or shadow it.
+	cookieName = "__Host-cyac_token"
+	oldCookie  = "cyac_token" // before the prefix; never forwarded either
 	loginPath  = "/__cyac/login"
 )
 
@@ -183,6 +194,8 @@ func (s *Server) HostPolicy(_ context.Context, host string) error {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Opt every host out of document.domain and into its own agent cluster.
+	w.Header().Set("Origin-Agent-Cluster", "?1")
 	if s.isRoot(r.Host) && r.URL.Path == "/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(splash)
@@ -205,6 +218,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	// Browsers add the cookie, and remembered basic auth, to requests from
+	// any host under the root, box or not; only this host's own pages may
+	// use them. A bearer token is never added for you.
+	bearer := strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if !bearer && fromElsewhere(r) {
+		http.Error(w, "cross-origin request refused", http.StatusForbidden)
+		return
+	}
 
 	rp := &httputil.ReverseProxy{
 		Transport: transport,
@@ -221,7 +242,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if fromHeader {
 				pr.Out.Header.Del("Authorization")
 			}
-			stripCookie(pr.Out, cookieName)
+			stripCookies(pr.Out, cookieName, oldCookie)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			resp.Header.Del("Origin-Agent-Cluster") // ours is already set
+			for i, c := range resp.Header["Set-Cookie"] {
+				resp.Header["Set-Cookie"][i] = hostOnly(c)
+			}
+			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			log.Printf("proxy %s: %v", r.Host, err)
@@ -240,7 +268,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request, t target) {
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: tok, Path: "/",
-		HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteLaxMode,
+		HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode,
 	})
 	http.Redirect(w, r, "/", http.StatusFound)
 }
@@ -268,11 +296,46 @@ func validToken(hash, tok string) bool {
 	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(hash)) == 1
 }
 
-func stripCookie(r *http.Request, name string) {
+// fromElsewhere reports whether a page on another origin started r, such
+// as another box's page fetching from or opening a websocket to this one.
+// A link or redirect from elsewhere may still open a page here.
+func fromElsewhere(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return false
+	case "":
+		// Not a browser, or one too old to say: go by Origin, which
+		// browsers send with websockets and anything but GET and HEAD.
+		o := r.Header.Get("Origin")
+		if o == "" {
+			return false
+		}
+		u, err := url.Parse(o)
+		return err != nil || !strings.EqualFold(u.Host, r.Host)
+	default:
+		safe := r.Method == http.MethodGet || r.Method == http.MethodHead
+		return !safe || r.Header.Get("Sec-Fetch-Mode") != "navigate"
+	}
+}
+
+// hostOnly drops the Domain attribute from a Set-Cookie value, so a box
+// can't set cookies for its siblings or the root.
+func hostOnly(setCookie string) string {
+	parts := strings.Split(setCookie, ";")
+	kept := parts[:1]
+	for _, p := range parts[1:] {
+		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "domain=") {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, ";")
+}
+
+func stripCookies(r *http.Request, names ...string) {
 	cookies := r.Cookies()
 	r.Header.Del("Cookie")
 	for _, c := range cookies {
-		if c.Name != name {
+		if !slices.Contains(names, c.Name) {
 			r.AddCookie(c)
 		}
 	}
