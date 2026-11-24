@@ -29,10 +29,12 @@ func TestReload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}}); err != nil {
+	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}, Tokens: map[string]string{"web": "ta"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveRoute(routes, "b", &Route{Ports: map[string]int{"ui": 80, "api": 3000}, TokenHash: "h"}); err != nil {
+	// "old" has no token (a route from before per-host tokens): not served.
+	if err := SaveRoute(routes, "b", &Route{Ports: map[string]int{"ui": 80, "api": 3000, "old": 1},
+		Tokens: map[string]string{"ui": "tui", "api": "tapi"}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := SaveRoute(routes, "gone", &Route{Ports: map[string]int{"web": 80}}); err != nil {
@@ -49,19 +51,22 @@ func TestReload(t *testing.T) {
 	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.1.10" {
 		t.Errorf("a: %+v, %v", tg, ok)
 	}
-	for host, port := range map[string]int{
-		"ui.b.boxes.example.com":  80,
-		"api.b.boxes.example.com": 3000,
+	for host, want := range map[string]struct {
+		port int
+		tok  string
+	}{
+		"ui.b.boxes.example.com":  {80, "tui"},
+		"api.b.boxes.example.com": {3000, "tapi"},
 	} {
 		tg, ok := s.lookup(host)
-		if !ok || tg.Port != port || tg.TokenHash != "h" || tg.IP.String() != "10.42.1.11" {
+		if !ok || tg.Port != want.port || !validToken(tg.TokenHash, want.tok) || tg.IP.String() != "10.42.1.11" {
 			t.Errorf("%s: %+v, %v", host, tg, ok)
 		}
 		if err := s.HostPolicy(context.Background(), host); err != nil {
 			t.Errorf("%s: no certificate: %v", host, err)
 		}
 	}
-	for _, host := range []string{"b.boxes.example.com", "x.b.boxes.example.com", "web.gone.boxes.example.com"} {
+	for _, host := range []string{"b.boxes.example.com", "x.b.boxes.example.com", "old.b.boxes.example.com", "web.gone.boxes.example.com"} {
 		if _, ok := s.lookup(host); ok {
 			t.Errorf("served %s", host)
 		}

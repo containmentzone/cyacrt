@@ -7,8 +7,6 @@ package server
 import (
 	"bufio"
 	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
@@ -54,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/stop", s.unit("stop"))
 	mux.HandleFunc("PUT /v1/boxes/{name}/route", s.expose)
 	mux.HandleFunc("DELETE /v1/boxes/{name}/route", s.unexpose)
+	mux.HandleFunc("POST /v1/boxes/{name}/route/regen", s.regen)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
 	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
 	return logRequests(mux)
@@ -161,19 +161,15 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name := r.PathValue("name")
-	route, tok, err := s.addRoute(name, req)
-	if err != nil {
-		reply(w, nil, err)
-		return
-	}
-	reply(w, api.Exposed{Hosts: proxy.Hosts(name, s.Domain, *route), Token: tok}, nil)
+	route, err := s.addRoute(name, req)
+	reply(w, s.exposed(name, route), err)
 }
 
 // addRoute exposes the image's default ports and req's on top, replacing
-// any earlier route and its token.
-func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, error) {
+// any earlier route. Names it had before keep their tokens.
+func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, error) {
 	if _, err := s.box(name); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	ports := map[string]int{}
 	if img := s.Run.Image(conf.KindBox, name); img != nil {
@@ -181,31 +177,95 @@ func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, er
 	}
 	maps.Copy(ports, req.Ports)
 	if len(ports) == 0 {
-		return nil, "", errors.New("no ports given, and the image exposes none")
+		return nil, errors.New("no ports given, and the image exposes none")
 	}
 	for n, p := range ports {
 		if !conf.ValidName(n) {
-			return nil, "", fmt.Errorf("invalid port name %q", n)
+			return nil, fmt.Errorf("invalid port name %q", n)
 		}
 		if p < 1 || p > 65535 {
-			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
+			return nil, fmt.Errorf("%s: need a port between 1 and 65535", n)
 		}
 	}
 	// autocert only serves hosts that pass the same check (no "--" in
 	// positions 3 and 4, no trailing hyphen).
 	for h := range proxy.Hosts(name, s.Domain, proxy.Route{Ports: ports}) {
 		if _, err := idna.Lookup.ToASCII(h); err != nil {
-			return nil, "", fmt.Errorf("%s can't get a certificate: %w", h, err)
+			return nil, fmt.Errorf("%s can't get a certificate: %w", h, err)
 		}
 	}
-	token := rand.Text()
-	sum := sha256.Sum256([]byte(token))
-	route := &proxy.Route{Ports: ports, TokenHash: hex.EncodeToString(sum[:])}
+	routes, err := proxy.LoadRoutes(s.Routes)
+	if err != nil {
+		return nil, err
+	}
+	route := &proxy.Route{Ports: ports, Tokens: map[string]string{}}
+	for n := range ports {
+		if tok := routes[name].Tokens[n]; tok != "" {
+			route.Tokens[n] = tok
+		} else {
+			route.Tokens[n] = rand.Text()
+		}
+	}
 	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	slog.Info("exposed route", "box", name, "ports", ports)
-	return route, token, s.RoutesChanged()
+	return route, s.RoutesChanged()
+}
+
+// regen gives the named ports of an exposed box new tokens (all of
+// them if none are named), which logs out everyone using the old ones.
+func (s *Server) regen(w http.ResponseWriter, r *http.Request) {
+	var req api.Regen
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		reply(w, nil, err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	name := r.PathValue("name")
+	route, err := s.regenTokens(name, req.Names)
+	reply(w, s.exposed(name, route), err)
+}
+
+func (s *Server) regenTokens(name string, names []string) (*proxy.Route, error) {
+	routes, err := proxy.LoadRoutes(s.Routes)
+	if err != nil {
+		return nil, err
+	}
+	route, ok := routes[name]
+	if !ok {
+		return nil, fmt.Errorf("%s is not exposed", name)
+	}
+	if len(names) == 0 {
+		names = slices.Collect(maps.Keys(route.Ports))
+	}
+	if route.Tokens == nil {
+		route.Tokens = map[string]string{}
+	}
+	for _, n := range names {
+		if _, ok := route.Ports[n]; !ok {
+			return nil, fmt.Errorf("%s has no port named %q", name, n)
+		}
+		route.Tokens[n] = rand.Text()
+	}
+	if err := proxy.SaveRoute(s.Routes, name, &route); err != nil {
+		return nil, err
+	}
+	slog.Info("regenerated tokens", "box", name, "ports", names)
+	return &route, s.RoutesChanged()
+}
+
+// exposed is what expose and regen answer: every host with its token.
+func (s *Server) exposed(name string, r *proxy.Route) *api.Exposed {
+	if r == nil {
+		return nil
+	}
+	e := &api.Exposed{Hosts: map[string]api.Host{}}
+	for n, port := range r.Ports {
+		e.Hosts[proxy.Host(n, name, s.Domain)] = api.Host{Port: port, Token: r.Tokens[n]}
+	}
+	return e
 }
 
 func (s *Server) unexpose(w http.ResponseWriter, r *http.Request) {

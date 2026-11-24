@@ -13,6 +13,7 @@
 //	POST   /v1/boxes/{name}/stop     systemctl stop cybox@<name>
 //	PUT    /v1/boxes/{name}/route    Expose → Exposed
 //	DELETE /v1/boxes/{name}/route
+//	POST   /v1/boxes/{name}/route/regen  Regen → Exposed
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
 //	POST   /v1/boxes/{name}/console  101, then the console log's tail and new output; input goes to the console
 //
@@ -42,10 +43,21 @@ type Expose struct {
 	Ports map[string]int `json:"ports"`
 }
 
-// Exposed answers Expose. The token is only ever shown here.
+// Exposed answers Expose and Regen.
 type Exposed struct {
-	Hosts map[string]int `json:"hosts"`
-	Token string         `json:"token"`
+	Hosts map[string]Host `json:"hosts"`
+}
+
+// Host is one exposed host: the port in the box and the token it takes.
+type Host struct {
+	Port  int    `json:"port"`
+	Token string `json:"token"`
+}
+
+// Regen gives the named ports of an exposed box new tokens; no names
+// means all of them.
+type Regen struct {
+	Names []string `json:"names"`
 }
 
 // Exec starts a command on a pty in the box. Rows and Cols set the initial
