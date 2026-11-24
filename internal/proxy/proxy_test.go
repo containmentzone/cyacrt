@@ -120,7 +120,7 @@ func TestCrossHost(t *testing.T) {
 		}
 		w.Header().Set("Origin-Agent-Cluster", "?0")
 		w.Header().Add("Set-Cookie", "s=1; Path=/; Domain=boxes.example.com; HttpOnly")
-		w.Header().Add("Set-Cookie", "t=2; domain=.example.com")
+		w.Header().Add("Set-Cookie", "t=2; domain=.example.com; Domain =x.example.com")
 	}))
 	defer box.Close()
 	ap := netip.MustParseAddrPort(strings.TrimPrefix(box.URL, "http://"))
@@ -136,8 +136,9 @@ func TestCrossHost(t *testing.T) {
 		code         int
 	}{
 		{"own page", "POST", map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors"}, false, 200},
-		{"typed in", "GET", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate"}, false, 200},
-		{"link from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, false, 200},
+		{"typed in", "GET", map[string]string{"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, false, 200},
+		{"link from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, false, 200},
+		{"frame on a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "iframe"}, false, 403},
 		{"fetch from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "cors"}, false, 403},
 		{"websocket from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "websocket", "Origin": "https://evil.boxes.example.com"}, false, 403},
 		{"form post from a sibling", "POST", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, false, 403},
@@ -173,6 +174,9 @@ func TestCrossHost(t *testing.T) {
 		want := []string{"s=1; Path=/; HttpOnly", "t=2"}
 		if got := w.Header().Values("Set-Cookie"); !slices.Equal(got, want) {
 			t.Errorf("%s: Set-Cookie %q, want %q", c.name, got, want)
+		}
+		if !slices.Contains(w.Header().Values("Vary"), "Sec-Fetch-Site") {
+			t.Errorf("%s: no Vary: Sec-Fetch-Site", c.name)
 		}
 	}
 }

@@ -246,6 +246,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("Origin-Agent-Cluster") // ours is already set
+			// What we let through depends on Sec-Fetch-Site, so a browser
+			// mustn't hand a sibling what it cached for this host's pages.
+			resp.Header.Add("Vary", "Sec-Fetch-Site")
 			for i, c := range resp.Header["Set-Cookie"] {
 				resp.Header["Set-Cookie"][i] = hostOnly(c)
 			}
@@ -298,7 +301,8 @@ func validToken(hash, tok string) bool {
 
 // fromElsewhere reports whether a page on another origin started r, such
 // as another box's page fetching from or opening a websocket to this one.
-// A link or redirect from elsewhere may still open a page here.
+// A link or redirect from elsewhere may still open a page here, but not
+// inside a frame.
 func fromElsewhere(r *http.Request) bool {
 	switch r.Header.Get("Sec-Fetch-Site") {
 	case "same-origin", "none":
@@ -314,7 +318,8 @@ func fromElsewhere(r *http.Request) bool {
 		return err != nil || !strings.EqualFold(u.Host, r.Host)
 	default:
 		safe := r.Method == http.MethodGet || r.Method == http.MethodHead
-		return !safe || r.Header.Get("Sec-Fetch-Mode") != "navigate"
+		return !safe || r.Header.Get("Sec-Fetch-Mode") != "navigate" ||
+			r.Header.Get("Sec-Fetch-Dest") != "document"
 	}
 }
 
@@ -324,7 +329,8 @@ func hostOnly(setCookie string) string {
 	parts := strings.Split(setCookie, ";")
 	kept := parts[:1]
 	for _, p := range parts[1:] {
-		if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "domain=") {
+		name, _, _ := strings.Cut(p, "=")
+		if !strings.EqualFold(strings.TrimSpace(name), "domain") {
 			kept = append(kept, p)
 		}
 	}
