@@ -99,13 +99,16 @@ type Server struct {
 	// Domain is the root domain; port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 
-	mu     sync.RWMutex
-	routes map[string]target // by lowercased host
+	reloadMu sync.Mutex // one Reload at a time, so an older read can't publish last
+	mu       sync.RWMutex
+	routes   map[string]target // by lowercased host
 }
 
 // Reload rebuilds the route table from the routes and the conf. A route
 // whose box is gone from the conf is kept on disk but not served.
 func (s *Server) Reload() error {
+	s.reloadMu.Lock()
+	defer s.reloadMu.Unlock()
 	c, _, err := conf.Load(s.Conf)
 	if err != nil {
 		return err
