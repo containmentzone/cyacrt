@@ -87,9 +87,9 @@ in
         type = lib.types.str;
         example = "boxes.example.com";
         description = ''
-          Root domain for exposed boxes: `cyac expose web 8000` serves
-          https://web.<domain>. Point a wildcard DNS record for it at this
-          host. The proxy always serves :80 and :443 and gets Let's Encrypt
+          Root domain for exposed boxes: `cyac expose web app=8000`
+          serves https://app.web.<domain>. Point a wildcard DNS record
+          (*.<domain>) at this host. The proxy always serves :80 and :443 and gets Let's Encrypt
           certificates on demand, using security.acme.defaults.email when
           set; it requires security.acme.acceptTerms.
         '';

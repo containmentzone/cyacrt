@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/net/idna"
 
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/conf"
@@ -37,7 +39,7 @@ type Server struct {
 	Run  *run.Runner // to see which boxes run, and reach them
 	// Routes is where exposed routes are kept (see proxy.SaveRoute).
 	Routes string
-	// Domain is the root domain: a box's route is always <name>.<Domain>.
+	// Domain is the root domain: port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 	// RoutesChanged is called after every route change (the proxy's Reload).
 	RoutesChanged func() error
@@ -131,7 +133,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			v.Status = "running (" + rt.Name() + ")"
 		}
 		if rt, ok := routes[name]; ok {
-			v.Route = &api.Route{Host: name + "." + s.Domain, Port: rt.Port, Public: rt.Public}
+			v.Route = &api.Route{Hosts: proxy.Hosts(name, s.Domain, rt)}
 		}
 		out = append(out, v)
 	}
@@ -159,30 +161,51 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name := r.PathValue("name")
-	tok, err := s.addRoute(name, req)
-	reply(w, api.Exposed{Host: name + "." + s.Domain, Token: tok}, err)
+	route, tok, err := s.addRoute(name, req)
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	reply(w, api.Exposed{Hosts: proxy.Hosts(name, s.Domain, *route), Token: tok}, nil)
 }
 
-// addRoute exposes one port of the box at <name>.<Domain>, replacing any
-// earlier route and its token.
-func (s *Server) addRoute(name string, req api.Expose) (token string, err error) {
+// addRoute exposes the image's default ports and req's on top, replacing
+// any earlier route and its token.
+func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, error) {
 	if _, err := s.box(name); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	if req.Port < 1 || req.Port > 65535 {
-		return "", errors.New("need a port between 1 and 65535")
+	ports := map[string]int{}
+	if img := s.Run.Image(conf.KindBox, name); img != nil {
+		maps.Copy(ports, img.Expose)
 	}
-	route := &proxy.Route{Port: req.Port, Public: req.Public}
-	if !req.Public {
-		token = rand.Text()
-		sum := sha256.Sum256([]byte(token))
-		route.TokenHash = hex.EncodeToString(sum[:])
+	maps.Copy(ports, req.Ports)
+	if len(ports) == 0 {
+		return nil, "", errors.New("no ports given, and the image exposes none")
 	}
+	for n, p := range ports {
+		if !conf.ValidName(n) {
+			return nil, "", fmt.Errorf("invalid port name %q", n)
+		}
+		if p < 1 || p > 65535 {
+			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
+		}
+	}
+	// autocert only serves hosts that pass the same check (no "--" in
+	// positions 3 and 4, no trailing hyphen).
+	for h := range proxy.Hosts(name, s.Domain, proxy.Route{Ports: ports}) {
+		if _, err := idna.Lookup.ToASCII(h); err != nil {
+			return nil, "", fmt.Errorf("%s can't get a certificate: %w", h, err)
+		}
+	}
+	token := rand.Text()
+	sum := sha256.Sum256([]byte(token))
+	route := &proxy.Route{Ports: ports, TokenHash: hex.EncodeToString(sum[:])}
 	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	slog.Info("exposed route", "box", name, "host", name+"."+s.Domain, "port", req.Port, "public", req.Public)
-	return token, s.RoutesChanged()
+	slog.Info("exposed route", "box", name, "ports", ports)
+	return route, token, s.RoutesChanged()
 }
 
 func (s *Server) unexpose(w http.ResponseWriter, r *http.Request) {

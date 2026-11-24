@@ -23,6 +23,9 @@ type Box struct {
 	// User is who `cyac shell` runs as, from the image's login-user label;
 	// empty means root.
 	User string `json:"user,omitempty"`
+	// Expose is what `cyac expose` serves by default, from the image's
+	// cyac.nullvoid.space/expose.<name>=<port> labels.
+	Expose map[string]int `json:"expose,omitempty"`
 }
 
 // Store is where a kind of workload keeps its files, and its disks as

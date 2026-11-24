@@ -10,24 +10,29 @@ import (
 )
 
 // Routes come from the route dir, addresses from the conf, and a route
-// whose box has no file isn't served.
+// whose box has no file isn't served. Each named port gets its own host,
+// and the bare box host gets nothing.
 func TestReload(t *testing.T) {
 	confDir, routes := t.TempDir(), filepath.Join(t.TempDir(), "routes")
 	for name, content := range map[string]string{
 		"dev.cynetwork": "[Network]\nIndex=1\n",
 		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
+		"b.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n",
 	} {
 		if err := os.WriteFile(filepath.Join(confDir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := SaveRoute(routes, "a", &Route{Port: 8080, Public: true}); err != nil {
+	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveRoute(routes, "gone", &Route{Port: 80}); err != nil {
+	if err := SaveRoute(routes, "b", &Route{Ports: map[string]int{"ui": 80, "api": 3000}, TokenHash: "h"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := SaveRoute(routes, "../x", &Route{Port: 80}); err == nil {
+	if err := SaveRoute(routes, "gone", &Route{Ports: map[string]int{"web": 80}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveRoute(routes, "../x", &Route{Ports: map[string]int{"web": 80}}); err == nil {
 		t.Error("saved a route under a path")
 	}
 
@@ -35,18 +40,32 @@ func TestReload(t *testing.T) {
 	if err := s.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if tg, ok := s.lookup("A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.1.10" {
+	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.1.10" {
 		t.Errorf("a: %+v, %v", tg, ok)
 	}
-	if _, ok := s.lookup("gone.boxes.example.com"); ok {
-		t.Error("served a route without a box")
+	for host, port := range map[string]int{
+		"ui.b.boxes.example.com":  80,
+		"api.b.boxes.example.com": 3000,
+	} {
+		tg, ok := s.lookup(host)
+		if !ok || tg.Port != port || tg.TokenHash != "h" || tg.IP.String() != "10.42.1.11" {
+			t.Errorf("%s: %+v, %v", host, tg, ok)
+		}
+		if err := s.HostPolicy(context.Background(), host); err != nil {
+			t.Errorf("%s: no certificate: %v", host, err)
+		}
+	}
+	for _, host := range []string{"b.boxes.example.com", "x.b.boxes.example.com", "web.gone.boxes.example.com"} {
+		if _, ok := s.lookup(host); ok {
+			t.Errorf("served %s", host)
+		}
 	}
 
 	if err := SaveRoute(routes, "a", nil); err != nil {
 		t.Fatal(err)
 	}
 	s.Reload()
-	if _, ok := s.lookup("a.boxes.example.com"); ok {
+	if _, ok := s.lookup("web.a.boxes.example.com"); ok {
 		t.Error("removed route still served")
 	}
 }

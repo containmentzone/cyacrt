@@ -52,3 +52,19 @@ func TestPickMode(t *testing.T) {
 		}
 	}
 }
+
+func TestExposes(t *testing.T) {
+	got, err := exposes(map[string]string{
+		"cyac.nullvoid.space/expose":      "8000", // no name: ignored
+		"cyac.nullvoid.space/expose.pi":   "8787",
+		"cyac.nullvoid.space/exposed":     "x", // not ours
+		"cyac.nullvoid.space/login-user":  "ubuntu",
+		"org.opencontainers.image.source": "x",
+	})
+	if err != nil || len(got) != 1 || got["pi"] != 8787 {
+		t.Errorf("got %v, %v", got, err)
+	}
+	if _, err := exposes(map[string]string{"cyac.nullvoid.space/expose.web": "http"}); err == nil {
+		t.Error("took a port that isn't a number")
+	}
+}

@@ -161,12 +161,16 @@ its packets could reach. A sealed network gets no answers for outside
 names.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
-:443. `cyac expose <box> <port>` exposes one port of a box, always at
-`<box>.<root domain>`; the root domain is the daemon's required
-`--domain`. The root domain itself answers `/` with a splash page; a
-request for any other host or path gets a 404. Unless a route is
-`--public`, the request also needs that route's token, as
-`Authorization: Bearer`, as a basic-auth password, or as a cookie set by
+:443. `cyac expose <box> [<name>=<port>...]` exposes named ports of a box, each
+at `<name>.<box>.<root domain>`; the bare `<box>.<root domain>` serves
+nothing. On top of those it exposes the image's default ports, from labels
+`cyac.nullvoid.space/expose.<name>=<port>`, read when the disk is seeded; a port given on the command line wins over a label of the
+same name. The root domain is the daemon's required `--domain`, and one
+wildcard record, `*.<root domain>`, covers every host. Running `expose`
+again replaces the box's ports and token. The root domain itself answers
+`/` with a splash page; a request for any other host or path gets a 404.
+Every request needs the box's token,
+as `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
 visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
 any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
 certificates are requested on demand, at the first TLS handshake for an
@@ -274,7 +278,7 @@ cyac start web                      # seeds the disk on its first start
 cyac ls
 cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
-cyac expose web 8000                # https://web.boxes.example.com, prints a token
+cyac expose web app=8000           # https://app.web.… and the image's defaults; prints a token
 cyac unexpose web
 cyac stop web
 ```

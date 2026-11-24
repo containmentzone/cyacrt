@@ -1,7 +1,6 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
-// reaches a box only if its Host is <box>.<root domain> for a box exposed
-// with `cyac expose`, and, unless that route is public, it carries the
-// route's token. The root domain itself gets a splash page.
+// reaches a box only if its Host is one of the hosts of a box exposed with
+// `cyac expose` (see Hosts), and it carries the box's token. The root domain itself gets a splash page.
 package proxy
 
 import (
@@ -39,17 +38,27 @@ const (
 //go:embed splash.html
 var splash []byte
 
-// Route exposes one port of a box at <name>.<root domain>. Nothing is
-// reachable without one.
+// Route exposes a box's named ports. Nothing is reachable without one.
 type Route struct {
-	Port      int    `json:"port"`
-	Public    bool   `json:"public,omitempty"`
-	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+	// Ports maps names to ports in the box; see Hosts.
+	Ports     map[string]int `json:"ports,omitempty"`
+	TokenHash string         `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+}
+
+// Hosts returns the hosts box answers at under domain, with their ports:
+// <name>.<box>.<domain> for each named port.
+func Hosts(box, domain string, r Route) map[string]int {
+	hosts := map[string]int{}
+	for name, port := range r.Ports {
+		hosts[strings.ToLower(name+"."+box+"."+domain)] = port
+	}
+	return hosts
 }
 
 type target struct {
-	Route
-	IP netip.Addr
+	IP        netip.Addr
+	Port      int
+	TokenHash string
 }
 
 // transport reaches boxes on their networks. Boxes are local, so connecting is
@@ -68,7 +77,7 @@ var transport = &http.Transport{
 type Server struct {
 	Conf   string // conf dir: where boxes and their addresses come from
 	Routes string // route dir (see SaveRoute)
-	// Domain is the root domain; box b answers at <b>.<Domain>.
+	// Domain is the root domain; port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 
 	mu     sync.RWMutex
@@ -88,8 +97,12 @@ func (s *Server) Reload() error {
 	}
 	routes := map[string]target{}
 	for name, r := range saved {
-		if b := c.Boxes[name]; b != nil {
-			routes[name+"."+strings.ToLower(s.Domain)] = target{Route: r, IP: b.Address}
+		b := c.Boxes[name]
+		if b == nil {
+			continue
+		}
+		for host, port := range Hosts(name, s.Domain, r) {
+			routes[host] = target{IP: b.Address, Port: port, TokenHash: r.TokenHash}
 		}
 	}
 	s.mu.Lock()
@@ -187,7 +200,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok, fromHeader := tokenFrom(r)
-	if !t.Public && !validToken(t.Route, tok) {
+	if !validToken(t.TokenHash, tok) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="cyac"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -221,7 +234,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // login trades ?token= for a cookie so browsers don't need basic auth.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, t target) {
 	tok := r.URL.Query().Get("token")
-	if !t.Public && !validToken(t.Route, tok) {
+	if !validToken(t.TokenHash, tok) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
@@ -247,12 +260,12 @@ func tokenFrom(r *http.Request) (tok string, fromHeader bool) {
 	return "", false
 }
 
-func validToken(rt Route, tok string) bool {
-	if tok == "" || rt.TokenHash == "" {
+func validToken(hash, tok string) bool {
+	if tok == "" || hash == "" {
 		return false
 	}
 	sum := sha256.Sum256([]byte(tok))
-	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(rt.TokenHash)) == 1
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(hash)) == 1
 }
 
 func stripCookie(r *http.Request, name string) {
