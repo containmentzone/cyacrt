@@ -26,16 +26,16 @@ var loginUserLabels = []string{"cyac.nullvoid.space/login-user", "exe.dev/login-
 
 var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 
-// exposeLabel, alone or followed by .<name>, gives a port `cyac expose`
-// serves by default.
-const exposeLabel = "cyac.nullvoid.space/expose"
+// exposeLabel followed by <name> gives a port `cyac expose` serves by
+// default, as <name>.
+const exposeLabel = "cyac.nullvoid.space/expose."
 
 // exposes reads the default exposes from an image's labels, by name.
 func exposes(labels map[string]string) (map[string]int, error) {
 	var ports map[string]int
 	for label, v := range labels {
 		name, ok := strings.CutPrefix(label, exposeLabel)
-		if !ok || name != "" && name[0] != '.' {
+		if !ok {
 			continue
 		}
 		port, err := strconv.Atoi(v)
@@ -45,7 +45,7 @@ func exposes(labels map[string]string) (map[string]int, error) {
 		if ports == nil {
 			ports = map[string]int{}
 		}
-		ports[strings.TrimPrefix(name, ".")] = port
+		ports[name] = port
 	}
 	return ports, nil
 }

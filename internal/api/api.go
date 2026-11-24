@@ -37,7 +37,7 @@ type Route struct {
 }
 
 // Expose replaces the box's route. Each named port answers at
-// <name>.<box>.<root domain> and the port named "" at <box>.<root domain>.
+// <name>.<box>.<root domain>.
 // Ports go on top of the image's default exposes (see box.Box.Expose).
 type Expose struct {
 	Ports  map[string]int `json:"ports"`

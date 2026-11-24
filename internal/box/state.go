@@ -24,8 +24,7 @@ type Box struct {
 	// empty means root.
 	User string `json:"user,omitempty"`
 	// Expose is what `cyac expose` serves by default, from the image's
-	// cyac.nullvoid.space/expose.<name>=<port> labels (and
-	// cyac.nullvoid.space/expose=<port> for the unnamed port).
+	// cyac.nullvoid.space/expose.<name>=<port> labels.
 	Expose map[string]int `json:"expose,omitempty"`
 }
 

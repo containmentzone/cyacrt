@@ -161,12 +161,10 @@ its packets could reach. A sealed network gets no answers for outside
 names.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
-:443. `cyac expose <box> [<port>] [<name>=<port>...]` exposes ports of a
-box: an unnamed port at `<box>.<root domain>` and each named one at
-`<name>.<box>.<root domain>`. On top of those it exposes the image's
-default ports, from labels `cyac.nullvoid.space/expose.<name>=<port>` (and
-`cyac.nullvoid.space/expose=<port>` for the unnamed one), read when the
-disk is seeded; a port given on the command line wins over a label of the
+:443. `cyac expose <box> [<name>=<port>...]` exposes named ports of a box, each
+at `<name>.<box>.<root domain>`; the bare `<box>.<root domain>` serves
+nothing. On top of those it exposes the image's default ports, from labels
+`cyac.nullvoid.space/expose.<name>=<port>`, read when the disk is seeded; a port given on the command line wins over a label of the
 same name. The root domain is the daemon's required `--domain`, and one
 wildcard record, `*.<root domain>`, covers every host. Running `expose`
 again replaces the box's ports and token. The root domain itself answers
@@ -280,7 +278,7 @@ cyac start web                      # seeds the disk on its first start
 cyac ls
 cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
-cyac expose web 8000 api=3000       # https://web.…, https://api.web.… and the image's defaults; prints a token
+cyac expose web app=8000           # https://app.web.… and the image's defaults; prints a token
 cyac unexpose web
 cyac stop web
 ```

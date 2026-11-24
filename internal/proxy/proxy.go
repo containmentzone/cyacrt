@@ -42,24 +42,17 @@ var splash []byte
 // Route exposes a box's named ports. Nothing is reachable without one.
 type Route struct {
 	// Ports maps names to ports in the box; see Hosts.
-	Ports map[string]int `json:"ports,omitempty"`
-	// Port is the format from before named ports, read as Ports[""].
-	Port      int    `json:"port,omitempty"`
-	Public    bool   `json:"public,omitempty"`
-	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
+	Ports     map[string]int `json:"ports,omitempty"`
+	Public    bool           `json:"public,omitempty"`
+	TokenHash string         `json:"token_hash,omitempty"` // hex sha256 of the bearer token
 }
 
 // Hosts returns the hosts box answers at under domain, with their ports:
-// <name>.<box>.<domain> for each named port and <box>.<domain> for the
-// port named "".
+// <name>.<box>.<domain> for each named port.
 func Hosts(box, domain string, r Route) map[string]int {
 	hosts := map[string]int{}
 	for name, port := range r.Ports {
-		h := box + "." + domain
-		if name != "" {
-			h = name + "." + h
-		}
-		hosts[strings.ToLower(h)] = port
+		hosts[strings.ToLower(name+"."+box+"."+domain)] = port
 	}
 	return hosts
 }
@@ -87,7 +80,7 @@ var transport = &http.Transport{
 type Server struct {
 	Conf   string // conf dir: where boxes and their addresses come from
 	Routes string // route dir (see SaveRoute)
-	// Domain is the root domain; box b answers at <b>.<Domain>.
+	// Domain is the root domain; port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 
 	mu     sync.RWMutex
@@ -136,9 +129,6 @@ func LoadRoutes(dir string) (map[string]Route, error) {
 		var r Route
 		if err := json.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("%s: %w", f, err)
-		}
-		if r.Ports == nil && r.Port != 0 {
-			r.Ports, r.Port = map[string]int{"": r.Port}, 0
 		}
 		routes[strings.TrimSuffix(filepath.Base(f), ".json")] = r
 	}

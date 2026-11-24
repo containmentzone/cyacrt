@@ -38,7 +38,7 @@ type Server struct {
 	Run  *run.Runner // to see which boxes run, and reach them
 	// Routes is where exposed routes are kept (see proxy.SaveRoute).
 	Routes string
-	// Domain is the root domain: a box's route is always <name>.<Domain>.
+	// Domain is the root domain: port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
 	// RoutesChanged is called after every route change (the proxy's Reload).
 	RoutesChanged func() error
@@ -183,7 +183,7 @@ func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, er
 		return nil, "", errors.New("no ports given, and the image exposes none")
 	}
 	for n, p := range ports {
-		if n != "" && !conf.ValidName(n) {
+		if !conf.ValidName(n) {
 			return nil, "", fmt.Errorf("invalid port name %q", n)
 		}
 		if p < 1 || p > 65535 {

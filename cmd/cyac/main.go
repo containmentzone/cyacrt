@@ -47,9 +47,8 @@ const usage = `usage: cyac <command> [args]
   stop <name>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
-  expose <name> [<port>] [<pname>=<port>...] [--public]
-                                serve <port> at https://<name>.<root domain> and
-                                each <pname>=<port> at https://<pname>.<name>.<root domain>,
+  expose <name> [<pname>=<port>...] [--public]
+                                serve each <pname>=<port> at https://<pname>.<name>.<root domain>,
                                 on top of the image's cyac.nullvoid.space/expose[.<pname>]
                                 labels; --public drops the token
   unexpose <name>
@@ -241,12 +240,9 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		ports := map[string]int{}
 		for _, a := range pos[1:] {
 			name, p, ok := strings.Cut(a, "=")
-			if !ok {
-				name, p = "", a
-			}
 			port, err := strconv.Atoi(p)
-			if err != nil {
-				return fmt.Errorf("bad port %q", a)
+			if !ok || err != nil {
+				return fmt.Errorf("bad port %q, want <name>=<port>", a)
 			}
 			if _, dup := ports[name]; dup {
 				return fmt.Errorf("port %q named twice", name)
@@ -282,7 +278,7 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 // and the proxy on the network.
 func daemon(socket string, args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
-	domain := fs.String("domain", "", "proxy: root domain; box b answers at b.<domain> (required)")
+	domain := fs.String("domain", "", "proxy: root domain; box b's port p answers at p.b.<domain> (required)")
 	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
 	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
 	parse(fs, args, 0)
