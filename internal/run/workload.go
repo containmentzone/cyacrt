@@ -170,6 +170,11 @@ func (r *Runner) runtime(want string) (driver.Runtime, error) {
 		}
 		err := rt.Available()
 		if err == nil {
+			// Say why the runtimes before it were passed over: a box
+			// that should be a VM otherwise just quietly runs under runc.
+			for _, w := range why {
+				log.Printf("not using %s", w)
+			}
 			return rt, nil
 		}
 		why = append(why, rt.Name()+": "+err.Error())
