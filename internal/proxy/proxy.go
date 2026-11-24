@@ -39,26 +39,19 @@ const (
 //go:embed splash.html
 var splash []byte
 
-// The pi agent (pi-web-cyac) answers at pi.<box>.<root domain> on every
-// exposed box, always behind the token.
-const (
-	PiName = "pi"
-	PiPort = 8787
-)
-
 // Route exposes a box's named ports. Nothing is reachable without one.
 type Route struct {
 	// Ports maps names to ports in the box; see Hosts.
 	Ports map[string]int `json:"ports,omitempty"`
 	// Port is the format from before named ports, read as Ports[""].
 	Port      int    `json:"port,omitempty"`
-	Public    bool   `json:"public,omitempty"`     // Ports need no token; pi always does
+	Public    bool   `json:"public,omitempty"`
 	TokenHash string `json:"token_hash,omitempty"` // hex sha256 of the bearer token
 }
 
 // Hosts returns the hosts box answers at under domain, with their ports:
-// <name>.<box>.<domain> for each named port, <box>.<domain> for the port
-// named "", and pi.<box>.<domain> for the pi agent.
+// <name>.<box>.<domain> for each named port and <box>.<domain> for the
+// port named "".
 func Hosts(box, domain string, r Route) map[string]int {
 	hosts := map[string]int{}
 	for name, port := range r.Ports {
@@ -68,7 +61,6 @@ func Hosts(box, domain string, r Route) map[string]int {
 		}
 		hosts[strings.ToLower(h)] = port
 	}
-	hosts[strings.ToLower(PiName+"."+box+"."+domain)] = PiPort
 	return hosts
 }
 
@@ -119,9 +111,8 @@ func (s *Server) Reload() error {
 		if b == nil {
 			continue
 		}
-		pi := strings.ToLower(PiName + "." + name + "." + s.Domain)
 		for host, port := range Hosts(name, s.Domain, r) {
-			routes[host] = target{IP: b.Address, Port: port, Public: r.Public && host != pi, TokenHash: r.TokenHash}
+			routes[host] = target{IP: b.Address, Port: port, Public: r.Public, TokenHash: r.TokenHash}
 		}
 	}
 	s.mu.Lock()

@@ -10,9 +10,11 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -166,29 +168,39 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 	reply(w, api.Exposed{Hosts: proxy.Hosts(name, s.Domain, *route), Token: tok}, nil)
 }
 
-// addRoute exposes the box's named ports, replacing any earlier route
-// and its token. Every route gets a token, because pi always needs one.
+// addRoute exposes the image's default ports and req's on top, replacing
+// any earlier route and its token.
 func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, error) {
 	if _, err := s.box(name); err != nil {
 		return nil, "", err
 	}
-	for n, p := range req.Ports {
-		switch {
-		case n != "" && !conf.ValidName(n):
+	ports := map[string]int{}
+	if img := s.Run.Image(conf.KindBox, name); img != nil {
+		maps.Copy(ports, img.Expose)
+	}
+	maps.Copy(ports, req.Ports)
+	if len(ports) == 0 {
+		return nil, "", errors.New("no ports given, and the image exposes none")
+	}
+	for n, p := range ports {
+		if n != "" && !conf.ValidName(n) {
 			return nil, "", fmt.Errorf("invalid port name %q", n)
-		case n == proxy.PiName:
-			return nil, "", fmt.Errorf("%q is taken by the pi agent", n)
-		case p < 1 || p > 65535:
+		}
+		if p < 1 || p > 65535 {
 			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
 		}
 	}
-	token := rand.Text()
-	sum := sha256.Sum256([]byte(token))
-	route := &proxy.Route{Ports: req.Ports, Public: req.Public, TokenHash: hex.EncodeToString(sum[:])}
+	route := &proxy.Route{Ports: ports, Public: req.Public}
+	var token string
+	if !req.Public {
+		token = rand.Text()
+		sum := sha256.Sum256([]byte(token))
+		route.TokenHash = hex.EncodeToString(sum[:])
+	}
 	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
 		return nil, "", err
 	}
-	slog.Info("exposed route", "box", name, "ports", req.Ports, "public", req.Public)
+	slog.Info("exposed route", "box", name, "ports", ports, "public", req.Public)
 	return route, token, s.RoutesChanged()
 }
 

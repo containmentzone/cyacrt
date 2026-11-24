@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -24,6 +25,30 @@ import (
 var loginUserLabels = []string{"cyac.nullvoid.space/login-user", "exe.dev/login-user"}
 
 var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+
+// exposeLabel, alone or followed by .<name>, gives a port `cyac expose`
+// serves by default.
+const exposeLabel = "cyac.nullvoid.space/expose"
+
+// exposes reads the default exposes from an image's labels, by name.
+func exposes(labels map[string]string) (map[string]int, error) {
+	var ports map[string]int
+	for label, v := range labels {
+		name, ok := strings.CutPrefix(label, exposeLabel)
+		if !ok || name != "" && name[0] != '.' {
+			continue
+		}
+		port, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("label %s=%q is not a port", label, v)
+		}
+		if ports == nil {
+			ports = map[string]int{}
+		}
+		ports[strings.TrimPrefix(name, ".")] = port
+	}
+	return ports, nil
+}
 
 // Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
 // scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it onto a sparse
@@ -60,6 +85,9 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 			b.User = u
 			break
 		}
+	}
+	if b.Expose, err = exposes(cfg.Config.Labels); err != nil {
+		return err
 	}
 
 	scratch, err := os.MkdirTemp(filepath.Join(s.Dir, "disks"), b.Name+".seed-")

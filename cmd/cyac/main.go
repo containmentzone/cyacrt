@@ -48,10 +48,10 @@ const usage = `usage: cyac <command> [args]
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> [<port>] [<pname>=<port>...] [--public]
-                                serve <port> at https://<name>.<root domain>,
+                                serve <port> at https://<name>.<root domain> and
                                 each <pname>=<port> at https://<pname>.<name>.<root domain>,
-                                and the pi agent (:8787) at https://pi.<name>.<root domain>;
-                                --public drops the token, except for pi
+                                on top of the image's cyac.nullvoid.space/expose[.<pname>]
+                                labels; --public drops the token
   unexpose <name>
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
@@ -232,7 +232,7 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
-		public := fs.Bool("public", false, "no token required, except for pi")
+		public := fs.Bool("public", false, "no token required")
 		pos := positional(fs, args)
 		if len(pos) < 1 {
 			fmt.Fprint(os.Stderr, usage)
@@ -257,9 +257,14 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports, Public: *public}, &e); err != nil {
 			return err
 		}
-		fmt.Printf("token: %s\n", e.Token)
 		for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
-			fmt.Printf("https://%s → :%d\n  browser: https://%s/__cyac/login?token=%s\n", h, e.Hosts[h], h, e.Token)
+			fmt.Printf("https://%s → :%d\n", h, e.Hosts[h])
+			if e.Token != "" {
+				fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Token)
+			}
+		}
+		if e.Token != "" {
+			fmt.Printf("token: %s\n", e.Token)
 		}
 		return nil
 
