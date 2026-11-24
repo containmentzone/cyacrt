@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -131,7 +130,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			v.Status = "running (" + rt.Name() + ")"
 		}
 		if rt, ok := routes[name]; ok {
-			v.Route = &api.Route{Host: name + "." + s.Domain, Port: rt.Port, Public: rt.Public}
+			v.Route = &api.Route{Hosts: proxy.Hosts(name, s.Domain, rt), Public: rt.Public}
 		}
 		out = append(out, v)
 	}
@@ -159,30 +158,38 @@ func (s *Server) expose(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	name := r.PathValue("name")
-	tok, err := s.addRoute(name, req)
-	reply(w, api.Exposed{Host: name + "." + s.Domain, Token: tok}, err)
+	route, tok, err := s.addRoute(name, req)
+	if err != nil {
+		reply(w, nil, err)
+		return
+	}
+	reply(w, api.Exposed{Hosts: proxy.Hosts(name, s.Domain, *route), Token: tok}, nil)
 }
 
-// addRoute exposes one port of the box at <name>.<Domain>, replacing any
-// earlier route and its token.
-func (s *Server) addRoute(name string, req api.Expose) (token string, err error) {
+// addRoute exposes the box's named ports, replacing any earlier route
+// and its token. Every route gets a token, because pi always needs one.
+func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, error) {
 	if _, err := s.box(name); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	if req.Port < 1 || req.Port > 65535 {
-		return "", errors.New("need a port between 1 and 65535")
+	for n, p := range req.Ports {
+		switch {
+		case n != "" && !conf.ValidName(n):
+			return nil, "", fmt.Errorf("invalid port name %q", n)
+		case n == proxy.PiName:
+			return nil, "", fmt.Errorf("%q is taken by the pi agent", n)
+		case p < 1 || p > 65535:
+			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
+		}
 	}
-	route := &proxy.Route{Port: req.Port, Public: req.Public}
-	if !req.Public {
-		token = rand.Text()
-		sum := sha256.Sum256([]byte(token))
-		route.TokenHash = hex.EncodeToString(sum[:])
-	}
+	token := rand.Text()
+	sum := sha256.Sum256([]byte(token))
+	route := &proxy.Route{Ports: req.Ports, Public: req.Public, TokenHash: hex.EncodeToString(sum[:])}
 	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
-		return "", err
+		return nil, "", err
 	}
-	slog.Info("exposed route", "box", name, "host", name+"."+s.Domain, "port", req.Port, "public", req.Public)
-	return token, s.RoutesChanged()
+	slog.Info("exposed route", "box", name, "ports", req.Ports, "public", req.Public)
+	return route, token, s.RoutesChanged()
 }
 
 func (s *Server) unexpose(w http.ResponseWriter, r *http.Request) {

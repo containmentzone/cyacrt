@@ -32,21 +32,23 @@ type Box struct {
 }
 
 type Route struct {
-	Host   string `json:"host"` // always <box>.<root domain>
-	Port   int    `json:"port"`
-	Public bool   `json:"public,omitempty"`
+	Hosts  map[string]int `json:"hosts"` // host → port in the box
+	Public bool           `json:"public,omitempty"`
 }
 
+// Expose replaces the box's route. Each named port answers at
+// <name>.<box>.<root domain>, the port named "" at <box>.<root domain>,
+// and the pi agent always at pi.<box>.<root domain>. Public drops the
+// token for Ports, never for pi.
 type Expose struct {
-	Port   int  `json:"port"`
-	Public bool `json:"public,omitempty"`
+	Ports  map[string]int `json:"ports"`
+	Public bool           `json:"public,omitempty"`
 }
 
-// Exposed answers Expose. Token is only set, and only ever shown, when a
-// non-public route is created.
+// Exposed answers Expose. The token is only ever shown here.
 type Exposed struct {
-	Host  string `json:"host"`
-	Token string `json:"token,omitempty"`
+	Hosts map[string]int `json:"hosts"`
+	Token string         `json:"token"`
 }
 
 // Exec starts a command on a pty in the box. Rows and Cols set the initial

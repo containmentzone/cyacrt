@@ -161,12 +161,17 @@ its packets could reach. A sealed network gets no answers for outside
 names.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
-:443. `cyac expose <box> <port>` exposes one port of a box, always at
-`<box>.<root domain>`; the root domain is the daemon's required
-`--domain`. The root domain itself answers `/` with a splash page; a
-request for any other host or path gets a 404. Unless a route is
-`--public`, the request also needs that route's token, as
-`Authorization: Bearer`, as a basic-auth password, or as a cookie set by
+:443. `cyac expose <box> [<port>] [<name>=<port>...]` exposes ports of a
+box: an unnamed port at `<box>.<root domain>`, each named one at
+`<name>.<box>.<root domain>`, and always the pi agent
+([pi-web-cyac](https://github.com/containmentzone/pi-web-cyac), port 8787)
+at `pi.<box>.<root domain>`; pi has to listen on the box's address, not
+loopback (`PI_WEB_HOST=0.0.0.0`). The root domain is the daemon's required
+`--domain`, and one wildcard record, `*.<root domain>`, covers every host. Running `expose` again replaces the box's ports and token. The
+root domain itself answers `/` with a splash page; a request for any other
+host or path gets a 404. Every exposed host needs the box's token, unless
+the box was exposed `--public`, which never covers pi. The token goes
+as `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
 visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
 any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt
 certificates are requested on demand, at the first TLS handshake for an
@@ -274,7 +279,7 @@ cyac start web                      # seeds the disk on its first start
 cyac ls
 cyac shell web                      # a shell
 cyac console web                    # the console; Ctrl-] or Enter ~ . detaches
-cyac expose web 8000                # https://web.boxes.example.com, prints a token
+cyac expose web 8000 api=3000       # https://web.…, https://api.web.…, https://pi.web.…; prints a token
 cyac unexpose web
 cyac stop web
 ```

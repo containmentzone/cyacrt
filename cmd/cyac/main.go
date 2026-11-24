@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -45,7 +47,11 @@ const usage = `usage: cyac <command> [args]
   stop <name>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
-  expose <name> <port> [--public]  serve the port at https://<name>.<root domain>
+  expose <name> [<port>] [<pname>=<port>...] [--public]
+                                serve <port> at https://<name>.<root domain>,
+                                each <pname>=<port> at https://<pname>.<name>.<root domain>,
+                                and the pi agent (:8787) at https://pi.<name>.<root domain>;
+                                --public drops the token, except for pi
   unexpose <name>
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
@@ -200,7 +206,11 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 				if r.Public {
 					vis = "public"
 				}
-				route = fmt.Sprintf("%s→:%d (%s)", r.Host, r.Port, vis)
+				var hosts []string
+				for _, h := range slices.Sorted(maps.Keys(r.Hosts)) {
+					hosts = append(hosts, fmt.Sprintf("%s→:%d", h, r.Hosts[h]))
+				}
+				route = fmt.Sprintf("%s (%s)", strings.Join(hosts, " "), vis)
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", b.Name, b.Network, b.IP, b.Status, b.Image, route)
 		}
@@ -222,19 +232,34 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
-		public := fs.Bool("public", false, "no token required")
-		pos := parse(fs, args, 2)
-		port, err := strconv.Atoi(pos[1])
-		if err != nil {
-			return fmt.Errorf("bad port %q", pos[1])
+		public := fs.Bool("public", false, "no token required, except for pi")
+		pos := positional(fs, args)
+		if len(pos) < 1 {
+			fmt.Fprint(os.Stderr, usage)
+			os.Exit(2)
+		}
+		ports := map[string]int{}
+		for _, a := range pos[1:] {
+			name, p, ok := strings.Cut(a, "=")
+			if !ok {
+				name, p = "", a
+			}
+			port, err := strconv.Atoi(p)
+			if err != nil {
+				return fmt.Errorf("bad port %q", a)
+			}
+			if _, dup := ports[name]; dup {
+				return fmt.Errorf("port %q named twice", name)
+			}
+			ports[name] = port
 		}
 		var e api.Exposed
-		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Port: port, Public: *public}, &e); err != nil {
+		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports, Public: *public}, &e); err != nil {
 			return err
 		}
-		fmt.Printf("https://%s\n", e.Host)
-		if e.Token != "" {
-			fmt.Printf("token: %s\nbrowser: https://%s/__cyac/login?token=%s\n", e.Token, e.Host, e.Token)
+		fmt.Printf("token: %s\n", e.Token)
+		for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
+			fmt.Printf("https://%s → :%d\n  browser: https://%s/__cyac/login?token=%s\n", h, e.Hosts[h], h, e.Token)
 		}
 		return nil
 
@@ -390,6 +415,16 @@ func listenUnix(path, group string) (net.Listener, error) {
 
 // parse handles flags before or after positional args and requires exactly n of them.
 func parse(fs *flag.FlagSet, args []string, n int) []string {
+	pos := positional(fs, args)
+	if len(pos) != n {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	return pos
+}
+
+// positional parses args with flags anywhere and returns the rest.
+func positional(fs *flag.FlagSet, args []string) []string {
 	var pos []string
 	for {
 		fs.Parse(args)
@@ -398,10 +433,6 @@ func parse(fs *flag.FlagSet, args []string, n int) []string {
 		}
 		pos = append(pos, fs.Arg(0))
 		args = fs.Args()[1:]
-	}
-	if len(pos) != n {
-		fmt.Fprint(os.Stderr, usage)
-		os.Exit(2)
 	}
 	return pos
 }
