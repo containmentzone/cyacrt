@@ -47,10 +47,10 @@ const usage = `usage: cyac <command> [args]
   stop <name>
   shell [--root] <name> [cmd...] (default: bash -l, as the image's login user)
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
-  expose <name> [<pname>=<port>...] [--public]
+  expose <name> [<pname>=<port>...]
                                 serve each <pname>=<port> at https://<pname>.<name>.<root domain>,
                                 on top of the image's cyac.nullvoid.space/expose[.<pname>]
-                                labels; --public drops the token
+                                labels; prints the token they all need
   unexpose <name>
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
@@ -201,15 +201,11 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		for _, b := range boxes {
 			route := ""
 			if r := b.Route; r != nil {
-				vis := "token"
-				if r.Public {
-					vis = "public"
-				}
 				var hosts []string
 				for _, h := range slices.Sorted(maps.Keys(r.Hosts)) {
 					hosts = append(hosts, fmt.Sprintf("%s→:%d", h, r.Hosts[h]))
 				}
-				route = fmt.Sprintf("%s (%s)", strings.Join(hosts, " "), vis)
+				route = strings.Join(hosts, " ")
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", b.Name, b.Network, b.IP, b.Status, b.Image, route)
 		}
@@ -231,7 +227,6 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 		return c.Console(parse(fs, args, 1)[0])
 
 	case "expose":
-		public := fs.Bool("public", false, "no token required")
 		pos := positional(fs, args)
 		if len(pos) < 1 {
 			fmt.Fprint(os.Stderr, usage)
@@ -250,18 +245,14 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 			ports[name] = port
 		}
 		var e api.Exposed
-		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports, Public: *public}, &e); err != nil {
+		if err := c.Do("PUT", "/v1/boxes/"+pos[0]+"/route", api.Expose{Ports: ports}, &e); err != nil {
 			return err
 		}
 		for _, h := range slices.Sorted(maps.Keys(e.Hosts)) {
 			fmt.Printf("https://%s → :%d\n", h, e.Hosts[h])
-			if e.Token != "" {
-				fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Token)
-			}
+			fmt.Printf("  browser: https://%s/__cyac/login?token=%s\n", h, e.Token)
 		}
-		if e.Token != "" {
-			fmt.Printf("token: %s\n", e.Token)
-		}
+		fmt.Printf("token: %s\n", e.Token)
 		return nil
 
 	case "unexpose":

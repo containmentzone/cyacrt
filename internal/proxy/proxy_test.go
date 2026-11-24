@@ -23,7 +23,7 @@ func TestReload(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}, Public: true}); err != nil {
+	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := SaveRoute(routes, "b", &Route{Ports: map[string]int{"ui": 80, "api": 3000}, TokenHash: "h"}); err != nil {
@@ -40,7 +40,7 @@ func TestReload(t *testing.T) {
 	if err := s.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || !tg.Public || tg.IP.String() != "10.42.1.10" {
+	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.1.10" {
 		t.Errorf("a: %+v, %v", tg, ok)
 	}
 	for host, port := range map[string]int{

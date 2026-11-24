@@ -132,7 +132,7 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 			v.Status = "running (" + rt.Name() + ")"
 		}
 		if rt, ok := routes[name]; ok {
-			v.Route = &api.Route{Hosts: proxy.Hosts(name, s.Domain, rt), Public: rt.Public}
+			v.Route = &api.Route{Hosts: proxy.Hosts(name, s.Domain, rt)}
 		}
 		out = append(out, v)
 	}
@@ -190,17 +190,13 @@ func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, er
 			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
 		}
 	}
-	route := &proxy.Route{Ports: ports, Public: req.Public}
-	var token string
-	if !req.Public {
-		token = rand.Text()
-		sum := sha256.Sum256([]byte(token))
-		route.TokenHash = hex.EncodeToString(sum[:])
-	}
+	token := rand.Text()
+	sum := sha256.Sum256([]byte(token))
+	route := &proxy.Route{Ports: ports, TokenHash: hex.EncodeToString(sum[:])}
 	if err := proxy.SaveRoute(s.Routes, name, route); err != nil {
 		return nil, "", err
 	}
-	slog.Info("exposed route", "box", name, "ports", ports, "public", req.Public)
+	slog.Info("exposed route", "box", name, "ports", ports)
 	return route, token, s.RoutesChanged()
 }
 

@@ -169,7 +169,7 @@ same name. The root domain is the daemon's required `--domain`, and one
 wildcard record, `*.<root domain>`, covers every host. Running `expose`
 again replaces the box's ports and token. The root domain itself answers
 `/` with a splash page; a request for any other host or path gets a 404.
-Unless the box was exposed `--public`, every request needs its token,
+Every request needs the box's token,
 as `Authorization: Bearer`, as a basic-auth password, or as a cookie set by
 visiting `/__cyac/login?token=…`. The proxy strips its own credentials and
 any inbound `X-Cyac-*` headers before forwarding. Let's Encrypt

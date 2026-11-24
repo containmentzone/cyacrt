@@ -1,7 +1,6 @@
 // Package proxy is the HTTP front door. It is closed by default: a request
 // reaches a box only if its Host is one of the hosts of a box exposed with
-// `cyac expose` (see Hosts), and, unless that port is public, it carries
-// the box's token. The root domain itself gets a splash page.
+// `cyac expose` (see Hosts), and it carries the box's token. The root domain itself gets a splash page.
 package proxy
 
 import (
@@ -43,7 +42,6 @@ var splash []byte
 type Route struct {
 	// Ports maps names to ports in the box; see Hosts.
 	Ports     map[string]int `json:"ports,omitempty"`
-	Public    bool           `json:"public,omitempty"`
 	TokenHash string         `json:"token_hash,omitempty"` // hex sha256 of the bearer token
 }
 
@@ -60,7 +58,6 @@ func Hosts(box, domain string, r Route) map[string]int {
 type target struct {
 	IP        netip.Addr
 	Port      int
-	Public    bool
 	TokenHash string
 }
 
@@ -105,7 +102,7 @@ func (s *Server) Reload() error {
 			continue
 		}
 		for host, port := range Hosts(name, s.Domain, r) {
-			routes[host] = target{IP: b.Address, Port: port, Public: r.Public, TokenHash: r.TokenHash}
+			routes[host] = target{IP: b.Address, Port: port, TokenHash: r.TokenHash}
 		}
 	}
 	s.mu.Lock()
@@ -203,7 +200,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tok, fromHeader := tokenFrom(r)
-	if !t.Public && !validToken(t.TokenHash, tok) {
+	if !validToken(t.TokenHash, tok) {
 		w.Header().Set("WWW-Authenticate", `Basic realm="cyac"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -237,7 +234,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // login trades ?token= for a cookie so browsers don't need basic auth.
 func (s *Server) login(w http.ResponseWriter, r *http.Request, t target) {
 	tok := r.URL.Query().Get("token")
-	if !t.Public && !validToken(t.TokenHash, tok) {
+	if !validToken(t.TokenHash, tok) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
