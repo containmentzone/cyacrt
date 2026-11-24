@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,6 +34,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
+	"github.com/containmentzone/cyacrt/internal/localca"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/run"
 	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
@@ -59,7 +61,9 @@ const usage = `usage: cyac <command> [args]
                                 runs in the foreground)
 
   daemon --domain <root domain> [--acme-email <e>] [--group <g>]
-                                the proxy serves :80 and :443 with Let's Encrypt;
+         [--local-ca | --ca-cert <pem> --ca-key <pem>]
+                                the proxy serves :80 and :443 with Let's Encrypt,
+                                or with a local CA (offline hosts; http://<root>/ca.crt);
                                 --group lets that group use the socket, like docker's
 
 Boxes, networks, gateways and services are files in /var/lib/cyac/conf
@@ -272,6 +276,9 @@ func daemon(socket string, args []string) error {
 	domain := fs.String("domain", "", "proxy: root domain; box b's port p answers at p.b.<domain> (required)")
 	email := fs.String("acme-email", "", "proxy: contact address for Let's Encrypt")
 	group := fs.String("group", "", "let this group use the API socket, like the docker group (root only if empty)")
+	localCA := fs.Bool("local-ca", false, "proxy: issue certificates from a local CA in $CYAC_DIR/ca, made on first start, instead of Let's Encrypt")
+	caCert := fs.String("ca-cert", "", "proxy: local CA certificate (PEM); with --ca-key, use this CA instead of making one")
+	caKey := fs.String("ca-key", "", "proxy: local CA private key (PEM)")
 	parse(fs, args, 0)
 	*domain = strings.TrimSuffix(strings.ToLower(*domain), ".")
 	if !validDomain.MatchString(*domain) {
@@ -324,18 +331,41 @@ func daemon(socket string, args []string) error {
 	slog.Info("API listening", "socket", socket)
 	go func() { log.Fatal(http.Serve(ln, srv.Handler())) }()
 
-	// Certificates are only requested on demand, during the first TLS
+	// Certificates are only issued on demand, during the first TLS
 	// handshake for an exposed host; HostPolicy refuses every other name.
-	m := &autocert.Manager{
-		Prompt:     autocert.AcceptTOS,
-		Email:      *email,
-		HostPolicy: px.HostPolicy,
-		Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
-	}
-	// :80 answers ACME challenges and redirects everything else to HTTPS.
-	go func() { log.Fatal(proxyServer(":80", m.HTTPHandler(nil)).ListenAndServe()) }()
 	https := proxyServer(":443", px)
-	https.TLSConfig = m.TLSConfig()
+	var http80 http.Handler
+	if *localCA || *caCert != "" || *caKey != "" {
+		var ca *localca.CA
+		if *caCert != "" || *caKey != "" {
+			if *caCert == "" || *caKey == "" {
+				return errors.New("--ca-cert and --ca-key go together")
+			}
+			ca, err = localca.Load(*caCert, *caKey)
+		} else {
+			ca, err = localca.LoadOrCreate(filepath.Join(dir, "ca"), *domain)
+		}
+		if err != nil {
+			return err
+		}
+		ca.HostPolicy = px.HostPolicy
+		https.TLSConfig = &tls.Config{GetCertificate: ca.GetCertificate}
+		// :80 hands out the CA certificate on the root domain, for
+		// clients to trust, and redirects everything else to HTTPS.
+		http80 = caHandler(*domain, ca.PEM())
+		slog.Info("local CA", "sha256", ca.Fingerprint(), "url", "http://"+*domain+"/ca.crt")
+	} else {
+		m := &autocert.Manager{
+			Prompt:     autocert.AcceptTOS,
+			Email:      *email,
+			HostPolicy: px.HostPolicy,
+			Cache:      autocert.DirCache(filepath.Join(dir, "acme")),
+		}
+		https.TLSConfig = m.TLSConfig()
+		// :80 answers ACME challenges and redirects everything else to HTTPS.
+		http80 = m.HTTPHandler(nil)
+	}
+	go func() { log.Fatal(proxyServer(":80", http80).ListenAndServe()) }()
 	slog.Info("proxy listening", "domain", *domain, "http", ":80", "https", ":443")
 	go func() { log.Fatal(https.ListenAndServeTLS("", "")) }()
 
@@ -344,6 +374,23 @@ func daemon(socket string, args []string) error {
 	signal.Notify(sigs, syscall.SIGTERM, syscall.SIGINT)
 	slog.Info("exiting", "signal", <-sigs)
 	return nil
+}
+
+// caHandler serves the local CA certificate at http://<domain>/ca.crt and
+// redirects every other request to HTTPS.
+func caHandler(domain string, caPEM []byte) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		host, _, err := net.SplitHostPort(r.Host)
+		if err != nil {
+			host = r.Host
+		}
+		if strings.EqualFold(host, domain) && r.URL.Path == "/ca.crt" {
+			w.Header().Set("Content-Type", "application/x-x509-ca-cert")
+			w.Write(caPEM)
+			return
+		}
+		http.Redirect(w, r, "https://"+host+r.URL.RequestURI(), http.StatusFound)
+	})
 }
 
 // lock takes an exclusive lock on dir for the life of the process, so

@@ -180,6 +180,18 @@ idle; a box gets 5s to accept a connection and a minute to start
 answering. Bodies have no deadline, so uploads, streams and websockets
 work. Routes are kept in `$CYAC_DIR/routes`.
 
+**Local CA.** A host without internet access can't reach Let's Encrypt;
+`cyac daemon --local-ca` issues the same on-demand certificates from a local
+CA instead (`internal/localca`). On first start it makes an ECDSA CA in
+`$CYAC_DIR/ca` (`ca.crt`, and `ca.key` at 0600), valid for ten years and
+name-constrained to the root domain, so trusting it vouches for nothing
+else. `--ca-cert` and `--ca-key` use your own CA instead. Leaves last 30
+days, live only in memory and are reissued a week before they expire. To
+trust the CA, fetch `http://<root domain>/ca.crt` (:80 serves it there and
+still redirects everything else to HTTPS) and check its SHA-256 against
+the one the daemon logs at start, or copy `$CYAC_DIR/ca/ca.crt`. If the
+root domain changes, delete `$CYAC_DIR/ca` to make a new CA.
+
 **Daemon and CLI.** `cyac daemon` runs the proxy and the API, and holds a
 lock on `$CYAC_DIR` (default `/var/lib/cyac`; one daemon per directory). It
 never touches the kernel or the conf files: boxes are whatever the files
@@ -347,6 +359,10 @@ source:
             acceptTerms = true;
             defaults.email = "you@example.com";
           };
+          # Offline instead: services.cyac.proxy.localCA.enable = true;
+          # (optionally with certFile, and keyFile as a runtime path that
+          # never enters the nix store). Other NixOS clients trust the CA
+          # with security.pki.certificateFiles.
         }
       ];
     };
