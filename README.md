@@ -299,6 +299,55 @@ To resize a box, raise its `DiskSize=` (or `Memory=`, `CPU=`), run
 `systemctl daemon-reload` and restart it. To remove one, stop it, delete
 its file, and destroy its zvol with `zfs destroy $CYAC_ZFS/boxes/<name>`.
 
+## Services: secrets boxes never see
+
+A cyservice is a confined container with an address in every network that
+attaches it (`<name>.<network>.cyac.internal`) and its own way out through a
+gateway. Its `Secret=` lines become `LoadCredential=` on its unit and show up
+read-only in `/run/secrets`, so a secret stays in a file on the host and
+never reaches the nix store or a box.
+
+`cmd/cyac-inject` is the first such service: a reverse proxy that adds one
+header, read from a secret file, to every request it forwards. Boxes call it
+over plain HTTP; it calls the upstream over HTTPS with the key. For
+NanoGPT's API, with the key in `/var/lib/secrets/nanogpt` and the NixOS
+module (which links the image to `/var/lib/cyac/images/cyac-inject.tar`;
+elsewhere, `nix build .#cyac-inject-image`):
+
+```ini
+# /var/lib/cyac/conf/nanogpt.cyservice
+[Workload]
+Image=/var/lib/cyac/images/cyac-inject.tar
+Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
+Memory=64M
+
+[Service]
+Index=0
+Gateway=out
+Port=80
+Secret=key:/var/lib/secrets/nanogpt
+```
+
+Add `Attach=service:nanogpt` to the box's `.cynetwork`, run `systemctl
+daemon-reload` and `systemctl restart cyservice@nanogpt` (a service makes
+its network legs when it starts, so a running one needs a restart to join a
+new network). The first start seeds the service's disk, so give it a few
+seconds before calling it from the box:
+
+```sh
+curl http://nanogpt.<network>.cyac.internal/chat/completions -d @req.json
+```
+
+The proxy forwards any path under the upstream URL, replaces any value the
+box sent for the header, and passes on no `X-Forwarded-*` headers. It reads
+the secret once at start, so restart `cyservice@nanogpt` after changing it.
+A service's disk is seeded once, like a box's: after the image changes,
+stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
+`$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
+
+`Image=` takes a registry reference or an absolute path to an uncompressed
+`docker save` tarball.
+
 ## Host requirements
 
 Linux with systemd, root, and these tools on PATH: `ip` (iproute2), `nft`,
@@ -422,3 +471,5 @@ Not tested yet:
 - Confining Cloud Hypervisor with its `--landlock` rules.
 - Auto-starting a box on request.
 - Boxes on more than one network, and egress allowlists.
+- Per-box secrets: a service sees which box calls it only by source IP, and
+  every box on an attaching network gets the same key.

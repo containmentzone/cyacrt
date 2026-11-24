@@ -58,7 +58,7 @@ func exposes(labels map[string]string) (map[string]int, error) {
 // b from the image, including the mode it picks (see pickMode).
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
-	img, err := crane.Pull(b.Image, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
+	img, err := pull(b.Image)
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", b.Image, err)
 	}
@@ -136,6 +136,16 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 		return fmt.Errorf("mkfs.ext4: %v: %s", err, out)
 	}
 	return nil
+}
+
+// pull fetches ref from its registry, or, if ref is an absolute path,
+// reads it from that file: an uncompressed `docker save` tarball, such as
+// the flake's dockerTools images with compressor = "none".
+func pull(ref string) (v1.Image, error) {
+	if filepath.IsAbs(ref) {
+		return crane.Load(ref)
+	}
+	return crane.Pull(ref, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
 }
 
 // writeBoxConfig picks the box's mode and drops the only files cyac adds

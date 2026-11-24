@@ -15,6 +15,8 @@
         rec {
           cyac = pkgs.callPackage ./nix/package.nix { };
           default = cyac;
+          # The header-injecting proxy as an image for a cyservice's Image=.
+          cyac-inject-image = pkgs.callPackage ./nix/inject.nix { inherit cyac; };
           # A Cloud Hypervisor guest vmlinux from nixpkgs' default kernel. On NixOS,
           # services.cyac.buildGuestKernel builds one from the host's kernel.
           guest-kernel = pkgs.callPackage ./nix/guest-kernel.nix { inherit (pkgs.linux) src version; };
