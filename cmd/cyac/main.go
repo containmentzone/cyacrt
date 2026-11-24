@@ -49,7 +49,7 @@ const usage = `usage: cyac <command> [args]
   console <name>                attach to the console; Ctrl-] or Enter ~ . detaches
   expose <name> [<pname>=<port>...]
                                 serve each <pname>=<port> at https://<pname>.<name>.<root domain>,
-                                on top of the image's cyac.nullvoid.space/expose[.<pname>]
+                                on top of the image's cyac.nullvoid.space/expose.<pname>=<port>
                                 labels; prints the token they all need
   unexpose <name>
 

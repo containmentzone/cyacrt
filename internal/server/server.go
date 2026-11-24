@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/net/idna"
 
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/conf"
@@ -188,6 +189,13 @@ func (s *Server) addRoute(name string, req api.Expose) (*proxy.Route, string, er
 		}
 		if p < 1 || p > 65535 {
 			return nil, "", fmt.Errorf("%s: need a port between 1 and 65535", n)
+		}
+	}
+	// autocert only serves hosts that pass the same check (no "--" in
+	// positions 3 and 4, no trailing hyphen).
+	for h := range proxy.Hosts(name, s.Domain, proxy.Route{Ports: ports}) {
+		if _, err := idna.Lookup.ToASCII(h); err != nil {
+			return nil, "", fmt.Errorf("%s can't get a certificate: %w", h, err)
 		}
 	}
 	token := rand.Text()
