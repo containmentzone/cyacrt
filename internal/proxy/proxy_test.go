@@ -143,6 +143,7 @@ func TestCrossHost(t *testing.T) {
 		{"websocket from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "websocket", "Origin": "https://evil.boxes.example.com"}, false, 403},
 		{"form post from a sibling", "POST", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "navigate"}, false, 403},
 		{"old browser, sibling origin", "POST", map[string]string{"Origin": "https://evil.boxes.example.com"}, false, 403},
+		{"old browser, plain http origin", "POST", map[string]string{"Origin": "http://pi.b.boxes.example.com"}, false, 403},
 		{"old browser, own origin", "POST", map[string]string{"Origin": "https://pi.b.boxes.example.com"}, false, 200},
 		{"not a browser", "POST", nil, false, 200},
 		{"basic auth from a sibling", "GET", map[string]string{"Sec-Fetch-Site": "same-site", "Sec-Fetch-Mode": "websocket", "Authorization": "Basic " + base64.StdEncoding.EncodeToString([]byte("x:tok"))}, true, 403},
@@ -175,8 +176,8 @@ func TestCrossHost(t *testing.T) {
 		if got := w.Header().Values("Set-Cookie"); !slices.Equal(got, want) {
 			t.Errorf("%s: Set-Cookie %q, want %q", c.name, got, want)
 		}
-		if !slices.Contains(w.Header().Values("Vary"), "Sec-Fetch-Site") {
-			t.Errorf("%s: no Vary: Sec-Fetch-Site", c.name)
+		if v := w.Header().Values("Vary"); !slices.Contains(v, "Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest") {
+			t.Errorf("%s: Vary %q", c.name, v)
 		}
 	}
 }

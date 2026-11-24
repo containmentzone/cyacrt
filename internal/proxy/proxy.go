@@ -246,9 +246,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("Origin-Agent-Cluster") // ours is already set
-			// What we let through depends on Sec-Fetch-Site, so a browser
+			// What we let through depends on fetch metadata, so a browser
 			// mustn't hand a sibling what it cached for this host's pages.
-			resp.Header.Add("Vary", "Sec-Fetch-Site")
+			resp.Header.Add("Vary", "Sec-Fetch-Site, Sec-Fetch-Mode, Sec-Fetch-Dest")
 			for i, c := range resp.Header["Set-Cookie"] {
 				resp.Header["Set-Cookie"][i] = hostOnly(c)
 			}
@@ -315,7 +315,7 @@ func fromElsewhere(r *http.Request) bool {
 			return false
 		}
 		u, err := url.Parse(o)
-		return err != nil || !strings.EqualFold(u.Host, r.Host)
+		return err != nil || u.Scheme != "https" || !strings.EqualFold(u.Host, r.Host)
 	default:
 		safe := r.Method == http.MethodGet || r.Method == http.MethodHead
 		return !safe || r.Header.Get("Sec-Fetch-Mode") != "navigate" ||
