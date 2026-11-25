@@ -30,12 +30,19 @@ const (
 // CYAC_RUNTIME names another. runc and runsc are for trusted workloads, so
 // a box only gets one by asking: a host that loses KVM must not quietly
 // move a box out of its VM, or mount on the host a disk the guest wrote.
-const vmRuntime = "cloud-hypervisor"
+//
+// A service runs under gVisor unless its file says Runtime=runc, and
+// never in a VM: its plan builds a netns, not a tap. CYAC_RUNTIME is a
+// default for boxes only.
+const (
+	vmRuntime      = "cloud-hypervisor"
+	serviceRuntime = "runsc"
+)
 
 // box runs b: its disk (seeded on first start), its port on the network,
 // then the runtime, in the foreground.
 func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
-	want := cmp.Or(b.Runtime, os.Getenv("CYAC_RUNTIME"), vmRuntime)
+	want := cmp.Or(b.Workload.Runtime, os.Getenv("CYAC_RUNTIME"), vmRuntime)
 	rt, err := r.runtime(want)
 	if err != nil {
 		if want == vmRuntime {
@@ -43,7 +50,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 		}
 		return err
 	}
-	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, orDefault(b.DiskMB, defaultDiskMB))
+	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, orDefault(b.Workload.DiskMB, defaultDiskMB))
 	if err != nil {
 		return err
 	}
@@ -68,16 +75,20 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 }
 
 // service runs s confined in the netns its plan builds, with the unit's
-// credentials (LoadCredential=) at /run/secrets: under gVisor where runsc
-// is installed, else under runc.
+// credentials (LoadCredential=) at /run/secrets.
 func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) error {
-	rt, err := r.runtime("runsc")
-	if err != nil {
-		if rt, err = r.runtime("runc"); err != nil {
-			return err
-		}
+	want := cmp.Or(s.Workload.Runtime, serviceRuntime)
+	if want != "runsc" && want != "runc" {
+		return fmt.Errorf("Runtime=%s: a service runs under runsc or runc", want)
 	}
-	img, err := image(r.store(conf.KindService), s.Name, s.Workload, defaultDiskMB)
+	rt, err := r.runtime(want)
+	if err != nil {
+		if want == serviceRuntime {
+			err = fmt.Errorf("%w; set Runtime=runc to run %s without gVisor", err, s.Name)
+		}
+		return err
+	}
+	img, err := image(r.store(conf.KindService), s.Name, s.Workload, orDefault(s.Workload.DiskMB, defaultDiskMB))
 	if err != nil {
 		return err
 	}

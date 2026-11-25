@@ -67,8 +67,8 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox | `[Box]` | `Network=`, `Address=` (required), `SeedImage=` (required until the box has a disk), `Exec=`, `Env=`, `WorkingDirectory=`, `User=`, `CPU=`, `Memory=` (as for cyservice), `DiskSize=` (default 10G), `Runtime=`, `Autostart=` |
-| cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G) |
+| cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
+| cybox | `[Box]` | `Network=`, `Address=` (required), `Autostart=` |
 | cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
@@ -125,8 +125,10 @@ writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox.
 
 A third runtime, `runsc`, runs the same bundle under gVisor. A box gets
-it only with `Runtime=runsc`, since systemd doesn't run under gVisor;
-services use it whenever `runsc` is installed, and runc otherwise.
+it only with `Runtime=runsc`, since systemd doesn't run under gVisor.
+Services run under it by default and under runc only with `Runtime=runc`;
+like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
+`services.cyac.defaultRuntime`) only sets the default for boxes.
 
 **Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
 leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the
@@ -325,12 +327,10 @@ elsewhere, `nix build .#cyac-inject-image`):
 
 ```ini
 # /var/lib/cyac/conf/nanogpt.cyservice
-[Workload]
-Image=/var/lib/cyac/images/cyac-inject.tar
+[Service]
+SeedImage=/var/lib/cyac/images/cyac-inject.tar
 Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
 Memory=64M
-
-[Service]
 Index=0
 Gateway=out
 Port=80
@@ -354,7 +354,7 @@ A service's disk is seeded once, like a box's: after the image changes,
 stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
 `$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
 
-`Image=` takes a registry reference or an absolute path to an uncompressed
+`SeedImage=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
 
 ## Host requirements

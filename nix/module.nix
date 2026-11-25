@@ -173,7 +173,7 @@ in
       "d /var/lib/cyac/conf 0700 root root -"
     ]
     ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.guestKernel}"
-    # The header-injecting proxy's image, at a path a cyservice's Image= can
+    # The header-injecting proxy's image, at a path a cyservice's SeedImage= can
     # name that survives upgrades and garbage collection.
     ++ [
       "d ${cfg.stateDir}/images 0700 root root -"
