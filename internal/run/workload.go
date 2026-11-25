@@ -79,7 +79,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) error {
 	want := cmp.Or(s.Workload.Runtime, serviceRuntime)
 	if want != "runsc" && want != "runc" {
-		return fmt.Errorf("Runtime=%s: a service runs under runsc or runc", want)
+		return fmt.Errorf("%s runs under runsc or runc, not Runtime=%s", s.Name, want)
 	}
 	rt, err := r.runtime(want)
 	if err != nil {
