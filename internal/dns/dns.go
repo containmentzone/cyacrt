@@ -120,15 +120,32 @@ func Write(c *conf.Config, dir string) error {
 		if err != nil {
 			return err
 		}
-		tmp := Path(dir, name) + ".tmp"
-		if err := os.WriteFile(tmp, data, 0o644); err != nil {
-			return err
-		}
-		if err := os.Rename(tmp, Path(dir, name)); err != nil {
+		if err := publish(Path(dir, name), data); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// publish replaces path with data through a temporary file of its own,
+// so starts that overlap (every box at boot) never rename each other's.
+func publish(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name()) // fails harmlessly once renamed
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(0o644)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
 }
 
 // Forward sends a raw query to the first of upstreams that answers and
