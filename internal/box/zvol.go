@@ -17,9 +17,14 @@ import (
 func (s Store) volume(name string) string { return s.Dataset + "/" + name }
 
 // createVolume makes name's zvol, and its parent datasets if need be, and
-// waits for udev to link its device.
+// waits for udev to link its device. It fails if the zvol already exists:
+// only -p on the parents, since `zfs create -p` succeeds on an existing
+// target, and a seed would then mkfs over a disk it didn't make.
 func (s Store) createVolume(name string, size int64) error {
-	if err := sh.Run("zfs", "create", "-p", "-s", "-V", strconv.FormatInt(size, 10),
+	if err := sh.Run("zfs", "create", "-p", s.Dataset); err != nil {
+		return err
+	}
+	if err := sh.Run("zfs", "create", "-s", "-V", strconv.FormatInt(size, 10),
 		"-o", "volmode=dev", s.volume(name)); err != nil {
 		return err
 	}
