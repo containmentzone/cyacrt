@@ -281,7 +281,7 @@ Name=eth0
 [Network]
 Address=10.42.1.10/24
 DNS=10.42.1.2
-Domains=dev.cyac.internal
+Domains=cyac.internal
 LinkLocalAddressing=no
 IPv6AcceptRA=no
 
@@ -362,7 +362,7 @@ Name=eth0
 Address=10.42.2.10/24
 Gateway=10.42.2.1
 DNS=10.42.2.2
-Domains=web.cyac.internal
+Domains=cyac.internal
 LinkLocalAddressing=no
 IPv6AcceptRA=no
 

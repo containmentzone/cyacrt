@@ -1,7 +1,10 @@
 // Package dns is the resolver on a network's .2: it answers for the
-// network's zone, <name>.<network>.cyac.internal, from the conf (its
-// boxes and the services it attaches), and forwards every other question
-// to its gateway's resolver from inside the gateway's netns, so a box can
+// network's names, <name>.cyac.internal, from the conf (its boxes and the
+// services it attaches; each resolver only knows its own network, so a
+// service on several networks resolves to its address in each). The older
+// <name>.<network>.cyac.internal still answers as an alias. It forwards
+// every other question to its gateway's resolver from inside the
+// gateway's netns, so a box can
 // only resolve outside names along the path its packets could take. A
 // sealed network gets no forwarding at all.
 package dns
@@ -39,7 +42,6 @@ type Server struct {
 
 	mu     sync.Mutex
 	loaded time.Time
-	zone   string                // "<network>.cyac.internal."
 	names  map[string]netip.Addr // fully qualified, lower case
 	gw     *conf.Gateway         // nil: sealed
 
@@ -72,22 +74,27 @@ func (s *Server) load() {
 	c, _, err := conf.Load(s.Conf)
 	n := c.Networks[s.Network]
 	if err != nil || n == nil {
-		s.zone = s.Network + ".cyac.internal."
 		return
 	}
-	s.zone = render.Domain(n) + "."
+	add := func(name string, addr netip.Addr) {
+		s.names[name+"."+zone] = addr
+		s.names[name+"."+n.Name+"."+zone] = addr // pre-flattening alias
+	}
 	for _, name := range conf.Sorted(c.Boxes) {
 		if b := c.Boxes[name]; b.Network == n.Name {
-			s.names[name+"."+s.zone] = b.Address
+			add(name, b.Address)
 		}
 	}
 	for _, name := range n.Services {
-		s.names[name+"."+s.zone] = c.Services[name].AddressIn(n)
+		add(name, c.Services[name].AddressIn(n))
 	}
 	if n.Gateway != "" {
 		s.gw = c.Gateways[n.Gateway]
 	}
 }
+
+// zone is render.Domain as a fully qualified name.
+const zone = render.Domain + "."
 
 // Answer returns the reply to one query, or nil to drop it.
 func (s *Server) Answer(ctx context.Context, query []byte) []byte {
@@ -102,7 +109,7 @@ func (s *Server) Answer(ctx context.Context, query []byte) []byte {
 	}
 	s.load()
 	s.mu.Lock()
-	zone, names, gw := s.zone, s.names, s.gw
+	names, gw := s.names, s.gw
 	s.mu.Unlock()
 
 	name := strings.ToLower(q.Name.String())
