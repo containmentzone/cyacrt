@@ -387,10 +387,11 @@ required `dataset` option), enables ZFS, loads the `tun` and `bridge`
 modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
 opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
-`cyac.service` and links the guest kernel, if there is one. cyac picks the
-runtime itself: `cloud-hypervisor` when `/dev/kvm` and a guest kernel are
-there, else `runc`. `buildGuestKernel` builds one from the host kernel's
-source:
+`cyac.service` and links the guest kernel, if there is one. Boxes run
+under `cloud-hypervisor`, which needs `/dev/kvm` and a guest kernel, unless
+their `Runtime=` says otherwise; `defaultRuntime = "runc"` moves a whole
+machine of trusted boxes to runc. `buildGuestKernel` builds the guest kernel
+from the host kernel's source:
 
 ```nix
 {
