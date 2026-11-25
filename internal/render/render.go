@@ -324,10 +324,11 @@ func Networkd(c *conf.Config, b *conf.Box) string {
 	if n.Gateway != "" {
 		fmt.Fprintf(&s, "Gateway=%s\n", n.Router())
 	}
-	fmt.Fprintf(&s, "DNS=%s\nDomains=%s\n", n.Host(), Domain(n))
+	fmt.Fprintf(&s, "DNS=%s\nDomains=%s\n", n.Host(), Domain)
 	s.WriteString("LinkLocalAddressing=no\nIPv6AcceptRA=no\n")
 	return s.String()
 }
 
-// Domain is network n's DNS zone, which boxes also search.
-func Domain(n *conf.Network) string { return n.Name + ".cyac.internal" }
+// Domain is the DNS zone every network's resolver answers for, with
+// that network's own names only, and which boxes also search.
+const Domain = "cyac.internal"

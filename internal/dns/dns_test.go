@@ -77,12 +77,16 @@ func TestZone(t *testing.T) {
 		rcode dnsmessage.RCode
 		addr  string
 	}{
+		{"a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{"A.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{"proxy.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
+		{"a.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
+		{"b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
+		{"x.a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		// the old per-network names still answer, but only for this network
 		{"a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{"A.Dev.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
 		{"proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
-		{"a.dev.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
-		{"b.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
-		{"x.a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		{"b.lab.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // not forwarded either
 	} {
 		rcode, addrs := parse(t, s.Answer(context.Background(), query(t, tc.name, tc.typ)))
 		want := 0
@@ -110,7 +114,7 @@ func TestSealed(t *testing.T) {
 	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "example.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeRefused {
 		t.Errorf("rcode %v", rcode)
 	}
-	if _, addrs := parse(t, s.Answer(context.Background(), query(t, "b.lab.cyac.internal.", dnsmessage.TypeA))); len(addrs) != 1 {
+	if _, addrs := parse(t, s.Answer(context.Background(), query(t, "b.cyac.internal.", dnsmessage.TypeA))); len(addrs) != 1 {
 		t.Errorf("own zone: %v", addrs)
 	}
 }

@@ -153,9 +153,11 @@ container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
 cyac itself never reads them.
 
 **DNS.** `cydns@<network>.socket` listens on the network's `.2`, and
-`cyac dns` answers for `<name>.<network>.cyac.internal` (boxes search that
-zone, so `<name>` works too) from the conf files, for the network's boxes
-and the services it attaches. Everything else is forwarded from inside the
+`cyac dns` answers for `<name>.cyac.internal` (boxes search that zone, so
+`<name>` works too) from the conf files, for the network's boxes and the
+services it attaches; every network has its own resolver, so a service on
+several networks resolves to its address in each. The older
+`<name>.<network>.cyac.internal` still answers as an alias. Everything else is forwarded from inside the
 network's gateway, to its `DNS=` or 1.1.1.1, so a box can only resolve what
 its packets could reach. A sealed network gets no answers for outside
 names.
@@ -306,7 +308,7 @@ its file, and destroy its zvol with `zfs destroy $CYAC_ZFS/boxes/<name>`.
 ## Services: secrets boxes never see
 
 A cyservice is a confined container with an address in every network that
-attaches it (`<name>.<network>.cyac.internal`) and its own way out through a
+attaches it (`<name>.cyac.internal`) and its own way out through a
 gateway. Its `Secret=` lines become `LoadCredential=` on its unit and show up
 read-only in `/run/secrets`, so a secret stays in a file on the host and
 never reaches the nix store or a box.
@@ -339,7 +341,7 @@ new network). The first start seeds the service's disk, so give it a few
 seconds before calling it from the box:
 
 ```sh
-curl http://nanogpt.<network>.cyac.internal/chat/completions -d @req.json
+curl http://nanogpt.cyac.internal/chat/completions -d @req.json
 ```
 
 The proxy forwards any path under the upstream URL, replaces any value the
