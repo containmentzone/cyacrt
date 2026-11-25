@@ -176,3 +176,4 @@ ExecStopPost=/bin/cyac run stop cyservice llm-proxy
 
 ==> cyac.target.wants/cybox@box-a.service -> ../cybox@box-a.service
 ==> multi-user.target.wants/cyac.target -> ../cyac.target
+==> multi-user.target.wants/cyservice@llm-proxy.service -> ../cyservice@llm-proxy.service

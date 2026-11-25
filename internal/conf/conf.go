@@ -135,13 +135,21 @@ func link(third byte, index int) (netip.Prefix, netip.Prefix) {
 
 // Box is a VM (or runc container) with a disk, in one network.
 type Box struct {
-	Name      string
-	Workload  Workload
-	Network   string
-	Address   netip.Addr
-	Runtime   string // "" picks the first available
-	DiskMB    int
-	Autostart bool // started with cyac.target
+	Name     string
+	Workload Workload
+	Network  string
+	Address  netip.Addr
+	Runtime  string // "" picks the first available
+	DiskMB   int
+}
+
+// Install is a file's [Install] section: the units that pull the
+// object's unit in, as systemctl enable would have them. The generator
+// writes the .wants and .requires links itself, since systemd ignores
+// [Install] in generated units.
+type Install struct {
+	WantedBy   []string
+	RequiredBy []string
 }
 
 // Config is every object in the conf dir that parsed and checked out.
@@ -150,7 +158,12 @@ type Config struct {
 	Gateways map[string]*Gateway
 	Services map[string]*Service
 	Boxes    map[string]*Box
+	// Install is every file's [Install] section, by Key(kind, name).
+	Install map[string]Install
 }
+
+// Key names an object across kinds.
+func Key(kind, name string) string { return kind + "@" + name }
 
 // Problem is a file that can't be used, and why. A file is also a problem
 // when something it depends on is.
@@ -176,6 +189,7 @@ func Load(dir string) (*Config, []Problem, error) {
 		Gateways: map[string]*Gateway{},
 		Services: map[string]*Service{},
 		Boxes:    map[string]*Box{},
+		Install:  map[string]Install{},
 	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -241,6 +255,13 @@ func (c *Config) parseFile(path, kind, name string) error {
 	}
 	if err != nil {
 		return err
+	}
+	in, err := parseInstall(take("Install"))
+	if err != nil {
+		return err
+	}
+	if len(in.WantedBy)+len(in.RequiredBy) > 0 {
+		c.Install[Key(kind, name)] = in
 	}
 	for sec := range byName {
 		return fmt.Errorf("unknown section [%s]", sec)
@@ -417,18 +438,35 @@ func (c *Config) parseBox(name string, f *fields) error {
 	if b.DiskMB, err = sizeMB(disk, "DiskSize"); err != nil {
 		return err
 	}
-	auto, err := f.one("Autostart")
-	if err != nil {
-		return err
-	}
-	if b.Autostart, err = boolean(auto, "Autostart"); err != nil {
-		return err
-	}
 	if err := f.done(); err != nil {
 		return err
 	}
 	c.Boxes[name] = b
 	return nil
+}
+
+var unitName = regexp.MustCompile(`^[A-Za-z0-9:_.\\@-]+\.(service|socket|target|path|timer|slice|mount)$`)
+
+// parseInstall takes WantedBy= and RequiredBy=, each a space-separated
+// list of unit names that may be given more than once, as in systemd.
+// The rest of systemd's [Install] (Alias=, Also=, DefaultInstance=) has
+// no meaning here.
+func parseInstall(f *fields) (Install, error) {
+	var in Install
+	for _, kv := range []struct {
+		key string
+		dst *[]string
+	}{{"WantedBy", &in.WantedBy}, {"RequiredBy", &in.RequiredBy}} {
+		for _, v := range f.all(kv.key) {
+			for _, u := range strings.Fields(v) {
+				if !unitName.MatchString(u) {
+					return in, bad(kv.key, u, "not a unit name")
+				}
+				*kv.dst = append(*kv.dst, u)
+			}
+		}
+	}
+	return in, f.done()
 }
 
 // parseWorkload takes the workload keys from f, with the image under
@@ -638,16 +676,6 @@ func sizeMB(s, key string) (int, error) {
 		return 0, fmt.Errorf("%s=%s: want a size like 512M or 4G", key, s)
 	}
 	return v * mult, nil
-}
-
-func boolean(s, key string) (bool, error) {
-	switch s {
-	case "", "no", "false", "0":
-		return false, nil
-	case "yes", "true", "1":
-		return true, nil
-	}
-	return false, fmt.Errorf("%s=%s: want yes or no", key, s)
 }
 
 // splitWords splits a command line on spaces, honouring single and double

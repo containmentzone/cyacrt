@@ -41,7 +41,9 @@ type Output struct {
 	Symlinks map[string]string
 }
 
-// Target is the unit that starts every Autostart box.
+// Target is a handle on everything cyac runs: every unit is PartOf it,
+// and multi-user.target wants it, so WantedBy=cyac.target starts an
+// object at boot and systemctl stop cyac.target stops them all.
 const Target = "cyac.target"
 
 // Generate produces the units for c. Each problem becomes a unit that
@@ -54,27 +56,40 @@ func Generate(c *conf.Config, probs []conf.Problem, p Paths) Output {
 
 	for _, name := range conf.Sorted(c.Gateways) {
 		out.Files[Name(conf.KindGateway, name)] = gateway(c.Gateways[name], p)
+		install(out, c, conf.KindGateway, name)
 	}
 	for _, name := range conf.Sorted(c.Networks) {
 		n := c.Networks[name]
 		out.Files[Name(conf.KindNetwork, name)] = network(n, p)
 		out.Files["cydns@"+name+".socket"] = dnsSocket(n, p)
 		out.Files["cydns@"+name+".service"] = dnsService(n, p)
+		install(out, c, conf.KindNetwork, name)
 	}
 	for _, name := range conf.Sorted(c.Services) {
 		out.Files[Name(conf.KindService, name)] = service(c, c.Services[name], p)
+		install(out, c, conf.KindService, name)
 	}
 	for _, name := range conf.Sorted(c.Boxes) {
-		b := c.Boxes[name]
-		out.Files[Name(conf.KindBox, name)] = box(c, b, p)
-		if b.Autostart {
-			out.Symlinks[Target+".wants/"+Name(conf.KindBox, name)] = "../" + Name(conf.KindBox, name)
-		}
+		out.Files[Name(conf.KindBox, name)] = box(c, c.Boxes[name], p)
+		install(out, c, conf.KindBox, name)
 	}
 	for _, pr := range probs {
 		out.Files[Name(pr.Kind, pr.Name)] = broken(pr, p)
 	}
 	return out
+}
+
+// install does what systemctl enable would with the object's [Install]
+// section, which systemd won't do for a generated unit.
+func install(out Output, c *conf.Config, kind, name string) {
+	unit := Name(kind, name)
+	in := c.Install[conf.Key(kind, name)]
+	for _, t := range in.WantedBy {
+		out.Symlinks[t+".wants/"+unit] = "../" + unit
+	}
+	for _, t := range in.RequiredBy {
+		out.Symlinks[t+".requires/"+unit] = "../" + unit
+	}
 }
 
 // Name is the unit name for an object.

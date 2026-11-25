@@ -40,7 +40,8 @@ const (
 	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
 	prx = "[Workload]\nImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n\n" +
 		"[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
-	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
+	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\n\n" +
+		"[Install]\nWantedBy=cyac.target\nWantedBy=dev.target  multi-user.target\nRequiredBy=cybox@b.service\n"
 )
 
 func TestLoad(t *testing.T) {
@@ -72,7 +73,11 @@ func TestLoad(t *testing.T) {
 			Name:     "a",
 			Workload: Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096},
 			Network:  "dev", Address: netip.MustParseAddr("10.42.1.10"),
-			DiskMB: 10240, Autostart: true,
+			DiskMB: 10240,
+		}},
+		Install: map[string]Install{"cybox@a": {
+			WantedBy:   []string{"cyac.target", "dev.target", "multi-user.target"},
+			RequiredBy: []string{"cybox@b.service"},
 		}},
 	}
 	if !reflect.DeepEqual(c, want) {
@@ -118,7 +123,11 @@ func TestFileErrors(t *testing.T) {
 		{"x.cyservice", "[Workload]\nImage=i\nExec=sh -c 'oops\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "needs Address="},
 		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=yes\n", "unknown key Autostart="},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nWantedBy=../evil.target\n", "not a unit name"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nWantedBy=multi-user\n", "not a unit name"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nAlias=y.service\n", "[Install] unknown key Alias="},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\n[Install]\nWantedBy=a.target\nAlso=b.service\n", "[Install] unknown key Also="},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
 		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "unknown section [Workload]"},
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key Image="},

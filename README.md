@@ -42,14 +42,24 @@ Memory=4G
 Network=dev
 Address=10.42.1.10
 DiskSize=25G
-Autostart=yes
+
+[Install]
+WantedBy=cyac.target
 ```
 
 `cyac-generator`, a systemd generator, turns the files into units at boot
 and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
 `cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
-its object, plus `cyac.target`, which starts every `Autostart=yes` box.
-The units depend on each other (a box `BindsTo` its network, a network its
+its object, plus `cyac.target`, which `multi-user.target` wants and
+every unit is `PartOf`. Nothing starts at boot unless its file says so in
+an `[Install]` section, the same as `systemctl enable` reads:
+`WantedBy=cyac.target` starts it at boot, and any other target or unit
+works too (`WantedBy=dev.target` for a group you start by hand). Only
+`WantedBy=` and `RequiredBy=` are read. systemd won't enable a generated
+unit, so the generator writes the `.wants`/`.requires` links itself, and
+`systemctl enable`/`disable` don't apply: edit the file and
+`systemctl daemon-reload`. A gateway or network that a target wants stays
+up after its last box stops. The units depend on each other (a box `BindsTo` its network, a network its
 gateway), so systemd brings things up in order and takes them down in
 reverse, and a network or gateway goes away with the last thing on it. A
 file that doesn't parse, or refers to something missing or broken, still
@@ -67,10 +77,11 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox | `[Box]` | `Network=`, `Address=` (required), `SeedImage=` (required until the box has a disk), `Exec=`, `Env=`, `WorkingDirectory=`, `User=`, `CPU=`, `Memory=` (as for cyservice), `DiskSize=` (default 10G), `Runtime=`, `Autostart=` |
+| cybox | `[Box]` | `Network=`, `Address=` (required), `SeedImage=` (required until the box has a disk), `Exec=`, `Env=`, `WorkingDirectory=`, `User=`, `CPU=`, `Memory=` (as for cyservice), `DiskSize=` (default 10G), `Runtime=` |
 | cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G) |
 | cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
+| all | `[Install]` | `WantedBy=`, `RequiredBy=` (unit names, space-separated, repeatable) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
 Addresses and interface names come from the indexes in the files, never
@@ -246,8 +257,8 @@ to run `cyac-init poweroff`, which sends PID 1 `SIGRTMIN+4` (systemd powers
 off; cyac-init stops the box), presses the ACPI power button for a guest
 without a working agent, and kills the VM after 30 seconds. Guest kernels
 boot without `panic=`, so a panicked guest halts rather than rebooting in a
-loop; its console log says why. `Autostart=yes` boxes come back with
-`cyac.target` after a host reboot.
+loop; its console log says why. Boxes with `WantedBy=cyac.target` come back
+after a host reboot.
 
 **The socket has no authentication yet.** It is created mode 0600, so only
 root can use it, unless the daemon runs with `--group <g>`: then it is 0660
