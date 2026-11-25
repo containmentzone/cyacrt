@@ -167,7 +167,7 @@ func serveDNS(args []string) error {
 	return nil
 }
 
-// runtimes are the runtimes a box can use, in order of preference.
+// runtimes are the runtimes a workload can use, by name (see run.Runner).
 func runtimes(dir string) ([]driver.Runtime, error) {
 	self, err := os.Executable()
 	if err != nil {
@@ -178,7 +178,7 @@ func runtimes(dir string) ([]driver.Runtime, error) {
 	return []driver.Runtime{
 		cloudhypervisor.Runtime{Kernel: filepath.Join(dir, "vmlinux"), Init: init},
 		runc.Runtime{Init: init},
-		// Last, so a box only gets it by asking: systemd doesn't run
+		// A box only gets it with Runtime=runsc: systemd doesn't run
 		// under gVisor. Services prefer it (see run.Runner.service).
 		runc.Runtime{Init: init, GVisor: true},
 	}, nil

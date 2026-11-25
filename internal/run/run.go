@@ -50,8 +50,9 @@ type Runner struct {
 	Dir  string // where records go
 	Exec Exec
 	// Workloads: where run dirs and console logs live, the ZFS dataset
-	// their disks are zvols under (see package box), and the runtimes a
-	// box may use, in order of preference. Services always use runc.
+	// their disks are zvols under (see package box), and the runtimes
+	// workloads pick from by name: a box takes its Runtime= (default
+	// cloud-hypervisor), a service runsc or else runc.
 	State    string
 	Dataset  string
 	Runtimes []driver.Runtime

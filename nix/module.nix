@@ -26,7 +26,8 @@ let
     environment = {
       CYAC_DIR = cfg.stateDir;
       CYAC_ZFS = cfg.dataset;
-    };
+    }
+    // lib.optionalAttrs (cfg.defaultRuntime != null) { CYAC_RUNTIME = cfg.defaultRuntime; };
   };
 in
 {
@@ -61,11 +62,28 @@ in
       '';
     };
 
+    defaultRuntime = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "cloud-hypervisor"
+          "runc"
+          "runsc"
+        ]
+      );
+      default = null;
+      example = "runc";
+      description = ''
+        Runtime for boxes whose file sets no Runtime= (CYAC_RUNTIME). Null
+        means cloud-hypervisor. Set "runc" on a machine without KVM whose
+        boxes are all trusted: runc is no sandbox. Services ignore this.
+      '';
+    };
+
     buildGuestKernel = lib.mkEnableOption ''
       building a guest kernel from the host kernel's source
       (`boot.kernelPackages.kernel`) as the default guestKernel. Without a
-      guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
-      runc'';
+      guest kernel, Cloud Hypervisor is unavailable, and only boxes with
+      Runtime=runc (or defaultRuntime = "runc") start'';
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
@@ -229,7 +247,7 @@ in
     # cyac-generator turns the files in /var/lib/cyac/conf into units
     # (cygateway@, cynetwork@, cydns@, cyservice@, cybox@ and cyac.target)
     # at boot and on every `systemctl daemon-reload`. These drop-ins give
-    # the workload units the daemon's state dir and runtime pin.
+    # the workload units the daemon's state dir and ZFS dataset.
     systemd.generators.cyac = "${cfg.package}/bin/cyac-generator";
     systemd.services."cybox@" = workloadDropin;
     systemd.services."cyservice@" = workloadDropin;

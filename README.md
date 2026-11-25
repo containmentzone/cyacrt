@@ -108,11 +108,14 @@ picks one of three modes:
   `cyac shell`.
 
 The same disk boots under one of these runtimes. A box uses its
-`Runtime=`, else `CYAC_RUNTIME`, else the first one this host can run:
+`Runtime=`, else `CYAC_RUNTIME`, else `cloud-hypervisor`. A box never
+falls back to runc on its own: on a host without KVM it fails to start
+until its file says `Runtime=runc`, or the whole machine opts in with
+`services.cyac.defaultRuntime = "runc"` (which sets `CYAC_RUNTIME`).
 
 | | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
-| When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
+| When | the default; needs `/dev/kvm`, `cloud-hypervisor` on PATH and `$CYAC_DIR/vmlinux` | only with `Runtime=runc` |
 | Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | zvol mounted on the host |
 | Link | a tap on the network's bridge | a veth into the box's own netns |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
@@ -121,9 +124,9 @@ The runc runtime gives a box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox.
 
-A third runtime, `runsc`, runs the same bundle under gVisor. It comes
-last for boxes, since systemd doesn't run under gVisor; services use it
-whenever `runsc` is installed, and runc otherwise.
+A third runtime, `runsc`, runs the same bundle under gVisor. A box gets
+it only with `Runtime=runsc`, since systemd doesn't run under gVisor;
+services use it whenever `runsc` is installed, and runc otherwise.
 
 **Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
 leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the
@@ -384,10 +387,11 @@ required `dataset` option), enables ZFS, loads the `tun` and `bridge`
 modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
 opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
-`cyac.service` and links the guest kernel, if there is one. cyac picks the
-runtime itself: `cloud-hypervisor` when `/dev/kvm` and a guest kernel are
-there, else `runc`. `buildGuestKernel` builds one from the host kernel's
-source:
+`cyac.service` and links the guest kernel, if there is one. Boxes run
+under `cloud-hypervisor`, which needs `/dev/kvm` and a guest kernel, unless
+their `Runtime=` says otherwise; `defaultRuntime = "runc"` moves a whole
+machine of trusted boxes to runc. `buildGuestKernel` builds the guest kernel
+from the host kernel's source:
 
 ```nix
 {
@@ -402,6 +406,7 @@ source:
             enable = true;
             buildGuestKernel = true;   # for Cloud Hypervisor; leave off without KVM
             # guestKernel = ./vmlinux;   # or bring your own
+            # defaultRuntime = "runc";   # no KVM, and every box trusted
             dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here

@@ -1,6 +1,7 @@
 package run
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,11 +26,21 @@ const (
 	defaultDiskMB   = 10 << 10
 )
 
+// vmRuntime is what a box runs under unless its file (Runtime=) or
+// CYAC_RUNTIME names another. runc and runsc are for trusted workloads, so
+// a box only gets one by asking: a host that loses KVM must not quietly
+// move a box out of its VM, or mount on the host a disk the guest wrote.
+const vmRuntime = "cloud-hypervisor"
+
 // box runs b: its disk (seeded on first start), its port on the network,
 // then the runtime, in the foreground.
 func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
-	rt, err := r.runtime(b.Runtime)
+	want := cmp.Or(b.Runtime, os.Getenv("CYAC_RUNTIME"), vmRuntime)
+	rt, err := r.runtime(want)
 	if err != nil {
+		if want == vmRuntime {
+			err = fmt.Errorf("%w; set Runtime=runc to run %s as a trusted container instead", err, b.Name)
+		}
 		return err
 	}
 	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, orDefault(b.DiskMB, defaultDiskMB))
@@ -157,27 +167,18 @@ func (r *Runner) bare(kind, name string) *driver.Machine {
 	}
 }
 
-// runtime returns the runtime named want, else the one CYAC_RUNTIME
-// names, else the first available.
+// runtime returns the runtime named want, if this host can run it.
 func (r *Runner) runtime(want string) (driver.Runtime, error) {
-	if want == "" {
-		want = os.Getenv("CYAC_RUNTIME")
-	}
-	var why []string
 	for _, rt := range r.Runtimes {
-		if want != "" && rt.Name() != want {
+		if rt.Name() != want {
 			continue
 		}
-		err := rt.Available()
-		if err == nil {
-			return rt, nil
+		if err := rt.Available(); err != nil {
+			return nil, fmt.Errorf("%s is unavailable: %w", want, err)
 		}
-		why = append(why, rt.Name()+": "+err.Error())
+		return rt, nil
 	}
-	if len(why) == 0 {
-		return nil, fmt.Errorf("no runtime %q", want)
-	}
-	return nil, fmt.Errorf("no usable runtime (%s)", strings.Join(why, "; "))
+	return nil, fmt.Errorf("no runtime %q", want)
 }
 
 // image returns what the workload's image says to run, seeding its disk
@@ -197,9 +198,10 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 			return nil, err
 		}
 	}
-	// A disk without its defaults is a seed that died part way.
-	if err := st.Destroy(name); err != nil {
-		return nil, err
+	// A disk without its defaults: a seed that died part way, or a state
+	// dir that lost its files. Either way it's not ours to throw away.
+	if st.Exists(name) {
+		return nil, fmt.Errorf("%s exists but %s doesn't; destroy the zvol to reseed it, or restore the file", st.DiskPath(name), meta)
 	}
 	if w.Image == "" {
 		return nil, fmt.Errorf("no disk yet and no SeedImage= to seed one from")
