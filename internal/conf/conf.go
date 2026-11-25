@@ -139,7 +139,7 @@ type Box struct {
 	Workload  Workload
 	Network   string
 	Address   netip.Addr
-	Runtime   string // "" picks the first available
+	Runtime   string // "" means cloud-hypervisor; runc only when named
 	DiskMB    int
 	Autostart bool // started with cyac.target
 }

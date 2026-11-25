@@ -32,10 +32,16 @@ func (s Store) createVolume(name string, size int64) error {
 	return fmt.Errorf("%s did not appear", s.DiskPath(name))
 }
 
+// Exists reports whether name has a zvol.
+func (s Store) Exists(name string) bool {
+	_, err := s.volsize(name)
+	return err == nil
+}
+
 // Destroy removes name's zvol, if it has one.
 func (s Store) Destroy(name string) error {
-	if _, err := s.volsize(name); err != nil {
-		return nil // no such dataset
+	if !s.Exists(name) {
+		return nil
 	}
 	return sh.Run("zfs", "destroy", s.volume(name))
 }

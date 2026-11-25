@@ -108,11 +108,13 @@ picks one of three modes:
   `cyac shell`.
 
 The same disk boots under one of these runtimes. A box uses its
-`Runtime=`, else `CYAC_RUNTIME`, else the first one this host can run:
+`Runtime=`, else `CYAC_RUNTIME`, else `cloud-hypervisor`. A box never
+falls back to runc on its own: on a host without KVM it fails to start
+until its file says `Runtime=runc`.
 
 | | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
-| When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
+| When | the default; needs `/dev/kvm`, `cloud-hypervisor` on PATH and `$CYAC_DIR/vmlinux` | only with `Runtime=runc` |
 | Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | zvol mounted on the host |
 | Link | a tap on the network's bridge | a veth into the box's own netns |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
@@ -121,9 +123,9 @@ The runc runtime gives a box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox.
 
-A third runtime, `runsc`, runs the same bundle under gVisor. It comes
-last for boxes, since systemd doesn't run under gVisor; services use it
-whenever `runsc` is installed, and runc otherwise.
+A third runtime, `runsc`, runs the same bundle under gVisor. A box gets
+it only with `Runtime=runsc`, since systemd doesn't run under gVisor;
+services use it whenever `runsc` is installed, and runc otherwise.
 
 **Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
 leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the

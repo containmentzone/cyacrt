@@ -64,8 +64,8 @@ in
     buildGuestKernel = lib.mkEnableOption ''
       building a guest kernel from the host kernel's source
       (`boot.kernelPackages.kernel`) as the default guestKernel. Without a
-      guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
-      runc'';
+      guest kernel, Cloud Hypervisor is unavailable, and only boxes with
+      Runtime=runc start'';
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
@@ -229,7 +229,7 @@ in
     # cyac-generator turns the files in /var/lib/cyac/conf into units
     # (cygateway@, cynetwork@, cydns@, cyservice@, cybox@ and cyac.target)
     # at boot and on every `systemctl daemon-reload`. These drop-ins give
-    # the workload units the daemon's state dir and runtime pin.
+    # the workload units the daemon's state dir and ZFS dataset.
     systemd.generators.cyac = "${cfg.package}/bin/cyac-generator";
     systemd.services."cybox@" = workloadDropin;
     systemd.services."cyservice@" = workloadDropin;
