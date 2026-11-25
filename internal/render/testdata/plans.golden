@@ -41,6 +41,7 @@ up:
     		type filter hook input priority 0; policy drop;
     		iifname "lo" accept
     		ct state established,related accept
+    		iifname != "uplink" meta l4proto { tcp, udp } th dport 53 accept
     	}
     	chain forward {
     		type filter hook forward priority 0; policy drop;
@@ -78,6 +79,7 @@ up:
     		type filter hook input priority 0; policy drop;
     		iifname "lo" accept
     		ct state established,related accept
+    		iifname != "wg0" meta l4proto { tcp, udp } th dport 53 accept
     	}
     	chain forward {
     		type filter hook forward priority 0; policy drop;
@@ -108,8 +110,6 @@ up:
     	chain input {
     		type filter hook input priority 0; policy accept;
     		iifname "cyn1" ct state established,related accept
-    		iifname "cyn1" ip daddr 10.42.1.2 udp dport 53 accept
-    		iifname "cyn1" ip daddr 10.42.1.2 tcp dport 53 accept
     		iifname "cyn1" drop
     	}
     	chain forward {
@@ -136,8 +136,6 @@ up:
     	chain input {
     		type filter hook input priority 0; policy accept;
     		iifname "cyn2" ct state established,related accept
-    		iifname "cyn2" ip daddr 10.42.2.2 udp dport 53 accept
-    		iifname "cyn2" ip daddr 10.42.2.2 tcp dport 53 accept
     		iifname "cyn2" drop
     	}
     	chain forward {
@@ -280,8 +278,6 @@ Name=eth0
 
 [Network]
 Address=10.42.1.10/24
-DNS=10.42.1.2
-Domains=cyac.internal
 LinkLocalAddressing=no
 IPv6AcceptRA=no
 
@@ -361,7 +357,7 @@ Name=eth0
 [Network]
 Address=10.42.2.10/24
 Gateway=10.42.2.1
-DNS=10.42.2.2
+DNS=10.42.2.1
 Domains=cyac.internal
 LinkLocalAddressing=no
 IPv6AcceptRA=no

@@ -49,9 +49,10 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	}
 	n := c.Networks[b.Network]
 	m := machine(r.bare(conf.KindBox, b.Name), b.Workload, img)
-	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits(), DNS: n.Host().String()}
+	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits()}
 	if n.Gateway != "" {
-		m.Addr.Gateway = n.Router()
+		// The gateway's resolver listens on the router's address.
+		m.Addr.Gateway, m.Addr.DNS = n.Router(), n.Router().String()
 	}
 	m.Init.DNS, m.Init.Network = m.Addr.DNS, render.Networkd(c, b)
 	tap := rt.LinkKind() == driver.Tap
@@ -84,12 +85,10 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 	m := machine(r.bare(conf.KindService, s.Name), s.Workload, img)
 	m.Confined = true
 	m.Link.Netns = netnsPath(render.ServiceNetns(s.Name))
-	// Names resolve through the gateway's resolver if it names one, and
-	// otherwise through cyac dns on the first network that attaches s.
-	m.Init.DNS = c.Gateways[s.Gateway].DNS
-	if nets := c.AttachedBy(s.Name); m.Init.DNS == "" && len(nets) > 0 {
-		m.Init.DNS = c.Networks[nets[0]].Host().String()
-	}
+	// Names resolve through the gateway's resolver, at the gateway end
+	// of the service's link.
+	gwEnd, _ := s.Link()
+	m.Init.DNS = gwEnd.Addr().String()
 	if len(s.Secrets) > 0 {
 		m.Secrets = os.Getenv("CREDENTIALS_DIRECTORY")
 		if m.Secrets == "" {
