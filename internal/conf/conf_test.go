@@ -107,7 +107,7 @@ func TestFileErrors(t *testing.T) {
 		{"x.cynetwork", "[Network]\nIndex=3\nAttach=box:a\n", "want service:<name>"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIndex=4\n", "more than once"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIsolated=yes\n", "unknown key Isolated="},
-		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "Index= is required"},
+		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "unknown section [Netwrok]"},
 		{"x.cynetwork", "Index=3\n", "outside a section"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=tor\n", "want direct or wireguard"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
@@ -171,6 +171,17 @@ func TestCascade(t *testing.T) {
 	}
 	if c.Networks["web"] == nil || c.Boxes["b"] == nil || c.Gateways["out"] == nil {
 		t.Errorf("unrelated objects dropped: %+v", c)
+	}
+}
+
+// A file whose [Install] or sections are wrong is left out like any
+// other bad file, so whatever depends on it fails too.
+func TestBadFileLeftOut(t *testing.T) {
+	for _, extra := range []string{"\n[Install]\nWantedBy=a/b.target\n", "\n[Extra]\n"} {
+		c, errs := load(t, map[string]string{"out.cygateway": out + extra, "web.cynetwork": "[Network]\nIndex=2\nAttach=gateway:out\n"})
+		if c.Gateways["out"] != nil || errs["out.cygateway"] == "" || errs["web.cynetwork"] == "" {
+			t.Errorf("%q: gateway %v, problems %v", extra, c.Gateways["out"], errs)
+		}
 	}
 }
 

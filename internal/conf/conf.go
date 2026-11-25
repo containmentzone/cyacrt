@@ -243,6 +243,17 @@ func (c *Config) parseFile(path, kind, name string) error {
 		}
 		return f
 	}
+	// Everything that can fail on its own goes before the kind's parser,
+	// which adds the object to c.
+	for sec := range byName {
+		if !slices.Contains(sections[kind], sec) {
+			return fmt.Errorf("unknown section [%s]", sec)
+		}
+	}
+	in, err := parseInstall(take("Install"))
+	if err != nil {
+		return err
+	}
 	switch kind {
 	case KindNetwork:
 		err = c.parseNetwork(name, take("Network"))
@@ -256,17 +267,18 @@ func (c *Config) parseFile(path, kind, name string) error {
 	if err != nil {
 		return err
 	}
-	in, err := parseInstall(take("Install"))
-	if err != nil {
-		return err
-	}
 	if len(in.WantedBy)+len(in.RequiredBy) > 0 {
 		c.Install[Key(kind, name)] = in
 	}
-	for sec := range byName {
-		return fmt.Errorf("unknown section [%s]", sec)
-	}
 	return nil
+}
+
+// sections are the sections each kind's file may have.
+var sections = map[string][]string{
+	KindNetwork: {"Network", "Install"},
+	KindGateway: {"Gateway", "Install"},
+	KindService: {"Workload", "Service", "Install"},
+	KindBox:     {"Box", "Install"},
 }
 
 func (c *Config) parseNetwork(name string, f *fields) error {
@@ -445,7 +457,7 @@ func (c *Config) parseBox(name string, f *fields) error {
 	return nil
 }
 
-var unitName = regexp.MustCompile(`^[A-Za-z0-9:_.\\@-]+\.(service|socket|target|path|timer|slice|mount)$`)
+var unitName = regexp.MustCompile(`^[A-Za-z0-9:_.\\@-]+\.[a-z]+$`)
 
 // parseInstall takes WantedBy= and RequiredBy=, each a space-separated
 // list of unit names that may be given more than once, as in systemd.
