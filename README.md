@@ -110,7 +110,8 @@ picks one of three modes:
 The same disk boots under one of these runtimes. A box uses its
 `Runtime=`, else `CYAC_RUNTIME`, else `cloud-hypervisor`. A box never
 falls back to runc on its own: on a host without KVM it fails to start
-until its file says `Runtime=runc`.
+until its file says `Runtime=runc`, or the whole machine opts in with
+`services.cyac.defaultRuntime = "runc"` (which sets `CYAC_RUNTIME`).
 
 | | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
@@ -404,6 +405,7 @@ source:
             enable = true;
             buildGuestKernel = true;   # for Cloud Hypervisor; leave off without KVM
             # guestKernel = ./vmlinux;   # or bring your own
+            # defaultRuntime = "runc";   # no KVM, and every box trusted
             dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here
