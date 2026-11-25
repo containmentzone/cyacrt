@@ -204,6 +204,14 @@ func Load(dir string) (*Config, []Problem, error) {
 // Path is where the file for an object lives in dir.
 func Path(dir, kind, name string) string { return filepath.Join(dir, name+"."+kind) }
 
+// sections is the one section each kind keeps its keys in.
+var sections = map[string]string{
+	KindNetwork: "Network",
+	KindGateway: "Gateway",
+	KindService: "Service",
+	KindBox:     "Box",
+}
+
 func (c *Config) parseFile(path, kind, name string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -214,36 +222,31 @@ func (c *Config) parseFile(path, kind, name string) error {
 	if err != nil {
 		return err
 	}
-	byName := map[string]*fields{}
+	// Any section but the kind's own rejects the file before anything is
+	// stored, so a rejected object never ends up in the Config.
+	want := sections[kind]
+	var sec *fields
 	for _, s := range secs {
-		if byName[s.name] != nil {
+		if s.name != want {
+			return fmt.Errorf("unknown section [%s]", s.name)
+		}
+		if sec != nil {
 			return fmt.Errorf("section [%s] given more than once", s.name)
 		}
-		byName[s.name] = newFields(s)
+		sec = newFields(s)
 	}
-	take := func(sec string) *fields {
-		f := byName[sec]
-		delete(byName, sec)
-		if f == nil {
-			f = newFields(section{name: sec})
-		}
-		return f
+	if sec == nil {
+		sec = newFields(section{name: want})
 	}
 	switch kind {
 	case KindNetwork:
-		err = c.parseNetwork(name, take("Network"))
+		return c.parseNetwork(name, sec)
 	case KindGateway:
-		err = c.parseGateway(name, take("Gateway"))
+		return c.parseGateway(name, sec)
 	case KindService:
-		err = c.parseService(name, take("Service"))
+		return c.parseService(name, sec)
 	case KindBox:
-		err = c.parseBox(name, take("Box"))
-	}
-	if err != nil {
-		return err
-	}
-	for sec := range byName {
-		return fmt.Errorf("unknown section [%s]", sec)
+		return c.parseBox(name, sec)
 	}
 	return nil
 }

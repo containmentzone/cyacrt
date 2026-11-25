@@ -103,7 +103,7 @@ func TestFileErrors(t *testing.T) {
 		{"x.cynetwork", "[Network]\nIndex=3\nAttach=box:a\n", "want service:<name>"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIndex=4\n", "more than once"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIsolated=yes\n", "unknown key Isolated="},
-		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "Index= is required"},
+		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "unknown section [Netwrok]"},
 		{"x.cynetwork", "Index=3\n", "outside a section"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=tor\n", "want direct or wireguard"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
@@ -218,5 +218,16 @@ func TestINIContinuation(t *testing.T) {
 	}
 	if len(secs) != 1 || len(secs[0].entries) != 1 || secs[0].entries[0].value != "one two" {
 		t.Fatalf("got %+v", secs)
+	}
+}
+
+// A file rejected for a stray section leaves nothing behind in the Config.
+func TestRejectedFileLeftOut(t *testing.T) {
+	c, errs := load(t, map[string]string{
+		"out.cygateway":   out,
+		"proxy.cyservice": "[Workload]\nSeedImage=i\n[Service]\nIndex=0\nGateway=out\nPort=1\n",
+	})
+	if errs["proxy.cyservice"] == "" || c.Services["proxy"] != nil {
+		t.Errorf("problems %v, service %+v", errs, c.Services["proxy"])
 	}
 }
