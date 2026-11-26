@@ -3,7 +3,7 @@ name: release
 # Two halves of a release, around a pull request a person merges:
 # - Run this workflow by hand with proud, default or shame: it runs
 #   scripts/release.sh and opens a "Release vX.Y.Z" pull request.
-# - When a change to internal/version/VERSION lands on main, it tags that
+# - When a change to VERSION lands on main, it tags that
 #   commit vX.Y.Z and publishes a GitHub release with its changelog section.
 
 on:
@@ -15,7 +15,7 @@ on:
         options: [proud, default, shame]
   push:
     branches: [main]
-    paths: [internal/version/VERSION]
+    paths: [VERSION]
 
 permissions:
   contents: write
@@ -34,7 +34,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           scripts/release.sh "$BUMP"
-          v=$(cat internal/version/VERSION)
+          v=$(cat VERSION)
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git switch -c "release/v$v"
@@ -52,7 +52,7 @@ jobs:
       - env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          v=v$(cat internal/version/VERSION)
+          v=v$(cat VERSION)
           if gh release view "$v" >/dev/null 2>&1; then
             echo "$v is already released"
             exit 0
