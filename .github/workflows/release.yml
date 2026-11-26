@@ -1,0 +1,62 @@
+name: release
+
+# Two halves of a release, around a pull request a person merges:
+# - Run this workflow by hand with proud, default or shame: it runs
+#   scripts/release.sh and opens a "Release vX.Y.Z" pull request.
+# - When a change to internal/version/VERSION lands on main, it tags that
+#   commit vX.Y.Z and publishes a GitHub release with its changelog section.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which PrideVer part to bump
+        type: choice
+        options: [proud, default, shame]
+  push:
+    branches: [main]
+    paths: [internal/version/VERSION]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # release.sh reads the history and tags
+      - env:
+          BUMP: ${{ inputs.bump }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          scripts/release.sh "$BUMP"
+          v=$(cat internal/version/VERSION)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "release/v$v"
+          git add -A
+          git commit -m "Release v$v"
+          git push origin "release/v$v"
+          gh pr create --base main --title "Release v$v" \
+            --body "Bumps VERSION to $v and regenerates CHANGELOG.md. Merging tags v$v and publishes the release."
+
+  tag:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          v=v$(cat internal/version/VERSION)
+          if gh release view "$v" >/dev/null 2>&1; then
+            echo "$v is already released"
+            exit 0
+          fi
+          # The changelog section under "## $v (date)", up to the next heading.
+          awk -v v="$v" '/^## /{ if (p) exit; p = ($2 == v); next } p' CHANGELOG.md >notes.md
+          gh release create "$v" --target "$GITHUB_SHA" --title "$v" --notes-file notes.md
