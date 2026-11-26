@@ -50,7 +50,7 @@ func TestStartStop(t *testing.T) {
 	if err := r.Start(context.Background(), "cynetwork", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.ran) == 0 || f.ran[0] != "ip link add cyn1 type bridge" {
+	if len(f.ran) == 0 || f.ran[0] != "ip link add cyn1 address 02:c7:ac:00:01:02 type bridge" {
 		t.Fatalf("Up ran %q", f.ran)
 	}
 	if err := os.Remove(filepath.Join(r.Conf, "dev.cynetwork")); err != nil {

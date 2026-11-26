@@ -99,7 +99,7 @@ down:
 
 ==> cynetwork dev <==
 up:
-  ip link add cyn1 type bridge
+  ip link add cyn1 address 02:c7:ac:00:01:02 type bridge
   ip addr add 10.42.1.2/24 dev cyn1
   ip link set cyn1 up
   nft -f -
@@ -125,7 +125,7 @@ down:
 
 ==> cynetwork web <==
 up:
-  ip link add cyn2 type bridge
+  ip link add cyn2 address 02:c7:ac:00:02:02 type bridge
   ip addr add 10.42.2.2/24 dev cyn2
   ip link set cyn2 up
   nft -f -

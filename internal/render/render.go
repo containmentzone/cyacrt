@@ -184,7 +184,10 @@ func hostForward(g *conf.Gateway, hostIf string) string {
 func Network(n *conf.Network) Plan {
 	var p Plan
 	br := Bridge(n)
-	p.up("ip", "link", "add", br, "type", "bridge")
+	// A fixed MAC: a bridge without one takes its lowest port's, so it
+	// would change whenever a service's leg comes or goes, and every
+	// box's ARP entry for the host's DNS on .2 would go stale with it.
+	p.up("ip", "link", "add", br, "address", MAC(n.Host()), "type", "bridge")
 	p.up("ip", "addr", "add", netip.PrefixFrom(n.Host(), 24).String(), "dev", br)
 	p.up("ip", "link", "set", br, "up")
 	p.nft("inet", "cyn-"+n.Name, fmt.Sprintf(`	chain input {

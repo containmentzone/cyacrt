@@ -14,8 +14,13 @@
 //	              network that attaches it
 //	cybox@b       the box; BindsTo its network, Wants the network's services
 //
-// Gateways and networks stop when nothing needs them any more, so their
-// interfaces never outlive the boxes on them.
+// Gateways and networks stay up once started, until they are stopped
+// themselves (or cyac.target is). They are not StopWhenUnneeded: a
+// daemon-reload that turns a box or network into a broken unit (say, a
+// network that attaches a service whose file isn't there yet) drops that
+// unit's dependencies, and systemd would then stop the bridge or gateway
+// under boxes that are still running. Stopping one on purpose stops what
+// BindsTo it, so a box is never left on a bridge that went away.
 package units
 
 import (
@@ -119,7 +124,6 @@ func run(p Paths, verb, kind, name string) string {
 // oneshot is the service section shared by gateways and networks: start
 // creates the kernel objects, stop removes them.
 func oneshot(u *unit, p Paths, kind, name string) string {
-	u.set("StopWhenUnneeded", "yes")
 	u.section("Service")
 	u.set("Type", "oneshot")
 	u.set("RemainAfterExit", "yes")

@@ -116,7 +116,6 @@ Description=cyac gateway out (direct)
 SourcePath=/var/lib/cyac/conf/out.cygateway
 PartOf=cyac.target
 Wants=cydns@out.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -132,7 +131,6 @@ Description=cyac gateway vpn (wireguard)
 SourcePath=/var/lib/cyac/conf/vpn.cygateway
 PartOf=cyac.target
 Wants=cydns@vpn.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -147,7 +145,6 @@ ExecStop=/bin/cyac run stop cygateway vpn
 Description=cyac network dev (10.42.1.0/24)
 SourcePath=/var/lib/cyac/conf/dev.cynetwork
 PartOf=cyac.target
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -164,7 +161,6 @@ SourcePath=/var/lib/cyac/conf/web.cynetwork
 PartOf=cyac.target
 BindsTo=cygateway@out.service
 After=cygateway@out.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
