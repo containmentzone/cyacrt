@@ -12,7 +12,16 @@ set -eu
 cd "$(dirname "$0")/.."
 repo=https://github.com/containmentzone/cyacrt
 
-IFS=. read -r proud default shame <VERSION
+# valid <v>: whether v is PROUD.DEFAULT.SHAME
+valid() { echo "$1" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; }
+
+cur=$(cat VERSION)
+if ! valid "$cur"; then
+	echo "VERSION holds '$cur', not PROUD.DEFAULT.SHAME" >&2
+	exit 1
+fi
+proud=${cur%%.*} shame=${cur##*.}
+default=${cur#*.} default=${default%.*}
 case "${1-}" in
 proud) next=$((proud + 1)).0.0 ;;
 default) next=$proud.$((default + 1)).0 ;;
@@ -23,7 +32,7 @@ shame) next=$proud.$default.$((shame + 1)) ;;
 	exit 2
 	;;
 esac
-if ! echo "$next" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+if ! valid "$next"; then
 	echo "$next is not PROUD.DEFAULT.SHAME" >&2
 	exit 2
 fi
