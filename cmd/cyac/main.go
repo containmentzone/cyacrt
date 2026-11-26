@@ -28,7 +28,6 @@ import (
 
 	"golang.org/x/crypto/acme/autocert"
 
-	"github.com/containmentzone/cyacrt"
 	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/client"
@@ -42,6 +41,10 @@ import (
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
 	"github.com/containmentzone/cyacrt/internal/server"
 )
+
+// version is the release, set at build time from VERSION (the Nix package
+// passes -ldflags "-X main.version=..."); plain go builds say "dev".
+var version = "dev"
 
 const usage = `usage: cyac <command> [args]
 
@@ -106,7 +109,7 @@ func main() {
 	case "dns":
 		err = serveDNS(args)
 	case "version":
-		fmt.Println(cyacrt.Version())
+		fmt.Println(version)
 	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
@@ -321,7 +324,7 @@ func daemon(socket string, args []string) error {
 	if err := lock(dir); err != nil {
 		return err
 	}
-	slog.Info("cyac daemon starting", "version", cyacrt.Version(), "state_dir", dir, "conf", conf.Dir, "socket", socket)
+	slog.Info("cyac daemon starting", "version", version, "state_dir", dir, "conf", conf.Dir, "socket", socket)
 	routes := filepath.Join(dir, "routes")
 	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {

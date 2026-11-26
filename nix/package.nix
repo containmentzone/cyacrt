@@ -30,22 +30,22 @@ let
     procps # sysctl, for `cyac run`
     wireguard-tools # wg, for Kind=wireguard gateways
   ];
+  version = lib.fileContents ../VERSION;
 in
 buildGoModule {
   pname = "cyac";
-  version = lib.fileContents ../VERSION;
+  inherit version;
 
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
       ../go.mod
       ../go.sum
-      ../VERSION
-      ../version.go
       ../cmd
       ../internal
     ];
   };
+  ldflags = [ "-X main.version=${version}" ];
   vendorHash = "sha256-I0h4V7tVejZVRYoXHYJfBZtobknvV/8iwtFUN989njU=";
   subPackages = [
     "cmd/cyac"
