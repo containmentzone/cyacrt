@@ -27,7 +27,7 @@ func server(t *testing.T, fwd Forward) *Server {
 		"dev.cynetwork":    "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n",
 		"lab.cynetwork":    "[Network]\nIndex=2\nAttach=gateway:out\n",
 		"sealed.cynetwork": "[Network]\nIndex=3\n",
-		"proxy.cyservice":  "[Workload]\nImage=i\n\n[Service]\nIndex=0\nGateway=out\nPort=8080\n",
+		"proxy.cyservice":  "[Service]\nSeedImage=i\nIndex=0\nGateway=out\nPort=8080\n",
 		"a.cybox":          "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
 		"b.cybox":          "[Box]\nSeedImage=i\nNetwork=lab\nAddress=10.42.2.10\n",
 		"c.cybox":          "[Box]\nSeedImage=i\nNetwork=sealed\nAddress=10.42.3.10\n",

@@ -145,7 +145,7 @@ func TestService(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
 		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-		"proxy.cyservice": "[Workload]\nImage=img\n\n[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
+		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
@@ -215,5 +215,25 @@ func TestBoxRuntime(t *testing.T) {
 	t.Setenv("CYAC_RUNTIME", "nope")
 	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), `no runtime "nope"`) {
 		t.Errorf("ignored CYAC_RUNTIME: %v", err)
+	}
+}
+
+// A service runs under gVisor unless its file names runc, never falls
+// back to runc on its own, and never runs in a VM.
+func TestServiceRuntime(t *testing.T) {
+	for _, tc := range []struct{ runtime, want string }{
+		{"", "set Runtime=runc"},
+		{"Runtime=cloud-hypervisor\n", "runsc or runc"},
+	} {
+		r, _ := runner(t, map[string]string{
+			"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\n",
+			"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
+			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Index=0\nGateway=out\nPort=8080\n",
+		})
+		r.State, r.Dataset = t.TempDir(), "tank/cyac"
+		r.Runtimes = []driver.Runtime{&fakeRuntime{name: "cloud-hypervisor"}, &fakeRuntime{name: "runc", kind: driver.Netns}}
+		if err := r.Start(context.Background(), "cyservice", "proxy"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: got %v, want %q", tc.runtime, err, tc.want)
+		}
 	}
 }

@@ -38,8 +38,8 @@ func load(t *testing.T, files map[string]string) (*Config, map[string]string) {
 const (
 	out = "[Gateway]\nIndex=0\nKind=direct\n"
 	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
-	prx = "[Workload]\nImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n\n" +
-		"[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
+	prx = "[Service]\nSeedImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n" +
+		"DiskSize=1G\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
 	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
 )
 
@@ -61,18 +61,19 @@ func TestLoad(t *testing.T) {
 		Services: map[string]*Service{"proxy": {
 			Name: "proxy",
 			Workload: Workload{
-				Image: "example/proxy",
-				Exec:  []string{"/bin/proxy", "--listen", ":8080", "a b"},
-				Env:   []string{"A=1", "B=2"},
+				Image:  "example/proxy",
+				Exec:   []string{"/bin/proxy", "--listen", ":8080", "a b"},
+				Env:    []string{"A=1", "B=2"},
+				DiskMB: 1024, Runtime: "runc",
 			},
 			Gateway: "out", Port: 8080,
 			Secrets: []Secret{{"KEY", "/run/keys/key"}},
 		}},
 		Boxes: map[string]*Box{"a": {
 			Name:     "a",
-			Workload: Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096},
+			Workload: Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096, DiskMB: 10240},
 			Network:  "dev", Address: netip.MustParseAddr("10.42.1.10"),
-			DiskMB: 10240, Autostart: true,
+			Autostart: true,
 		}},
 	}
 	if !reflect.DeepEqual(c, want) {
@@ -102,7 +103,7 @@ func TestFileErrors(t *testing.T) {
 		{"x.cynetwork", "[Network]\nIndex=3\nAttach=box:a\n", "want service:<name>"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIndex=4\n", "more than once"},
 		{"x.cynetwork", "[Network]\nIndex=3\nIsolated=yes\n", "unknown key Isolated="},
-		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "Index= is required"},
+		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "unknown section [Netwrok]"},
 		{"x.cynetwork", "Index=3\n", "outside a section"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=tor\n", "want direct or wireguard"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
@@ -112,10 +113,11 @@ func TestFileErrors(t *testing.T) {
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=eth0\"\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=averyverylongname\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\nConfig=/k\nAddress=10.64.0.2/32\nUplink=eth0\n", "only applies to Kind=direct"},
-		{"x.cyservice", "[Service]\nIndex=5\nGateway=out\nPort=80\n", "needs Image="},
-		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=0\n", "Port=0"},
-		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
-		{"x.cyservice", "[Workload]\nImage=i\nExec=sh -c 'oops\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nIndex=5\nGateway=out\nPort=0\n", "Port=0"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nIndex=5\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nExec=sh -c 'oops\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
+		{"x.cyservice", "[Workload]\nSeedImage=i\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unknown section [Workload]"},
+		{"x.cyservice", "[Service]\nImage=i\nIndex=5\nGateway=out\nPort=1\n", "unknown key Image="},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "needs Address="},
 		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
@@ -216,5 +218,16 @@ func TestINIContinuation(t *testing.T) {
 	}
 	if len(secs) != 1 || len(secs[0].entries) != 1 || secs[0].entries[0].value != "one two" {
 		t.Fatalf("got %+v", secs)
+	}
+}
+
+// A file rejected for a stray section leaves nothing behind in the Config.
+func TestRejectedFileLeftOut(t *testing.T) {
+	c, errs := load(t, map[string]string{
+		"out.cygateway":   out,
+		"proxy.cyservice": "[Workload]\nSeedImage=i\n[Service]\nIndex=0\nGateway=out\nPort=1\n",
+	})
+	if errs["proxy.cyservice"] == "" || c.Services["proxy"] != nil {
+		t.Errorf("problems %v, service %+v", errs, c.Services["proxy"])
 	}
 }
