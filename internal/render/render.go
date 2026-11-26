@@ -19,7 +19,7 @@ import (
 
 // Step is one command: argv, and what to feed its stdin (nft scripts).
 // A step with IfExists runs only if that path exists, and its failure
-// doesn't fail the plan: that is how a network or gateway that comes back
+// doesn't fail the plan but skips the rest of the steps with that path: that is how a network or gateway that comes back
 // puts the legs of workloads that kept running back in place (see
 // rejoin), as far as they still fit.
 type Step struct {

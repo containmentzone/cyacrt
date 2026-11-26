@@ -113,10 +113,14 @@ func (r *Runner) up(kind, name string, p render.Plan) error {
 	if err := r.record(kind, name, p.Down); err != nil {
 		return err
 	}
+	skip := "" // a rejoin that failed: the rest of its steps stay out too
 	for _, s := range p.Up {
 		if s.IfExists != "" {
-			if _, err := os.Stat(s.IfExists); err == nil {
-				r.Exec(s) // a rejoin: whatever no longer fits stays out
+			if s.IfExists == skip {
+				continue
+			}
+			if _, err := os.Stat(s.IfExists); err != nil || r.Exec(s) != nil {
+				skip = s.IfExists // whatever no longer fits stays out
 			}
 			continue
 		}
