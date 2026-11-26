@@ -23,6 +23,9 @@ func dump(b *strings.Builder, title string, p Plan) {
 	}{{"up", p.Up}, {"down", p.Down}} {
 		b.WriteString(part.name + ":\n")
 		for _, s := range part.steps {
+			if s.IfExists != "" {
+				b.WriteString("  [if " + s.IfExists + "]")
+			}
 			b.WriteString("  " + strings.Join(s.Args, " ") + "\n")
 			if s.Stdin != "" {
 				b.WriteString("    <<<\n")
@@ -55,10 +58,10 @@ func TestPlans(t *testing.T) {
 	c := load(t)
 	var b strings.Builder
 	for _, name := range conf.Sorted(c.Gateways) {
-		dump(&b, "cygateway "+name, Gateway(c.Gateways[name]))
+		dump(&b, "cygateway "+name, Gateway(c, c.Gateways[name]))
 	}
 	for _, name := range conf.Sorted(c.Networks) {
-		dump(&b, "cynetwork "+name, Network(c.Networks[name]))
+		dump(&b, "cynetwork "+name, Network(c, c.Networks[name]))
 	}
 	for _, name := range conf.Sorted(c.Services) {
 		dump(&b, "cyservice "+name, Service(c, c.Services[name]))
@@ -112,10 +115,10 @@ func TestNftSyntax(t *testing.T) {
 	c := load(t)
 	var plans []Plan
 	for _, g := range c.Gateways {
-		plans = append(plans, Gateway(g))
+		plans = append(plans, Gateway(c, g))
 	}
 	for _, n := range c.Networks {
-		plans = append(plans, Network(n))
+		plans = append(plans, Network(c, n))
 	}
 	for _, s := range c.Services {
 		plans = append(plans, Service(c, s))

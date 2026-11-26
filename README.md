@@ -46,9 +46,11 @@ Autostart=yes
 and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
 `cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
 its object, plus `cyac.target`, which starts every `Autostart=yes` box.
-The units depend on each other (a box `BindsTo` its network, a network its
-gateway), so systemd brings things up in order and takes them down in
-reverse, and a network or gateway goes away with the last thing on it. A
+The units depend on each other (a box `Wants` its network, a network its
+gateway), so systemd brings things up in order. Restarting a network or
+gateway leaves the boxes and services on it running: when it comes back
+it puts their ports and legs back, so nothing on it needs a restart.
+Networks and gateways stay up until stopped (or `cyac.target` is). A
 file that doesn't parse, or refers to something missing or broken, still
 gets a unit, one that fails with the reason when started, so it shows up
 in `systemctl status`.
