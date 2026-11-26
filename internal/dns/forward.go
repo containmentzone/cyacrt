@@ -6,13 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
-	"runtime"
 	"time"
-
-	"golang.org/x/sys/unix"
-
-	"github.com/containmentzone/cyacrt/internal/conf"
-	"github.com/containmentzone/cyacrt/internal/render"
 )
 
 // udpTry is how long one UDP attempt waits for the upstream before
@@ -20,21 +14,16 @@ import (
 // fallback still answer before they do.
 const udpTry = 2 * time.Second
 
-// ViaGateway is the Forward that asks the gateway's resolver from sockets
-// opened inside the gateway's netns. A socket keeps that netns after the
-// thread leaves it, so the query takes the gateway's route out (its
-// uplink or its tunnel) and nothing else.
-func ViaGateway(ctx context.Context, gw *conf.Gateway, query []byte) ([]byte, error) {
-	var upstreams []string
-	for _, ip := range DefaultUpstreams {
-		upstreams = append(upstreams, net.JoinHostPort(ip, "53"))
+// Upstream is the Forward the resolver uses: it runs in the gateway's
+// netns, so an ordinary dial takes the gateway's route out (its uplink or
+// its tunnel) and nothing else.
+func Upstream(ctx context.Context, upstreams []string, query []byte) ([]byte, error) {
+	var addrs []string
+	for _, ip := range upstreams {
+		addrs = append(addrs, net.JoinHostPort(ip, "53"))
 	}
-	if gw.DNS != "" {
-		upstreams = []string{net.JoinHostPort(gw.DNS, "53")}
-	}
-	ns := "/run/netns/" + render.GatewayNetns(gw.Name)
-	dial := func(network, addr string) (net.Conn, error) { return dialIn(ns, network, addr) }
-	return forward(ctx, dial, upstreams, query)
+	dial := func(network, addr string) (net.Conn, error) { return net.DialTimeout(network, addr, 3*time.Second) }
+	return forward(ctx, dial, addrs, query)
 }
 
 // forward asks the first upstream over UDP, the next one (or the same,
@@ -112,32 +101,3 @@ func exchange(ctx context.Context, dial func(network, addr string) (net.Conn, er
 
 // truncated reports whether a DNS message has the TC flag set.
 func truncated(msg []byte) bool { return len(msg) > 2 && msg[2]&0x02 != 0 }
-
-// dialIn connects to addr inside the netns at path. It runs on a thread
-// of its own that never leaves that netns: the goroutine exits still
-// locked to it, so Go discards the thread instead of reusing it.
-func dialIn(path, network, addr string) (net.Conn, error) {
-	type result struct {
-		c   net.Conn
-		err error
-	}
-	done := make(chan result, 1)
-	go func() {
-		runtime.LockOSThread()
-		fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC, 0)
-		if err != nil {
-			done <- result{nil, err}
-			return
-		}
-		err = unix.Setns(fd, unix.CLONE_NEWNET)
-		unix.Close(fd)
-		if err != nil {
-			done <- result{nil, err}
-			return
-		}
-		c, err := net.DialTimeout(network, addr, 3*time.Second)
-		done <- result{c, err}
-	}()
-	r := <-done
-	return r.c, r.err
-}
