@@ -35,8 +35,9 @@ let
 
       echo "forwarding :$listen to $target on the tailnet"
       host=''${target%:*} port=''${target##*:}
-      host=''${host#[} host=''${host%]} # [fd7a::1]:80 -> fd7a::1
-      socat "TCP-LISTEN:$listen,fork,reuseaddr" "EXEC:tailscale --socket=$sock nc $host $port" &
+      # [fd7a::1]:80 -> fd7a::1; socat needs the command quoted for its colons.
+      host=''${host#[} host=''${host%]}
+      socat "TCP-LISTEN:$listen,fork,reuseaddr" "EXEC:\"tailscale --socket=$sock nc $host $port\"" &
       # Whichever of the two dies first takes the service down with it.
       wait -n
       exit 1
