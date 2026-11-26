@@ -28,6 +28,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: main # even when dispatched from another branch
           fetch-depth: 0 # release.sh reads the history and tags
       - env:
           BUMP: ${{ inputs.bump }}
