@@ -55,6 +55,11 @@ up:
     	}
     }
     >>>
+  [if /sys/class/net/cyn2]  ip link add cynl2 type veth peer name n2 netns cygw-out
+  [if /sys/class/net/cyn2]  ip link set cynl2 master cyn2
+  [if /sys/class/net/cyn2]  ip link set cynl2 up
+  [if /sys/class/net/cyn2]  ip -n cygw-out addr add 10.42.2.1/24 dev n2
+  [if /sys/class/net/cyn2]  ip -n cygw-out link set n2 up
 down:
   nft delete table inet cygw-out
   ip link del cygw0
@@ -93,13 +98,19 @@ up:
     	}
     }
     >>>
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy link set gw up
+  [if /run/netns/cysvc-llm-proxy]  ip -n cygw-vpn addr add 10.42.255.0/31 dev s0
+  [if /run/netns/cysvc-llm-proxy]  ip -n cygw-vpn link set s0 up
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy route add default via 10.42.255.0
 down:
   ip link del cywg1
   ip netns del cygw-vpn
 
 ==> cynetwork dev <==
 up:
-  ip link add cyn1 type bridge
+  ip link add cyn1 address 02:c7:ac:00:01:02 type bridge
   ip addr add 10.42.1.2/24 dev cyn1
   ip link set cyn1 up
   nft -f -
@@ -119,13 +130,17 @@ up:
     	}
     }
     >>>
+  [if /sys/class/net/cyb1-10]  ip link set cyb1-10 master cyn1
+  [if /sys/class/net/cyb1-10]  ip link set cyb1-10 up
+  [if /sys/class/net/cys0n1]  ip link set cys0n1 master cyn1
+  [if /sys/class/net/cys0n1]  ip link set cys0n1 up
 down:
-  nft delete table inet cyn-dev
   ip link del cyn1
+  nft delete table inet cyn-dev
 
 ==> cynetwork web <==
 up:
-  ip link add cyn2 type bridge
+  ip link add cyn2 address 02:c7:ac:00:02:02 type bridge
   ip addr add 10.42.2.2/24 dev cyn2
   ip link set cyn2 up
   nft -f -
@@ -150,10 +165,12 @@ up:
   ip link set cynl2 up
   ip -n cygw-out addr add 10.42.2.1/24 dev n2
   ip -n cygw-out link set n2 up
+  [if /sys/class/net/cyb2-10]  ip link set cyb2-10 master cyn2
+  [if /sys/class/net/cyb2-10]  ip link set cyb2-10 up
 down:
+  ip link del cyn2
   nft delete table inet cyn-web
   ip link del cynl2
-  ip link del cyn2
 
 ==> cyservice llm-proxy <==
 up:
@@ -186,6 +203,21 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cys-llm-proxy
+    delete table inet cys-llm-proxy
+    table inet cys-llm-proxy {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cys0n1" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cys0n1" } drop
+    	}
+    }
+    >>>
   ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
   ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
   ip -n cysvc-llm-proxy link set gw up
@@ -202,6 +234,7 @@ up:
     >>>
 down:
   nft delete table bridge cys-llm-proxy
+  nft delete table inet cys-llm-proxy
   ip netns del cysvc-llm-proxy
 
 ==> cybox box-a (VM) <==
@@ -230,8 +263,24 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-box-a
+    delete table inet cyb-box-a
+    table inet cyb-box-a {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    }
+    >>>
 down:
   nft delete table bridge cyb-box-a
+  nft delete table inet cyb-box-a
   ip link del cyb1-10
 
 ==> cybox box-a (runc) <==
@@ -266,9 +315,25 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-box-a
+    delete table inet cyb-box-a
+    table inet cyb-box-a {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    }
+    >>>
 down:
   ip netns del cybox-box-a
   nft delete table bridge cyb-box-a
+  nft delete table inet cyb-box-a
   ip link del cyb1-10
 
 ==> cybox box-a networkd <==
@@ -307,8 +372,24 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-site
+    delete table inet cyb-site
+    table inet cyb-site {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    }
+    >>>
 down:
   nft delete table bridge cyb-site
+  nft delete table inet cyb-site
   ip link del cyb2-10
 
 ==> cybox site (runc) <==
@@ -344,9 +425,25 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-site
+    delete table inet cyb-site
+    table inet cyb-site {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    }
+    >>>
 down:
   ip netns del cybox-site
   nft delete table bridge cyb-site
+  nft delete table inet cyb-site
   ip link del cyb2-10
 
 ==> cybox site networkd <==

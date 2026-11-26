@@ -3,19 +3,22 @@
 // comparing output: no kernel, no socket, no network.
 //
 // Every object becomes one unit named <primitive>@<name>, with the
-// dependencies that make systemd bring things up in order and take them
-// down in reverse:
+// dependencies that make systemd bring things up in order:
 //
 //	cygateway@g   oneshot: the gateway netns and its uplink
 //	cydns@g       the gateway's resolver, unprivileged, in its netns;
 //	              PartOf the gateway
-//	cynetwork@n   oneshot: the bridge; BindsTo its gateway
-//	cyservice@s   the service container; BindsTo its gateway and every
+//	cynetwork@n   oneshot: the bridge; Wants its gateway
+//	cyservice@s   the service container; Wants its gateway and every
 //	              network that attaches it
-//	cybox@b       the box; BindsTo its network, Wants the network's services
+//	cybox@b       the box; Wants its network and the network's services
 //
-// Gateways and networks stop when nothing needs them any more, so their
-// interfaces never outlive the boxes on them.
+// Only Wants=: restarting or stopping a gateway or network leaves what
+// runs on it running. When it comes back, it puts their ports and legs
+// back in place (see render.Network and render.Gateway), so a box never
+// needs a restart for its network. For the same reason gateways and
+// networks are not StopWhenUnneeded: they stay up until stopped, or until
+// cyac.target is.
 package units
 
 import (
@@ -119,7 +122,6 @@ func run(p Paths, verb, kind, name string) string {
 // oneshot is the service section shared by gateways and networks: start
 // creates the kernel objects, stop removes them.
 func oneshot(u *unit, p Paths, kind, name string) string {
-	u.set("StopWhenUnneeded", "yes")
 	u.section("Service")
 	u.set("Type", "oneshot")
 	u.set("RemainAfterExit", "yes")
@@ -137,7 +139,7 @@ func gateway(g *conf.Gateway, p Paths) string {
 func network(n *conf.Network, p Paths) string {
 	u := header(conf.KindNetwork, n.Name, p, "cyac network "+n.Name+" ("+n.Prefix().String()+")")
 	if n.Gateway != "" {
-		u.after("BindsTo", Name(conf.KindGateway, n.Gateway))
+		u.after("Wants", Name(conf.KindGateway, n.Gateway))
 	}
 	return oneshot(u, p, conf.KindNetwork, n.Name)
 }
@@ -200,18 +202,17 @@ func service(c *conf.Config, s *conf.Service, p Paths) string {
 	for _, n := range c.AttachedBy(s.Name) {
 		deps = append(deps, Name(conf.KindNetwork, n))
 	}
-	u.after("BindsTo", deps...)
+	u.after("Wants", deps...)
 	return workload(u, p, conf.KindService, s.Name, s.Secrets)
 }
 
 func box(c *conf.Config, b *conf.Box, p Paths) string {
 	u := header(conf.KindBox, b.Name, p, "cyac box "+b.Name)
-	u.after("BindsTo", Name(conf.KindNetwork, b.Network))
-	var svcs []string
+	deps := []string{Name(conf.KindNetwork, b.Network)}
 	for _, s := range c.Networks[b.Network].Services {
-		svcs = append(svcs, Name(conf.KindService, s))
+		deps = append(deps, Name(conf.KindService, s))
 	}
-	u.after("Wants", svcs...)
+	u.after("Wants", deps...)
 	return workload(u, p, conf.KindBox, b.Name, nil)
 }
 

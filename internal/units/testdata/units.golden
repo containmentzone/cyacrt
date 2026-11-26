@@ -9,10 +9,8 @@ Description=cyac boxes and services
 Description=cyac box box-a
 SourcePath=/var/lib/cyac/conf/box-a.cybox
 PartOf=cyac.target
-BindsTo=cynetwork@dev.service
-After=cynetwork@dev.service
-Wants=cyservice@llm-proxy.service
-After=cyservice@llm-proxy.service
+Wants=cynetwork@dev.service cyservice@llm-proxy.service
+After=cynetwork@dev.service cyservice@llm-proxy.service
 
 [Service]
 Type=simple
@@ -38,7 +36,7 @@ ExecStart=/bin/cyac-generator -check cybox lost
 Description=cyac box site
 SourcePath=/var/lib/cyac/conf/site.cybox
 PartOf=cyac.target
-BindsTo=cynetwork@web.service
+Wants=cynetwork@web.service
 After=cynetwork@web.service
 
 [Service]
@@ -116,7 +114,6 @@ Description=cyac gateway out (direct)
 SourcePath=/var/lib/cyac/conf/out.cygateway
 PartOf=cyac.target
 Wants=cydns@out.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -132,7 +129,6 @@ Description=cyac gateway vpn (wireguard)
 SourcePath=/var/lib/cyac/conf/vpn.cygateway
 PartOf=cyac.target
 Wants=cydns@vpn.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -147,7 +143,6 @@ ExecStop=/bin/cyac run stop cygateway vpn
 Description=cyac network dev (10.42.1.0/24)
 SourcePath=/var/lib/cyac/conf/dev.cynetwork
 PartOf=cyac.target
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -162,9 +157,8 @@ ExecStop=/bin/cyac run stop cynetwork dev
 Description=cyac network web (10.42.2.0/24)
 SourcePath=/var/lib/cyac/conf/web.cynetwork
 PartOf=cyac.target
-BindsTo=cygateway@out.service
+Wants=cygateway@out.service
 After=cygateway@out.service
-StopWhenUnneeded=yes
 
 [Service]
 Type=oneshot
@@ -179,7 +173,7 @@ ExecStop=/bin/cyac run stop cynetwork web
 Description=cyac service llm-proxy
 SourcePath=/var/lib/cyac/conf/llm-proxy.cyservice
 PartOf=cyac.target
-BindsTo=cygateway@vpn.service cynetwork@dev.service
+Wants=cygateway@vpn.service cynetwork@dev.service
 After=cygateway@vpn.service cynetwork@dev.service
 
 [Service]
