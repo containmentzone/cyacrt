@@ -10,6 +10,7 @@ package conf
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -39,13 +40,17 @@ var Kinds = []string{KindGateway, KindNetwork, KindService, KindBox}
 //
 //	10.42.<network Index>.0/24   one per network, Index 0 to 253
 //	10.42.254.<2*Index>/31       a direct gateway's uplink to the host
-//	10.42.255.<2*Index>/31       a service's link to its gateway
 //
-// Indexes live in the files, like box addresses, so nothing about an
-// object's addresses or interface names depends on what else exists.
+// A network's .3 to .9 are its services', in the order it attaches them,
+// so services and boxes (.10 and up) never clash. A service's link to its
+// gateway is a /31 in 169.254.0.0/16 (link-local: it is never routed)
+// picked by a hash of the service's name. Services have no Index: boxes
+// and other services find them by name in DNS, so their addresses only
+// need to be unique, not chosen.
 const (
 	MaxNetworkIndex = 253
 	MaxLinkIndex    = 127
+	MaxServices     = 7 // per network: .3 to .9
 )
 
 // Network is a Linux bridge: one broadcast domain on 10.42.<Index>.0/24.
@@ -104,7 +109,6 @@ type Workload struct {
 // attaches it and a link to one gateway.
 type Service struct {
 	Name     string
-	Index    int // 0 to MaxLinkIndex; picks the gateway link /31
 	Workload Workload
 	Gateway  string
 	Port     int
@@ -118,17 +122,30 @@ type Secret struct {
 	Path string // absolute path on the host
 }
 
-// AddressIn is the service's address on network n, one of the top of the
-// /24, counted down from .254 by the service's Index. Boxes can't use it.
-func (s *Service) AddressIn(n *Network) netip.Addr { return n.addr(byte(254 - s.Index)) }
+// AddressIn is the service's address on network n, which must attach it:
+// .3 for the first service n attaches, .4 for the second, and so on.
+func (s *Service) AddressIn(n *Network) netip.Addr {
+	return n.addr(byte(3 + slices.Index(n.Services, s.Name)))
+}
 
 // Uplink is a direct gateway's /31 to the host: the host end, then the
 // gateway's.
 func (g *Gateway) Uplink() (host, gw netip.Prefix) { return link(254, g.Index) }
 
 // Link is a service's /31 to its gateway: the gateway's end, then the
-// service's.
-func (s *Service) Link() (gw, svc netip.Prefix) { return link(255, s.Index) }
+// service's. It is the LinkSlot'th /31 of 169.254.0.0/16.
+func (s *Service) Link() (gw, svc netip.Prefix) {
+	i := 2 * s.LinkSlot()
+	a := netip.AddrFrom4([4]byte{169, 254, byte(i >> 8), byte(i)})
+	return netip.PrefixFrom(a, 31), netip.PrefixFrom(a.Next(), 31)
+}
+
+// LinkSlot picks the service's link: a hash of its name, 0 to 32767.
+func (s *Service) LinkSlot() int {
+	h := fnv.New32a()
+	h.Write([]byte(s.Name))
+	return int(h.Sum32() % (1 << 15))
+}
 
 func link(third byte, index int) (netip.Prefix, netip.Prefix) {
 	a := netip.AddrFrom4([4]byte{10, 42, third, byte(2 * index)})
@@ -269,6 +286,9 @@ func (c *Config) parseNetwork(name string, f *fields) error {
 			if slices.Contains(n.Services, target) {
 				return bad("Attach", a, "given twice")
 			}
+			if len(n.Services) == MaxServices {
+				return fmt.Errorf("a network attaches at most %d services", MaxServices)
+			}
 			n.Services = append(n.Services, target)
 		case kind == "gateway":
 			if n.Gateway != "" {
@@ -349,13 +369,6 @@ func (c *Config) parseService(name string, f *fields) error {
 	s := &Service{Name: name}
 	var err error
 	if s.Workload, err = parseWorkload(f); err != nil {
-		return err
-	}
-	idx, err := f.one("Index")
-	if err != nil {
-		return err
-	}
-	if s.Index, err = intIn(idx, "Index", 0, MaxLinkIndex, true); err != nil {
 		return err
 	}
 	if s.Gateway, err = f.one("Gateway"); err != nil {
@@ -498,7 +511,16 @@ func (c *Config) check() []Problem {
 	// Checks between objects of the same kind first; they don't cascade.
 	uniqueIndex(c.Networks, KindNetwork, func(n *Network) int { return n.Index }, drop)
 	uniqueIndex(c.Gateways, KindGateway, func(g *Gateway) int { return g.Index }, drop)
-	uniqueIndex(c.Services, KindService, func(s *Service) int { return s.Index }, drop)
+	// Two names can hash to the same link; the later one has to be renamed.
+	links := map[int]string{}
+	for _, name := range Sorted(c.Services) {
+		i := c.Services[name].LinkSlot()
+		if other, ok := links[i]; ok {
+			drop(KindService, name, fmt.Errorf("gateway link collides with %s %s's; rename one of them", KindService, other))
+			continue
+		}
+		links[i] = name
+	}
 	// Boxes and services are both workloads, named alike in DNS and on
 	// the host (container, run dir), so a name can only be one of them.
 	for _, name := range Sorted(c.Boxes) {
@@ -541,14 +563,8 @@ func (c *Config) check() []Problem {
 	}
 
 	// Addresses: inside the network's /24, out of the reserved .0 to .9
-	// and .255, and unique.
+	// (the router, the host and services) and .255, and unique.
 	used := map[netip.Addr]string{}
-	for _, name := range Sorted(c.Networks) {
-		n := c.Networks[name]
-		for _, s := range n.Services {
-			used[c.Services[s].AddressIn(n)] = "service " + s
-		}
-	}
 	for _, name := range Sorted(c.Boxes) {
 		b := c.Boxes[name]
 		n := c.Networks[b.Network]

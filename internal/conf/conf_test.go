@@ -39,7 +39,7 @@ const (
 	out = "[Gateway]\nIndex=0\nKind=direct\n"
 	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
 	prx = "[Service]\nSeedImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n" +
-		"DiskSize=1G\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
+		"DiskSize=1G\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
 	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
 )
 
@@ -113,11 +113,11 @@ func TestFileErrors(t *testing.T) {
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=eth0\"\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=averyverylongname\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\nConfig=/k\nAddress=10.64.0.2/32\nUplink=eth0\n", "only applies to Kind=direct"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nIndex=5\nGateway=out\nPort=0\n", "Port=0"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nIndex=5\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nExec=sh -c 'oops\nIndex=5\nGateway=out\nPort=1\n", "unterminated"},
-		{"x.cyservice", "[Workload]\nSeedImage=i\n[Service]\nIndex=5\nGateway=out\nPort=1\n", "unknown section [Workload]"},
-		{"x.cyservice", "[Service]\nImage=i\nIndex=5\nGateway=out\nPort=1\n", "unknown key Image="},
+		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=0\n", "Port=0"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nExec=sh -c 'oops\nGateway=out\nPort=1\n", "unterminated"},
+		{"x.cyservice", "[Workload]\nSeedImage=i\n[Service]\nGateway=out\nPort=1\n", "unknown section [Workload]"},
+		{"x.cyservice", "[Service]\nImage=i\nGateway=out\nPort=1\n", "unknown key Image="},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "needs Address="},
 		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
@@ -127,7 +127,9 @@ func TestFileErrors(t *testing.T) {
 		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
 		{"x.cygateway", "[Gateway]\nIndex=0\nKind=direct\n", "Index=0: already used by cygateway out"},
-		{"x.cyservice", strings.Replace(prx, "Index=0", "Index=128", 1), "from 0 to 127"},
+		{"x.cynetwork", "[Network]\nIndex=3\n" +
+			"Attach=service:a\nAttach=service:b\nAttach=service:c\nAttach=service:d\n" +
+			"Attach=service:e\nAttach=service:f\nAttach=service:g\nAttach=service:h\n", "at most 7 services"},
 		{"proxy.cybox", strings.Replace(bx, "10.42.1.10", "10.42.1.11", 1), "name already used by cyservice proxy"},
 	} {
 		t.Run(tc.file+"/"+tc.want, func(t *testing.T) {
@@ -167,6 +169,15 @@ func TestCascade(t *testing.T) {
 	}
 }
 
+// Services get their gateway link from a hash of their name; of two that
+// collide, the later name is dropped.
+func TestLinkCollision(t *testing.T) {
+	_, errs := load(t, map[string]string{"out.cygateway": out, "s166.cyservice": prx, "s1020.cyservice": prx})
+	if len(errs) != 1 || !strings.Contains(errs["s166.cyservice"], "collides with cyservice s1020") {
+		t.Errorf("problems %v", errs)
+	}
+}
+
 func TestAddresses(t *testing.T) {
 	box := func(addr string) string { return strings.Replace(bx, "10.42.1.10", addr, 1) }
 	_, errs := load(t, map[string]string{
@@ -176,14 +187,14 @@ func TestAddresses(t *testing.T) {
 		"c.cybox":     box("10.42.2.10"), // other network
 		"d.cybox":     box("10.42.1.2"),  // reserved
 		"e.cybox":     box("10.42.1.11"),
-		"f.cybox":     box("10.42.1.254"),     // proxy's address (Index 0)
+		"f.cybox":     box("10.42.1.3"),       // proxy's address
 		"x.cynetwork": "[Network]\nIndex=1\n", // index taken by dev
 	})
 	want := map[string]string{
 		"b.cybox":     "already used by box a",
 		"c.cybox":     "outside network dev",
 		"d.cybox":     "reserved",
-		"f.cybox":     "already used by service proxy",
+		"f.cybox":     "reserved",
 		"x.cynetwork": "Index=1: already used by cynetwork dev",
 	}
 	if len(errs) != len(want) {
@@ -225,7 +236,7 @@ func TestINIContinuation(t *testing.T) {
 func TestRejectedFileLeftOut(t *testing.T) {
 	c, errs := load(t, map[string]string{
 		"out.cygateway":   out,
-		"proxy.cyservice": "[Workload]\nSeedImage=i\n[Service]\nIndex=0\nGateway=out\nPort=1\n",
+		"proxy.cyservice": "[Workload]\nSeedImage=i\n[Service]\nGateway=out\nPort=1\n",
 	})
 	if errs["proxy.cyservice"] == "" || c.Services["proxy"] != nil {
 		t.Errorf("problems %v, service %+v", errs, c.Services["proxy"])

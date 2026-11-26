@@ -16,7 +16,7 @@ The whole thing is meant to stay small enough to read in one sitting
   network.
 - **cynetwork**: a bridge with a /24, `10.42.<Index>.0/24`. Boxes on the
   same network can reach each other; what else they reach is exactly what
-  the network attaches: at most one gateway, and any number of services.
+  the network attaches: at most one gateway, and up to seven services.
 - **cygateway**: a network namespace with one way out, either the host's
   own route (`Kind=direct`) or a WireGuard tunnel (`Kind=wireguard`).
 - **cyservice**: a confined container that boxes reach on their network
@@ -69,12 +69,15 @@ The full set of keys:
 |---|---|---|
 | cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
 | cybox | `[Box]` | `Network=`, `Address=` (required), `Autostart=` |
-| cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
-| cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
+| cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
+| cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
-Addresses and interface names come from the indexes in the files, never
-from what else exists, so an object's addresses never change under it.
+Addresses and interface names come from the files, never from what else
+exists, so an object's addresses never change under it. Networks and
+gateways pick theirs with `Index=`, boxes with `Address=`. Services have
+no index: boxes find them by name in DNS, so their addresses are derived
+(see Networking).
 
 **A box is a disk, not a container.** On a box's first start, cyac pulls
 its image, unpacks it onto an ext4 filesystem on a sparse ZFS zvol
@@ -131,7 +134,8 @@ like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
 `services.cyac.defaultRuntime`) only sets the default for boxes.
 
 **Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
-leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the
+leg on `.1`, the host on `.2`, services on `.3` to `.9` and boxes from
+`.10` up. Every port on the
 bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
 box can't take another's address, and a box's address is its identity.
 The host only answers DNS on `.2` and forwards nothing between the bridge
@@ -150,8 +154,13 @@ tunnel is the only route. A network without a gateway is sealed: its boxes
 reach each other, its services and the proxy, and nothing else.
 
 A service gets a netns with a leg on every network that attaches it, at
-`.254` minus its index, and a /31 into its own gateway in
-`10.42.255.0/24` as its default route. The netns forwards nothing, and the
+`.3` for the network's first `Attach=service:`, `.4` for its second, and
+so on up to `.9`, so services never take a box's address. Its default
+route is a /31 into its own gateway in `169.254.0.0/16`, picked by a hash
+of the service's name; in the rare case two names hash alike, the later
+one fails with a message to rename it. Adding a service to a network at
+the end of its `Attach=` lines moves no one; removing one moves the
+services after it, which then need a restart. The netns forwards nothing, and the
 container gets neither `CAP_NET_ADMIN` nor `CAP_SYS_ADMIN`, so a box can
 reach the service but never route through it. `Secret=` files reach the
 container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
@@ -331,7 +340,6 @@ elsewhere, `nix build .#cyac-inject-image`):
 SeedImage=/var/lib/cyac/images/cyac-inject.tar
 Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
 Memory=64M
-Index=0
 Gateway=out
 Port=80
 Secret=key:/var/lib/secrets/nanogpt

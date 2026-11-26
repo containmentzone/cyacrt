@@ -159,12 +159,12 @@ down:
 up:
   ip netns add cysvc-llm-proxy
   ip -n cysvc-llm-proxy link set lo up
-  ip link add cys0n1 type veth peer name n1 netns cysvc-llm-proxy
-  ip -n cysvc-llm-proxy link set n1 address 02:c7:ac:00:01:fe
-  ip -n cysvc-llm-proxy addr add 10.42.1.254/24 dev n1
+  ip link add cys1-3 type veth peer name n1 netns cysvc-llm-proxy
+  ip -n cysvc-llm-proxy link set n1 address 02:c7:ac:00:01:03
+  ip -n cysvc-llm-proxy addr add 10.42.1.3/24 dev n1
   ip -n cysvc-llm-proxy link set n1 up
-  ip link set cys0n1 master cyn1
-  ip link set cys0n1 up
+  ip link set cys1-3 master cyn1
+  ip link set cys1-3 up
   nft -f -
     <<<
     table bridge cys-llm-proxy
@@ -172,26 +172,26 @@ up:
     table bridge cys-llm-proxy {
     	chain forward {
     		type filter hook forward priority 0; policy accept;
-    		iifname "cys0n1" ether saddr != 02:c7:ac:00:01:fe drop
-    		iifname "cys0n1" ether type ip ip saddr != 10.42.1.254 drop
-    		iifname "cys0n1" ether type arp arp saddr ip != 10.42.1.254 drop
-    		iifname "cys0n1" ether type ip6 drop
+    		iifname "cys1-3" ether saddr != 02:c7:ac:00:01:03 drop
+    		iifname "cys1-3" ether type ip ip saddr != 10.42.1.3 drop
+    		iifname "cys1-3" ether type arp arp saddr ip != 10.42.1.3 drop
+    		iifname "cys1-3" ether type ip6 drop
     	}
     	chain input {
     		type filter hook input priority 0; policy accept;
-    		iifname "cys0n1" ether saddr != 02:c7:ac:00:01:fe drop
-    		iifname "cys0n1" ether type ip ip saddr != 10.42.1.254 drop
-    		iifname "cys0n1" ether type arp arp saddr ip != 10.42.1.254 drop
-    		iifname "cys0n1" ether type ip6 drop
+    		iifname "cys1-3" ether saddr != 02:c7:ac:00:01:03 drop
+    		iifname "cys1-3" ether type ip ip saddr != 10.42.1.3 drop
+    		iifname "cys1-3" ether type arp arp saddr ip != 10.42.1.3 drop
+    		iifname "cys1-3" ether type ip6 drop
     	}
     }
     >>>
-  ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
-  ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
+  ip -n cysvc-llm-proxy link add gw type veth peer name s2617 netns cygw-vpn
+  ip -n cysvc-llm-proxy addr add 169.254.20.115/31 dev gw
   ip -n cysvc-llm-proxy link set gw up
-  ip -n cygw-vpn addr add 10.42.255.0/31 dev s0
-  ip -n cygw-vpn link set s0 up
-  ip -n cysvc-llm-proxy route add default via 10.42.255.0
+  ip -n cygw-vpn addr add 169.254.20.114/31 dev s2617
+  ip -n cygw-vpn link set s2617 up
+  ip -n cysvc-llm-proxy route add default via 169.254.20.114
   ip netns exec cysvc-llm-proxy nft -f -
     <<<
     table inet svc {

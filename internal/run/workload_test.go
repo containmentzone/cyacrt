@@ -145,7 +145,7 @@ func TestService(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
 		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
+		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
@@ -161,7 +161,7 @@ func TestService(t *testing.T) {
 	}
 	m := rc.started
 	want := driver.Link{Netns: "/run/netns/cysvc-proxy"}
-	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "10.42.255.0" { // its gateway end
+	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "169.254.12.182" { // its gateway end
 		t.Errorf("link %+v, secrets %q, dns %q", m.Link, m.Secrets, m.Init.DNS)
 	}
 	if m.Disk != "/dev/zvol/tank/cyac/services/proxy" {
@@ -228,7 +228,7 @@ func TestServiceRuntime(t *testing.T) {
 		r, _ := runner(t, map[string]string{
 			"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\n",
 			"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Index=0\nGateway=out\nPort=8080\n",
+			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Gateway=out\nPort=8080\n",
 		})
 		r.State, r.Dataset = t.TempDir(), "tank/cyac"
 		r.Runtimes = []driver.Runtime{&fakeRuntime{name: "cloud-hypervisor"}, &fakeRuntime{name: "runc", kind: driver.Netns}}

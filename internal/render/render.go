@@ -244,7 +244,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 	for _, name := range c.AttachedBy(s.Name) {
 		n := c.Networks[name]
 		addr := s.AddressIn(n)
-		hostIf := fmt.Sprintf("cys%dn%d", s.Index, n.Index)
+		hostIf := serviceLegName(s, n)
 		leg := fmt.Sprintf("n%d", n.Index)
 		p.up("ip", "link", "add", hostIf, "type", "veth", "peer", "name", leg, "netns", ns)
 		p.up("ip", "-n", ns, "link", "set", leg, "address", MAC(addr))
@@ -260,7 +260,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 
 	gwNs := GatewayNetns(s.Gateway)
 	gwEnd, svcEnd := s.Link()
-	gwIf := fmt.Sprintf("s%d", s.Index)
+	gwIf := fmt.Sprintf("s%d", s.LinkSlot())
 	p.up("ip", "-n", ns, "link", "add", "gw", "type", "veth", "peer", "name", gwIf, "netns", gwNs)
 	p.up("ip", "-n", ns, "addr", "add", svcEnd.String(), "dev", "gw")
 	p.up("ip", "-n", ns, "link", "set", "gw", "up")
@@ -275,6 +275,13 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 	// The netns takes its legs, and their host ends, with it.
 	p.down("ip", "netns", "del", ns)
 	return p
+}
+
+// serviceLegName is the host end of service s's leg on network n, named
+// after its address there like a box's port.
+func serviceLegName(s *conf.Service, n *conf.Network) string {
+	a := s.AddressIn(n).As4()
+	return fmt.Sprintf("cys%d-%d", a[2], a[3])
 }
 
 // Box is the plan for cybox@<b>'s link. A VM gets a tap on the bridge
