@@ -60,7 +60,7 @@ func TestStartStop(t *testing.T) {
 	if err := r.Stop("cynetwork", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"nft delete table inet cyn-dev", "ip link del cynl1", "ip link del cyn1"}
+	want := []string{"ip link del cyn1", "nft delete table inet cyn-dev", "ip link del cynl1"}
 	if strings.Join(f.ran, "\n") != strings.Join(want, "\n") {
 		t.Errorf("Down ran %q, want %q", f.ran, want)
 	}

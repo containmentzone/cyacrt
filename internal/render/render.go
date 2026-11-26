@@ -18,9 +18,10 @@ import (
 )
 
 // Step is one command: argv, and what to feed its stdin (nft scripts).
-// A step with IfExists runs only if that path exists: that is how a
-// network or gateway that comes back puts the legs of workloads that kept
-// running back in place (see rejoin).
+// A step with IfExists runs only if that path exists, and its failure
+// doesn't fail the plan: that is how a network or gateway that comes back
+// puts the legs of workloads that kept running back in place (see
+// rejoin), as far as they still fit.
 type Step struct {
 	Args     []string
 	Stdin    string
@@ -218,6 +219,9 @@ func Network(c *conf.Config, n *conf.Network) Plan {
 	p.up("ip", "link", "add", br, "address", MAC(n.Host()), "type", "bridge")
 	p.up("ip", "addr", "add", netip.PrefixFrom(n.Host(), 24).String(), "dev", br)
 	p.up("ip", "link", "set", br, "up")
+	// Down deletes the bridge first, so its ports, which may outlive it,
+	// never sit on it without the host firewall below.
+	p.down("ip", "link", "del", br)
 	p.nft("inet", "cyn-"+n.Name, fmt.Sprintf(`	chain input {
 		type filter hook input priority 0; policy accept;
 		iifname %[1]q ct state established,related accept
@@ -248,7 +252,6 @@ func Network(c *conf.Config, n *conf.Network) Plan {
 			p.up("ip", "link", "set", port, "up")
 		})
 	}
-	p.down("ip", "link", "del", br)
 	return p
 }
 

@@ -135,8 +135,8 @@ up:
   [if /sys/class/net/cys0n1]  ip link set cys0n1 master cyn1
   [if /sys/class/net/cys0n1]  ip link set cys0n1 up
 down:
-  nft delete table inet cyn-dev
   ip link del cyn1
+  nft delete table inet cyn-dev
 
 ==> cynetwork web <==
 up:
@@ -168,9 +168,9 @@ up:
   [if /sys/class/net/cyb2-10]  ip link set cyb2-10 master cyn2
   [if /sys/class/net/cyb2-10]  ip link set cyb2-10 up
 down:
+  ip link del cyn2
   nft delete table inet cyn-web
   ip link del cynl2
-  ip link del cyn2
 
 ==> cyservice llm-proxy <==
 up:

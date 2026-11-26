@@ -115,9 +115,10 @@ func (r *Runner) up(kind, name string, p render.Plan) error {
 	}
 	for _, s := range p.Up {
 		if s.IfExists != "" {
-			if _, err := os.Stat(s.IfExists); err != nil {
-				continue
+			if _, err := os.Stat(s.IfExists); err == nil {
+				r.Exec(s) // a rejoin: whatever no longer fits stays out
 			}
+			continue
 		}
 		if err := r.Exec(s); err != nil {
 			r.Stop(kind, name)
