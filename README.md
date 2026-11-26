@@ -437,6 +437,21 @@ those units restart. The module warns about this.
 Every PR runs gofmt, `go vet`, `go test` and staticcheck. There is no VM
 test; Cloud Hypervisor is tried on real hosts.
 
+## Versions
+
+Versions follow [PrideVer](https://pridever.org), PROUD.DEFAULT.SHAME:
+PROUD for a release you're proud of, DEFAULT for an okay one, SHAME for
+fixing things too embarrassing to admit. `VERSION` at the root holds
+the number. The Nix package reads it and sets it in the binary with
+`-X main.version` (`cyac version`, and the daemon logs it); a plain
+`go build` says `dev`.
+
+To release, run `scripts/release.sh proud|default|shame` (or give the
+number). It bumps `VERSION` and regenerates [CHANGELOG.md](CHANGELOG.md)
+from the pull requests merged since the last `v*` tag. Merge that as a
+pull request titled "Release v<x.y.z>", then tag the merge commit
+`v<x.y.z>`.
+
 ## What has been tested
 
 `go test` covers the pure stages by comparing their output with golden

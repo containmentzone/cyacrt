@@ -42,6 +42,10 @@ import (
 	"github.com/containmentzone/cyacrt/internal/server"
 )
 
+// version is the release, set at build time from VERSION (the Nix package
+// passes -ldflags "-X main.version=..."); plain go builds say "dev".
+var version = "dev"
+
 const usage = `usage: cyac <command> [args]
 
   ls
@@ -57,6 +61,7 @@ const usage = `usage: cyac <command> [args]
   regen <name> [<pname>...]     new tokens for those ports (default: all);
                                 the old ones stop working
   unexpose <name>
+  version
 
   dns <gateway>                 run by cydns@<gateway>.service: the gateway's resolver
   run start|stop <kind> <name>  run by the units cyac-generator writes:
@@ -103,6 +108,8 @@ func main() {
 		err = runUnit(args)
 	case "dns":
 		err = serveDNS(args)
+	case "version":
+		fmt.Println(version)
 	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
@@ -307,7 +314,7 @@ func daemon(socket string, args []string) error {
 	if err := lock(dir); err != nil {
 		return err
 	}
-	slog.Info("cyac daemon starting", "state_dir", dir, "conf", conf.Dir, "socket", socket)
+	slog.Info("cyac daemon starting", "version", version, "state_dir", dir, "conf", conf.Dir, "socket", socket)
 	routes := filepath.Join(dir, "routes")
 	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {
