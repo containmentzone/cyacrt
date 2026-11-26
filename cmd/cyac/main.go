@@ -40,6 +40,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/runtime/cloudhypervisor"
 	"github.com/containmentzone/cyacrt/internal/runtime/runc"
 	"github.com/containmentzone/cyacrt/internal/server"
+	"github.com/containmentzone/cyacrt/internal/version"
 )
 
 const usage = `usage: cyac <command> [args]
@@ -57,6 +58,7 @@ const usage = `usage: cyac <command> [args]
   regen <name> [<pname>...]     new tokens for those ports (default: all);
                                 the old ones stop working
   unexpose <name>
+  version
 
   dns <network>                 run by cydns@<network>.socket: the network's resolver
   run start|stop <kind> <name>  run by the units cyac-generator writes:
@@ -103,6 +105,8 @@ func main() {
 		err = runUnit(args)
 	case "dns":
 		err = serveDNS(args)
+	case "version":
+		fmt.Println(version.String())
 	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
@@ -317,7 +321,7 @@ func daemon(socket string, args []string) error {
 	if err := lock(dir); err != nil {
 		return err
 	}
-	slog.Info("cyac daemon starting", "state_dir", dir, "conf", conf.Dir, "socket", socket)
+	slog.Info("cyac daemon starting", "version", version.String(), "state_dir", dir, "conf", conf.Dir, "socket", socket)
 	routes := filepath.Join(dir, "routes")
 	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {

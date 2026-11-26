@@ -33,7 +33,7 @@ let
 in
 buildGoModule {
   pname = "cyac";
-  version = "0.1.0";
+  version = lib.fileContents ../internal/version/VERSION;
 
   src = lib.fileset.toSource {
     root = ../.;
