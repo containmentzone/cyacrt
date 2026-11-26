@@ -16,23 +16,44 @@ import (
 	"github.com/containmentzone/cyacrt/internal/conf"
 )
 
-func server(t *testing.T, network string, fwd Forward) *Server {
+// server writes a conf with two networks behind gateway out (dev with
+// box a and service proxy, lab with box b) and sealed with box c, and
+// returns out's resolver.
+func server(t *testing.T, fwd Forward) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	for name, content := range map[string]string{
-		"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
-		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n",
-		"lab.cynetwork":   "[Network]\nIndex=2\n",
-		"proxy.cyservice": "[Service]\nSeedImage=i\nIndex=0\nGateway=out\nPort=8080\n",
-		"a.cybox":         "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
-		"b.cybox":         "[Box]\nSeedImage=i\nNetwork=lab\nAddress=10.42.2.10\n",
+		"out.cygateway":    "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
+		"dev.cynetwork":    "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n",
+		"lab.cynetwork":    "[Network]\nIndex=2\nAttach=gateway:out\n",
+		"sealed.cynetwork": "[Network]\nIndex=3\n",
+		"proxy.cyservice":  "[Service]\nSeedImage=i\nIndex=0\nGateway=out\nPort=8080\n",
+		"a.cybox":          "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
+		"b.cybox":          "[Box]\nSeedImage=i\nNetwork=lab\nAddress=10.42.2.10\n",
+		"c.cybox":          "[Box]\nSeedImage=i\nNetwork=sealed\nAddress=10.42.3.10\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return &Server{Conf: dir, Network: network, Forward: fwd}
+	c, problems, err := conf.Load(dir)
+	if err != nil || len(problems) > 0 {
+		t.Fatal(err, problems)
+	}
+	zones := t.TempDir()
+	if err := Write(c, zones); err != nil {
+		t.Fatal(err)
+	}
+	return &Server{File: Path(zones, "out"), Forward: fwd}
 }
+
+var (
+	boxA  = netip.MustParseAddr("10.42.1.10")
+	boxB  = netip.MustParseAddr("10.42.2.10")
+	boxC  = netip.MustParseAddr("10.42.3.10")
+	proxy = netip.MustParseAddr("10.42.255.1") // service end of its link
+	other = netip.MustParseAddr("10.42.9.10")  // a network without a gateway
+)
 
 func query(t *testing.T, name string, typ dnsmessage.Type) []byte {
 	t.Helper()
@@ -66,72 +87,80 @@ func parse(t *testing.T, msg []byte) (dnsmessage.RCode, []netip.Addr) {
 }
 
 func TestZone(t *testing.T) {
-	var forwarded *conf.Gateway
-	s := server(t, "dev", func(_ context.Context, gw *conf.Gateway, q []byte) ([]byte, error) {
-		forwarded = gw
+	var forwarded []string
+	s := server(t, func(_ context.Context, upstreams []string, q []byte) ([]byte, error) {
+		forwarded = upstreams
 		return q, nil // echo, enough to see it went upstream
 	})
 	for _, tc := range []struct {
+		from  netip.Addr
 		name  string
 		typ   dnsmessage.Type
 		rcode dnsmessage.RCode
 		addr  string
 	}{
-		{"a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{"A.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{"proxy.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
-		{"a.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
-		{"b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
-		{"x.a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		{boxA, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{boxA, "A.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{boxA, "proxy.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
+		{boxA, "a.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
+		{boxA, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
+		{boxA, "x.a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// the old per-network names still answer, but only for this network
-		{"a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{"proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
-		{"b.lab.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // not forwarded either
+		{boxA, "a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{boxA, "proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.254"},
+		{boxA, "b.lab.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		// lab shares the gateway but sees only its own names
+		{boxB, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.2.10"},
+		{boxB, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		// a service sees the networks that attach it
+		{proxy, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{proxy, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
+		// anyone not behind out is refused
+		{other, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeRefused, ""},
+		{boxC, "c.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeRefused, ""},
+		{boxC, "example.com.", dnsmessage.TypeA, dnsmessage.RCodeRefused, ""},
 	} {
-		rcode, addrs := parse(t, s.Answer(context.Background(), query(t, tc.name, tc.typ)))
+		rcode, addrs := parse(t, s.Answer(context.Background(), tc.from, query(t, tc.name, tc.typ)))
 		want := 0
 		if tc.addr != "" {
 			want = 1
 		}
 		if rcode != tc.rcode || len(addrs) != want || want == 1 && addrs[0].String() != tc.addr {
-			t.Errorf("%s %v: %v %v, want %v %s", tc.name, tc.typ, rcode, addrs, tc.rcode, tc.addr)
+			t.Errorf("%v %s %v: %v %v, want %v %s", tc.from, tc.name, tc.typ, rcode, addrs, tc.rcode, tc.addr)
 		}
 	}
 	if forwarded != nil {
 		t.Errorf("zone question went upstream")
 	}
 	q := query(t, "example.com.", dnsmessage.TypeA)
-	if ans := s.Answer(context.Background(), q); string(ans) != string(q) || forwarded == nil || forwarded.Name != "out" {
-		t.Errorf("outside name not forwarded through out: %v", forwarded)
+	if ans := s.Answer(context.Background(), proxy, q); string(ans) != string(q) || len(forwarded) != 1 || forwarded[0] != "9.9.9.9" {
+		t.Errorf("outside name not forwarded to DNS=: %v", forwarded)
 	}
 }
 
-func TestSealed(t *testing.T) {
-	s := server(t, "lab", func(context.Context, *conf.Gateway, []byte) ([]byte, error) {
-		t.Error("a sealed network forwarded")
+func TestNoZoneFile(t *testing.T) {
+	s := &Server{File: filepath.Join(t.TempDir(), "none.json"), Forward: func(context.Context, []string, []byte) ([]byte, error) {
+		t.Error("forwarded without a zone")
 		return nil, nil
-	})
-	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "example.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeRefused {
+	}}
+	if rcode, _ := parse(t, s.Answer(context.Background(), boxA, query(t, "example.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeRefused {
 		t.Errorf("rcode %v", rcode)
-	}
-	if _, addrs := parse(t, s.Answer(context.Background(), query(t, "b.cyac.internal.", dnsmessage.TypeA))); len(addrs) != 1 {
-		t.Errorf("own zone: %v", addrs)
 	}
 }
 
 func TestUpstreamFails(t *testing.T) {
-	s := server(t, "dev", func(context.Context, *conf.Gateway, []byte) ([]byte, error) { return nil, errors.New("down") })
-	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "example.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
+	s := server(t, func(context.Context, []string, []byte) ([]byte, error) { return nil, errors.New("down") })
+	if rcode, _ := parse(t, s.Answer(context.Background(), boxA, query(t, "example.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
 		t.Errorf("rcode %v", rcode)
 	}
-	if s.Answer(context.Background(), []byte{1, 2, 3}) != nil {
+	if s.Answer(context.Background(), boxA, []byte{1, 2, 3}) != nil {
 		t.Error("answered garbage")
 	}
 }
 
 // Serve speaks both transports.
 func TestServe(t *testing.T) {
-	s := server(t, "dev", nil)
+	s := server(t, nil)
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -144,6 +173,7 @@ func TestServe(t *testing.T) {
 	defer cancel()
 	go s.Serve(ctx, pc, l)
 
+	// The source is 127.0.0.1, which is no client: refused, over both.
 	q := query(t, "a.dev.cyac.internal.", dnsmessage.TypeA)
 	u, err := net.Dial("udp", pc.LocalAddr().String())
 	if err != nil {
@@ -156,8 +186,8 @@ func TestServe(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, addrs := parse(t, buf[:n]); len(addrs) != 1 {
-		t.Errorf("udp: %v", addrs)
+	if rcode, _ := parse(t, buf[:n]); rcode != dnsmessage.RCodeRefused {
+		t.Errorf("udp: %v", rcode)
 	}
 
 	c, err := net.Dial("tcp", l.Addr().String())
@@ -174,8 +204,8 @@ func TestServe(t *testing.T) {
 	if err != nil || n != size {
 		t.Fatal(n, err)
 	}
-	if _, addrs := parse(t, buf[:n]); len(addrs) != 1 {
-		t.Errorf("tcp: %v", addrs)
+	if rcode, _ := parse(t, buf[:n]); rcode != dnsmessage.RCodeRefused {
+		t.Errorf("tcp: %v", rcode)
 	}
 }
 
@@ -248,7 +278,7 @@ func TestForwardRetries(t *testing.T) {
 // that only when upstream fails.
 func TestCache(t *testing.T) {
 	calls, fail := 0, false
-	s := server(t, "dev", func(_ context.Context, _ *conf.Gateway, q []byte) ([]byte, error) {
+	s := server(t, func(_ context.Context, _ []string, q []byte) ([]byte, error) {
 		calls++
 		if fail {
 			return nil, errors.New("down")
@@ -262,7 +292,7 @@ func TestCache(t *testing.T) {
 	ask := func(id uint16) []byte {
 		q := query(t, "Example.com.", dnsmessage.TypeA)
 		q[0], q[1] = byte(id>>8), byte(id)
-		ans := s.Answer(context.Background(), q)
+		ans := s.Answer(context.Background(), boxA, q)
 		if ans[0] != q[0] || ans[1] != q[1] {
 			t.Fatalf("answer has ID %x%x, want %x", ans[0], ans[1], id)
 		}
@@ -282,7 +312,7 @@ func TestCache(t *testing.T) {
 	if rcode, addrs := parse(t, ask(7)); rcode != dnsmessage.RCodeSuccess || len(addrs) != 1 || calls != 2 {
 		t.Fatalf("stale: %v %v, %d calls", rcode, addrs, calls)
 	}
-	if rcode, _ := parse(t, s.Answer(context.Background(), query(t, "other.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
+	if rcode, _ := parse(t, s.Answer(context.Background(), boxA, query(t, "other.com.", dnsmessage.TypeA))); rcode != dnsmessage.RCodeServerFailure {
 		t.Errorf("uncached failure: %v", rcode)
 	}
 }

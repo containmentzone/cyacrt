@@ -42,6 +42,10 @@ import (
 	"github.com/containmentzone/cyacrt/internal/server"
 )
 
+// version is the release, set at build time from VERSION (the Nix package
+// passes -ldflags "-X main.version=..."); plain go builds say "dev".
+var version = "dev"
+
 const usage = `usage: cyac <command> [args]
 
   ls
@@ -57,8 +61,9 @@ const usage = `usage: cyac <command> [args]
   regen <name> [<pname>...]     new tokens for those ports (default: all);
                                 the old ones stop working
   unexpose <name>
+  version
 
-  dns <network>                 run by cydns@<network>.socket: the network's resolver
+  dns <gateway>                 run by cydns@<gateway>.service: the gateway's resolver
   run start|stop <kind> <name>  run by the units cyac-generator writes:
                                 start or stop one object (a box or service
                                 runs in the foreground)
@@ -103,6 +108,8 @@ func main() {
 		err = runUnit(args)
 	case "dns":
 		err = serveDNS(args)
+	case "version":
+		fmt.Println(version)
 	default:
 		err = dispatch(client.New(socket), cmd, args)
 	}
@@ -125,7 +132,7 @@ func runUnit(args []string) error {
 	if ds == "" && (args[1] == conf.KindBox || args[1] == conf.KindService) {
 		return errors.New("CYAC_ZFS must name the ZFS dataset for disks, e.g. rpool/cyac")
 	}
-	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, Exec: run.Command(os.Stderr), State: dir, Dataset: ds, Runtimes: rts}
+	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, DNS: dns.Dir, Exec: run.Command(os.Stderr), State: dir, Dataset: ds, Runtimes: rts}
 	if args[0] == "start" {
 		// systemd stops a box or service with SIGTERM; Start then stops
 		// the workload cleanly and returns.
@@ -136,33 +143,23 @@ func runUnit(args []string) error {
 	return r.Stop(args[1], args[2])
 }
 
-// serveDNS is cydns@<network>.service. systemd passes the sockets
-// (LISTEN_FDS): the datagram one for UDP, the stream one for TCP.
+// serveDNS is cydns@<gateway>.service: the gateway's resolver, on port 53
+// of whatever netns the unit put it in (the gateway's).
 func serveDNS(args []string) error {
 	if len(args) != 1 || !conf.ValidName(args[0]) {
-		return errors.New("usage: cyac dns <network>")
+		return errors.New("usage: cyac dns <gateway>")
 	}
-	if os.Getenv("LISTEN_PID") != strconv.Itoa(os.Getpid()) {
-		return errors.New("no sockets from systemd; run me from cydns@" + args[0] + ".socket")
+	pc, err := net.ListenPacket("udp", ":53")
+	if err != nil {
+		return err
 	}
-	nfds, _ := strconv.Atoi(os.Getenv("LISTEN_FDS"))
-	var pc net.PacketConn
-	var l net.Listener
-	for fd := 3; fd < 3+nfds; fd++ {
-		f := os.NewFile(uintptr(fd), "listen")
-		if c, err := net.FilePacketConn(f); err == nil {
-			pc = c
-		} else if ln, err := net.FileListener(f); err == nil {
-			l = ln
-		}
-		f.Close()
-	}
-	if pc == nil && l == nil {
-		return errors.New("systemd passed no usable sockets")
+	l, err := net.Listen("tcp", ":53")
+	if err != nil {
+		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
-	s := &dns.Server{Conf: conf.Dir, Network: args[0], Forward: dns.ViaGateway}
+	s := &dns.Server{File: dns.Path(dns.Dir, args[0]), Forward: dns.Upstream}
 	s.Serve(ctx, pc, l)
 	return nil
 }
@@ -317,7 +314,7 @@ func daemon(socket string, args []string) error {
 	if err := lock(dir); err != nil {
 		return err
 	}
-	slog.Info("cyac daemon starting", "state_dir", dir, "conf", conf.Dir, "socket", socket)
+	slog.Info("cyac daemon starting", "version", version, "state_dir", dir, "conf", conf.Dir, "socket", socket)
 	routes := filepath.Join(dir, "routes")
 	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {

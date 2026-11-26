@@ -141,6 +141,7 @@ func Gateway(g *conf.Gateway) Plan {
 		type filter hook input priority 0; policy drop;
 		iifname "lo" accept
 		ct state established,related accept
+		iifname != %[1]q meta l4proto { tcp, udp } th dport 53 accept
 	}
 	chain forward {
 		type filter hook forward priority 0; policy drop;
@@ -189,8 +190,6 @@ func Network(n *conf.Network) Plan {
 	p.nft("inet", "cyn-"+n.Name, fmt.Sprintf(`	chain input {
 		type filter hook input priority 0; policy accept;
 		iifname %[1]q ct state established,related accept
-		iifname %[1]q ip daddr %[2]s udp dport 53 accept
-		iifname %[1]q ip daddr %[2]s tcp dport 53 accept
 		iifname %[1]q drop
 	}
 	chain forward {
@@ -198,7 +197,7 @@ func Network(n *conf.Network) Plan {
 		iifname %[1]q drop
 		oifname %[1]q drop
 	}
-`, br, n.Host()))
+`, br))
 	if n.Gateway != "" {
 		ns := GatewayNetns(n.Gateway)
 		hostIf := fmt.Sprintf("cynl%d", n.Index)
@@ -322,13 +321,14 @@ func Networkd(c *conf.Config, b *conf.Box) string {
 	s.WriteString("# written by cyac on every start\n[Match]\nName=eth0\n\n[Network]\n")
 	fmt.Fprintf(&s, "Address=%s\n", netip.PrefixFrom(b.Address, 24))
 	if n.Gateway != "" {
-		fmt.Fprintf(&s, "Gateway=%s\n", n.Router())
+		// The gateway's resolver listens on the router's address. A
+		// sealed network has neither.
+		fmt.Fprintf(&s, "Gateway=%[1]s\nDNS=%[1]s\nDomains=%[2]s\n", n.Router(), Domain)
 	}
-	fmt.Fprintf(&s, "DNS=%s\nDomains=%s\n", n.Host(), Domain)
 	s.WriteString("LinkLocalAddressing=no\nIPv6AcceptRA=no\n")
 	return s.String()
 }
 
-// Domain is the DNS zone every network's resolver answers for, with
-// that network's own names only, and which boxes also search.
+// Domain is the DNS zone the gateways' resolvers answer for, each client
+// with its own network's names only, and which boxes also search.
 const Domain = "cyac.internal"
