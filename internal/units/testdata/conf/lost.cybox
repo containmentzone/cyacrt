@@ -1,4 +1,3 @@
 [Box]
 SeedImage=docker.io/library/alpine
 Network=nowhere
-Address=10.42.9.10

@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/lease"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/plans.golden")
@@ -35,13 +36,23 @@ func dump(b *strings.Builder, title string, p Plan) {
 	b.WriteString("\n")
 }
 
-// TestPlans renders every object in testdata/conf and compares the
-// result with testdata/plans.golden, which is meant to be read in review.
-func TestPlans(t *testing.T) {
+// load reads testdata/conf and gives everything in it fresh leases.
+func load(t *testing.T) *conf.Config {
+	t.Helper()
 	c, probs, err := conf.Load("testdata/conf")
 	if err != nil || len(probs) != 0 {
 		t.Fatal(err, probs)
 	}
+	if err := lease.Assign(t.TempDir(), c, func(string, string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// TestPlans renders every object in testdata/conf and compares the
+// result with testdata/plans.golden, which is meant to be read in review.
+func TestPlans(t *testing.T) {
+	c := load(t)
 	var b strings.Builder
 	for _, name := range conf.Sorted(c.Gateways) {
 		dump(&b, "cygateway "+name, Gateway(c.Gateways[name]))
@@ -76,14 +87,12 @@ func TestPlans(t *testing.T) {
 // Interface names must fit Linux's 15 bytes at the largest indexes.
 func TestNameLengths(t *testing.T) {
 	n := &conf.Network{Index: conf.MaxNetworkIndex}
-	n.Services = make([]string, conf.MaxServices)
-	n.Services[conf.MaxServices-1] = "s"
-	s := &conf.Service{Name: "s"}
+	s := &conf.Service{Index: conf.MaxLinkIndex, Octets: map[string]byte{n.Name: 2 + conf.MaxServices}}
 	b := &conf.Box{Address: n.Prefix().Addr().Next()}
 	for _, name := range []string{
 		Bridge(n), Port(b),
 		serviceLegName(s, n),
-		fmt.Sprintf("s%d", 1<<15-1),
+		fmt.Sprintf("s%d", s.Index),
 		fmt.Sprintf("cynl%d", n.Index),
 		fmt.Sprintf("cygw%d", conf.MaxLinkIndex),
 		fmt.Sprintf("cywg%d", conf.MaxLinkIndex),
@@ -100,10 +109,7 @@ func TestNameLengths(t *testing.T) {
 // Skipped where neither works.
 func TestNftSyntax(t *testing.T) {
 	nft := nftChecker(t)
-	c, _, err := conf.Load("testdata/conf")
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := load(t)
 	var plans []Plan
 	for _, g := range c.Gateways {
 		plans = append(plans, Gateway(g))

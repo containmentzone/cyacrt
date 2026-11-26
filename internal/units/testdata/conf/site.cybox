@@ -1,4 +1,3 @@
 [Box]
 SeedImage=docker.io/library/nginx
 Network=web
-Address=10.42.2.10

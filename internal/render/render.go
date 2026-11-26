@@ -260,7 +260,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 
 	gwNs := GatewayNetns(s.Gateway)
 	gwEnd, svcEnd := s.Link()
-	gwIf := fmt.Sprintf("s%d", s.LinkSlot())
+	gwIf := fmt.Sprintf("s%d", s.Index)
 	p.up("ip", "-n", ns, "link", "add", "gw", "type", "veth", "peer", "name", gwIf, "netns", gwNs)
 	p.up("ip", "-n", ns, "addr", "add", svcEnd.String(), "dev", "gw")
 	p.up("ip", "-n", ns, "link", "set", "gw", "up")

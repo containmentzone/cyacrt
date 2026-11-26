@@ -14,8 +14,8 @@ import (
 func TestTokensPersist(t *testing.T) {
 	confDir := t.TempDir()
 	for name, content := range map[string]string{
-		"dev.cynetwork": "[Network]\nIndex=1\n",
-		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
+		"dev.cynetwork": "[Network]\n",
+		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\n",
 	} {
 		if err := os.WriteFile(filepath.Join(confDir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)

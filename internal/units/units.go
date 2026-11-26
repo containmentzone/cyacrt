@@ -135,7 +135,7 @@ func gateway(g *conf.Gateway, p Paths) string {
 }
 
 func network(n *conf.Network, p Paths) string {
-	u := header(conf.KindNetwork, n.Name, p, "cyac network "+n.Name+" ("+n.Prefix().String()+")")
+	u := header(conf.KindNetwork, n.Name, p, "cyac network "+n.Name)
 	if n.Gateway != "" {
 		u.after("BindsTo", Name(conf.KindGateway, n.Gateway))
 	}

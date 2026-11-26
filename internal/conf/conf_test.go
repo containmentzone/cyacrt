@@ -1,7 +1,6 @@
 package conf
 
 import (
-	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -36,11 +35,11 @@ func load(t *testing.T, files map[string]string) (*Config, map[string]string) {
 }
 
 const (
-	out = "[Gateway]\nIndex=0\nKind=direct\n"
-	dev = "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n"
+	out = "[Gateway]\nKind=direct\n"
+	dev = "[Network]\nAttach=service:proxy\nAttach=gateway:out\n"
 	prx = "[Service]\nSeedImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n" +
 		"DiskSize=1G\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
-	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nAddress=10.42.1.10\nDiskSize=10G\nAutostart=yes\n"
+	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nDiskSize=10G\nAutostart=yes\n"
 )
 
 func TestLoad(t *testing.T) {
@@ -57,7 +56,7 @@ func TestLoad(t *testing.T) {
 	}
 	want := &Config{
 		Gateways: map[string]*Gateway{"out": {Name: "out", Kind: "direct"}},
-		Networks: map[string]*Network{"dev": {Name: "dev", Index: 1, Services: []string{"proxy"}, Gateway: "out"}},
+		Networks: map[string]*Network{"dev": {Name: "dev", Services: []string{"proxy"}, Gateway: "out"}},
 		Services: map[string]*Service{"proxy": {
 			Name: "proxy",
 			Workload: Workload{
@@ -70,9 +69,9 @@ func TestLoad(t *testing.T) {
 			Secrets: []Secret{{"KEY", "/run/keys/key"}},
 		}},
 		Boxes: map[string]*Box{"a": {
-			Name:     "a",
-			Workload: Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096, DiskMB: 10240},
-			Network:  "dev", Address: netip.MustParseAddr("10.42.1.10"),
+			Name:      "a",
+			Workload:  Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096, DiskMB: 10240},
+			Network:   "dev",
 			Autostart: true,
 		}},
 	}
@@ -97,40 +96,37 @@ func TestFileErrors(t *testing.T) {
 	for _, tc := range []struct {
 		file, content, want string
 	}{
-		{"x.cynetwork", "[Network]\n", "Index= is required"},
-		{"x.cynetwork", "[Network]\nIndex=254\n", "from 0 to 253"},
-		{"x.cynetwork", "[Network]\nIndex=3\nAttach=gateway:out\nAttach=gateway:out\n", "at most one gateway"},
-		{"x.cynetwork", "[Network]\nIndex=3\nAttach=box:a\n", "want service:<name>"},
-		{"x.cynetwork", "[Network]\nIndex=3\nIndex=4\n", "more than once"},
-		{"x.cynetwork", "[Network]\nIndex=3\nIsolated=yes\n", "unknown key Isolated="},
-		{"x.cynetwork", "[Netwrok]\nIndex=3\n", "unknown section [Netwrok]"},
-		{"x.cynetwork", "Index=3\n", "outside a section"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=tor\n", "want direct or wireguard"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\nConfig=/k\n", "needs the tunnel's IPv4 address"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nAddress=10.0.0.1/32\n", "only apply to Kind=wireguard"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nDNS=resolver\n", "DNS=resolver"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=eth0\"\n", "want a host interface name"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\nUplink=averyverylongname\n", "want a host interface name"},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=wireguard\nConfig=/k\nAddress=10.64.0.2/32\nUplink=eth0\n", "only applies to Kind=direct"},
+		{"x.cynetwork", "[Network]\nAttach=gateway:out\nAttach=gateway:out\n", "at most one gateway"},
+		{"x.cynetwork", "[Network]\nAttach=box:a\n", "want service:<name>"},
+		{"x.cynetwork", "[Network]\nIsolated=yes\n", "unknown key Isolated="},
+		{"x.cynetwork", "[Netwrok]\n", "unknown section [Netwrok]"},
+		{"x.cynetwork", "Attach=gateway:out\n", "outside a section"},
+		{"x.cynetwork", "[Network]\nIndex=3\n", "unknown key Index="},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n", "unknown key Address="},
+		{"x.cygateway", "[Gateway]\nKind=tor\n", "want direct or wireguard"},
+		{"x.cygateway", "[Gateway]\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
+		{"x.cygateway", "[Gateway]\nKind=wireguard\nConfig=/k\n", "needs the tunnel's IPv4 address"},
+		{"x.cygateway", "[Gateway]\nKind=direct\nAddress=10.0.0.1/32\n", "only apply to Kind=wireguard"},
+		{"x.cygateway", "[Gateway]\nKind=direct\nDNS=resolver\n", "DNS=resolver"},
+		{"x.cygateway", "[Gateway]\nKind=direct\nUplink=eth0\"\n", "want a host interface name"},
+		{"x.cygateway", "[Gateway]\nKind=direct\nUplink=averyverylongname\n", "want a host interface name"},
+		{"x.cygateway", "[Gateway]\nKind=wireguard\nConfig=/k\nAddress=10.64.0.2/32\nUplink=eth0\n", "only applies to Kind=direct"},
 		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=0\n", "Port=0"},
 		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
 		{"x.cyservice", "[Service]\nSeedImage=i\nExec=sh -c 'oops\nGateway=out\nPort=1\n", "unterminated"},
 		{"x.cyservice", "[Workload]\nSeedImage=i\n[Service]\nGateway=out\nPort=1\n", "unknown section [Workload]"},
 		{"x.cyservice", "[Service]\nImage=i\nGateway=out\nPort=1\n", "unknown key Image="},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "needs Address="},
-		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\nAddress=10.42.1.11\n", "Memory=lots"},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\nAutostart=maybe\n", "want yes or no"},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
-		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "unknown section [Workload]"},
-		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key Image="},
-		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key CPUs="},
+		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\n", "Memory=lots"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAutostart=maybe\n", "want yes or no"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n[Extra]\n", "unknown section [Extra]"},
+		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\n", "unknown section [Workload]"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\n", "unknown key Image="},
+		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
-		{"x.cygateway", "[Gateway]\nIndex=0\nKind=direct\n", "Index=0: already used by cygateway out"},
-		{"x.cynetwork", "[Network]\nIndex=3\n" +
+		{"x.cynetwork", "[Network]\n" +
 			"Attach=service:a\nAttach=service:b\nAttach=service:c\nAttach=service:d\n" +
 			"Attach=service:e\nAttach=service:f\nAttach=service:g\nAttach=service:h\n", "at most 7 services"},
-		{"proxy.cybox", strings.Replace(bx, "10.42.1.10", "10.42.1.11", 1), "name already used by cyservice proxy"},
+		{"proxy.cybox", bx, "name already used by cyservice proxy"},
 	} {
 		t.Run(tc.file+"/"+tc.want, func(t *testing.T) {
 			_, errs := load(t, map[string]string{
@@ -153,8 +149,8 @@ func TestCascade(t *testing.T) {
 		"proxy.cyservice": strings.Replace(prx, "Gateway=out", "Gateway=gone", 1),
 		"a.cybox":         bx,
 		"out.cygateway":   out,
-		"web.cynetwork":   "[Network]\nIndex=2\nAttach=gateway:out\n",
-		"b.cybox":         strings.NewReplacer("dev", "web", "10.42.1.10", "10.42.2.10").Replace(bx),
+		"web.cynetwork":   "[Network]\nAttach=gateway:out\n",
+		"b.cybox":         strings.Replace(bx, "dev", "web", 1),
 	})
 	for _, key := range []string{"proxy.cyservice", "dev.cynetwork", "a.cybox"} {
 		if errs[key] == "" {
@@ -166,44 +162,6 @@ func TestCascade(t *testing.T) {
 	}
 	if c.Networks["web"] == nil || c.Boxes["b"] == nil || c.Gateways["out"] == nil {
 		t.Errorf("unrelated objects dropped: %+v", c)
-	}
-}
-
-// Services get their gateway link from a hash of their name; of two that
-// collide, the later name is dropped.
-func TestLinkCollision(t *testing.T) {
-	_, errs := load(t, map[string]string{"out.cygateway": out, "s166.cyservice": prx, "s1020.cyservice": prx})
-	if len(errs) != 1 || !strings.Contains(errs["s166.cyservice"], "collides with cyservice s1020") {
-		t.Errorf("problems %v", errs)
-	}
-}
-
-func TestAddresses(t *testing.T) {
-	box := func(addr string) string { return strings.Replace(bx, "10.42.1.10", addr, 1) }
-	_, errs := load(t, map[string]string{
-		"out.cygateway": out, "dev.cynetwork": dev, "proxy.cyservice": prx,
-		"a.cybox":     bx,
-		"b.cybox":     box("10.42.1.10"), // taken by a
-		"c.cybox":     box("10.42.2.10"), // other network
-		"d.cybox":     box("10.42.1.2"),  // reserved
-		"e.cybox":     box("10.42.1.11"),
-		"f.cybox":     box("10.42.1.3"),       // proxy's address
-		"x.cynetwork": "[Network]\nIndex=1\n", // index taken by dev
-	})
-	want := map[string]string{
-		"b.cybox":     "already used by box a",
-		"c.cybox":     "outside network dev",
-		"d.cybox":     "reserved",
-		"f.cybox":     "reserved",
-		"x.cynetwork": "Index=1: already used by cynetwork dev",
-	}
-	if len(errs) != len(want) {
-		t.Errorf("problems: %v", errs)
-	}
-	for k, v := range want {
-		if !strings.Contains(errs[k], v) {
-			t.Errorf("%s: %q, want %q", k, errs[k], v)
-		}
 	}
 }
 

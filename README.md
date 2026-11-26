@@ -14,7 +14,7 @@ The whole thing is meant to stay small enough to read in one sitting
 
 - **cybox**: a box, a VM (or runc container) with its own disk, on one
   network.
-- **cynetwork**: a bridge with a /24, `10.42.<Index>.0/24`. Boxes on the
+- **cynetwork**: a bridge with a /24 in `10.42.0.0/16`. Boxes on the
   same network can reach each other; what else they reach is exactly what
   the network attaches: at most one gateway, and up to seven services.
 - **cygateway**: a network namespace with one way out, either the host's
@@ -26,12 +26,10 @@ The whole thing is meant to stay small enough to read in one sitting
 ```ini
 # out.cygateway
 [Gateway]
-Index=0
 Kind=direct
 
 # dev.cynetwork
 [Network]
-Index=1
 Attach=gateway:out
 
 # web.cybox
@@ -40,7 +38,6 @@ SeedImage=ghcr.io/boldsoftware/exeuntu
 CPU=2
 Memory=4G
 Network=dev
-Address=10.42.1.10
 DiskSize=25G
 Autostart=yes
 ```
@@ -68,16 +65,22 @@ The full set of keys:
 | Kind | Section | Keys |
 |---|---|---|
 | cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
-| cybox | `[Box]` | `Network=`, `Address=` (required), `Autostart=` |
+| cybox | `[Box]` | `Network=`, `Autostart=` |
 | cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
-| cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
-| cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
+| cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
+| cygateway | `[Gateway]` | `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
-Addresses and interface names come from the files, never from what else
-exists, so an object's addresses never change under it. Networks and
-gateways pick theirs with `Index=`, boxes with `Address=`. Services have
-no index: boxes find them by name in DNS, so their addresses are derived
-(see Networking).
+Nobody writes addresses into the files. Boxes and services find each
+other by name in DNS, so every start hands each object in the conf a
+lease, by kind and name, on the numbers that pick its addresses and
+interface names: a network's /24, a gateway's uplink, a service's link
+and its address on each network, a box's address. Leases live in
+`/var/lib/cyac/leases/<pool>/<number>` and are sticky: an object keeps
+its numbers across restarts and reboots, and keeps them while it still
+runs even after its file changed or went away, so nothing new can take a
+bridge or address that is still in use. Once an object is gone from the
+conf and stopped, its numbers are free; a new owner gets one never used
+before if there is one, otherwise the one freed longest ago.
 
 **A box is a disk, not a container.** On a box's first start, cyac pulls
 its image, unpacks it onto an ext4 filesystem on a sparse ZFS zvol
@@ -133,10 +136,9 @@ Services run under it by default and under runc only with `Runtime=runc`;
 like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
 `services.cyac.defaultRuntime`) only sets the default for boxes.
 
-**Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
+**Networking.** Each network is a bridge, `cyn<number>`, with the gateway's
 leg on `.1`, the host on `.2`, services on `.3` to `.9` and boxes from
-`.10` up. Every port on the
-bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
+`.10` up. Every port on the bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
 box can't take another's address, and a box's address is its identity.
 The host only answers DNS on `.2` and forwards nothing between the bridge
 and anything else; the only ways out are the ones the network attaches.
@@ -153,15 +155,9 @@ packets use the host's routes, then moved into the gateway, where the
 tunnel is the only route. A network without a gateway is sealed: its boxes
 reach each other, its services and the proxy, and nothing else.
 
-A service gets a netns with a leg on every network that attaches it, at
-`.3` for the network's first `Attach=service:`, `.4` for its second, and
-so on up to `.9`, so services never take a box's address. Its default
-route is a /31 into its own gateway in `169.254.0.0/16`, picked by a hash
-of the service's name; in the rare case two names hash alike, the later
-one fails with a message to rename it. Adding a service to a network at
-the end of its `Attach=` lines moves no one; removing one moves the
-services after it, which then need a restart. The netns forwards nothing, and the
-container gets neither `CAP_NET_ADMIN` nor `CAP_SYS_ADMIN`, so a box can
+A service gets a netns with a leg on every network that attaches it, on
+one of `.3` to `.9`, and a /31 into its own gateway in `10.42.255.0/24`
+as its default route. The netns forwards nothing, and the container gets neither `CAP_NET_ADMIN` nor `CAP_SYS_ADMIN`, so a box can
 reach the service but never route through it. `Secret=` files reach the
 container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
 cyac itself never reads them.

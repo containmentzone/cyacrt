@@ -14,6 +14,7 @@ import (
 	"golang.org/x/net/dns/dnsmessage"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/lease"
 )
 
 // server writes a conf with two networks behind gateway out (dev with
@@ -23,14 +24,14 @@ func server(t *testing.T, fwd Forward) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	for name, content := range map[string]string{
-		"out.cygateway":    "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
-		"dev.cynetwork":    "[Network]\nIndex=1\nAttach=service:proxy\nAttach=gateway:out\n",
-		"lab.cynetwork":    "[Network]\nIndex=2\nAttach=gateway:out\n",
-		"sealed.cynetwork": "[Network]\nIndex=3\n",
+		"out.cygateway":    "[Gateway]\nKind=direct\nDNS=9.9.9.9\n",
+		"dev.cynetwork":    "[Network]\nAttach=service:proxy\nAttach=gateway:out\n",
+		"lab.cynetwork":    "[Network]\nAttach=gateway:out\n",
+		"sealed.cynetwork": "[Network]\n",
 		"proxy.cyservice":  "[Service]\nSeedImage=i\nGateway=out\nPort=8080\n",
-		"a.cybox":          "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
-		"b.cybox":          "[Box]\nSeedImage=i\nNetwork=lab\nAddress=10.42.2.10\n",
-		"c.cybox":          "[Box]\nSeedImage=i\nNetwork=sealed\nAddress=10.42.3.10\n",
+		"a.cybox":          "[Box]\nSeedImage=i\nNetwork=dev\n",
+		"b.cybox":          "[Box]\nSeedImage=i\nNetwork=lab\n",
+		"c.cybox":          "[Box]\nSeedImage=i\nNetwork=sealed\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -40,6 +41,9 @@ func server(t *testing.T, fwd Forward) *Server {
 	if err != nil || len(problems) > 0 {
 		t.Fatal(err, problems)
 	}
+	if err := lease.Assign(t.TempDir(), c, func(string, string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
 	zones := t.TempDir()
 	if err := Write(c, zones); err != nil {
 		t.Fatal(err)
@@ -48,11 +52,11 @@ func server(t *testing.T, fwd Forward) *Server {
 }
 
 var (
-	boxA  = netip.MustParseAddr("10.42.1.10")
-	boxB  = netip.MustParseAddr("10.42.2.10")
-	boxC  = netip.MustParseAddr("10.42.3.10")
-	proxy = netip.MustParseAddr("169.254.12.183") // service end of its link
-	other = netip.MustParseAddr("10.42.9.10")     // a network without a gateway
+	boxA  = netip.MustParseAddr("10.42.0.10") // networks lease in name order: dev, lab, sealed
+	boxB  = netip.MustParseAddr("10.42.1.10")
+	boxC  = netip.MustParseAddr("10.42.2.10")
+	proxy = netip.MustParseAddr("10.42.255.1") // service end of its link
+	other = netip.MustParseAddr("10.42.9.10")  // a network without a gateway
 )
 
 func query(t *testing.T, name string, typ dnsmessage.Type) []byte {
@@ -99,21 +103,21 @@ func TestZone(t *testing.T) {
 		rcode dnsmessage.RCode
 		addr  string
 	}{
-		{boxA, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{boxA, "A.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{boxA, "proxy.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.3"},
+		{boxA, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.10"},
+		{boxA, "A.Cyac.Internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.10"},
+		{boxA, "proxy.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.3"},
 		{boxA, "a.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
 		{boxA, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
 		{boxA, "x.a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// the old per-network names still answer, but only for this network
-		{boxA, "a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
-		{boxA, "proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.3"},
+		{boxA, "a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.10"},
+		{boxA, "proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.3"},
 		{boxA, "b.lab.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// lab shares the gateway but sees only its own names
-		{boxB, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.2.10"},
+		{boxB, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
 		{boxB, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// a service sees the networks that attach it
-		{proxy, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.10"},
+		{proxy, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.10"},
 		{proxy, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// anyone not behind out is refused
 		{other, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeRefused, ""},
