@@ -1,7 +1,7 @@
 #!/bin/sh
 # Usage: scripts/release.sh proud|default|shame|<x.y.z>
 #
-# Bumps internal/version/VERSION following PrideVer (https://pridever.org),
+# Bumps VERSION following PrideVer (https://pridever.org),
 # PROUD.DEFAULT.SHAME, and regenerates CHANGELOG.md from the pull requests
 # merged into main (first-parent history) between v* tags. Bumping one part
 # zeroes the parts after it. It commits and tags nothing: merge the result,
@@ -11,7 +11,7 @@ set -eu
 cd "$(dirname "$0")/.."
 repo=https://github.com/containmentzone/cyacrt
 
-IFS=. read -r proud default shame <internal/version/VERSION
+IFS=. read -r proud default shame <VERSION
 case "${1-}" in
 proud) next=$((proud + 1)).0.0 ;;
 default) next=$proud.$((default + 1)).0 ;;
@@ -60,7 +60,7 @@ section() {
 	done
 	section "$name" "$date" "$end"
 } >CHANGELOG.md
-echo "$next" >internal/version/VERSION
+echo "$next" >VERSION
 
 echo "VERSION and CHANGELOG.md are at v$next. Open a pull request titled"
 echo "\"Release v$next\"; once it is merged: git tag v$next <merge commit> && git push origin v$next"

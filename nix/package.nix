@@ -33,13 +33,15 @@ let
 in
 buildGoModule {
   pname = "cyac";
-  version = lib.fileContents ../internal/version/VERSION;
+  version = lib.fileContents ../VERSION;
 
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
       ../go.mod
       ../go.sum
+      ../VERSION
+      ../version.go
       ../cmd
       ../internal
     ];

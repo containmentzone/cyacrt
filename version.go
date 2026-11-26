@@ -1,7 +1,9 @@
-// Package version is cyac's release version. It follows PrideVer
-// (https://pridever.org), PROUD.DEFAULT.SHAME; scripts/release.sh bumps
-// the VERSION file next to this one, which the Nix package reads too.
-package version
+// Package cyacrt only holds cyac's release version, from the VERSION file
+// at the repository root (go:embed can't reach above a package's
+// directory). It follows PrideVer (https://pridever.org),
+// PROUD.DEFAULT.SHAME; scripts/release.sh bumps it, and the Nix package
+// reads it too.
+package cyacrt
 
 import (
 	_ "embed"
@@ -12,9 +14,9 @@ import (
 //go:embed VERSION
 var version string
 
-// String is the version, with the commit appended as build metadata when
+// Version is the version, with the commit appended as build metadata when
 // the Go toolchain recorded one (go build in a git checkout, not Nix builds).
-func String() string {
+func Version() string {
 	v := strings.TrimSpace(version)
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {

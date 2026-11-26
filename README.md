@@ -441,7 +441,7 @@ test; Cloud Hypervisor is tried on real hosts.
 
 Versions follow [PrideVer](https://pridever.org), PROUD.DEFAULT.SHAME:
 PROUD for a release you're proud of, DEFAULT for an okay one, SHAME for
-fixing things too embarrassing to admit. `internal/version/VERSION` holds
+fixing things too embarrassing to admit. `VERSION` at the root holds
 the number; the binary embeds it (`cyac version`, and the daemon logs it)
 and the Nix package reads it.
 
