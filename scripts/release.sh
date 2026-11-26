@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 repo=https://github.com/containmentzone/cyacrt
 
 # valid <v>: whether v is PROUD.DEFAULT.SHAME
-valid() { echo "$1" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; }
+valid() { echo "$1" | grep -Eqx '(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'; }
 
 cur=$(cat VERSION)
 if ! valid "$cur"; then
