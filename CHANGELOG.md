@@ -54,4 +54,3 @@ scripts/release.sh generates this file from merged pull requests; don't edit it 
 - nix: take the ACME email from security.acme.defaults ([#5](https://github.com/containmentzone/cyacrt/pull/5))
 - Split cyac into a daemon and a CLI over a unix socket ([#2](https://github.com/containmentzone/cyacrt/pull/2))
 - Single-node boxes: disk-backed, Firecracker or runc, closed proxy ([#1](https://github.com/containmentzone/cyacrt/pull/1))
-- Initial commit

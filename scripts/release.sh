@@ -3,7 +3,8 @@
 #
 # Bumps VERSION following PrideVer (https://pridever.org),
 # PROUD.DEFAULT.SHAME, and regenerates CHANGELOG.md from the pull requests
-# merged into main (first-parent history) between v* tags. Bumping one part
+# merged into main (first-parent merge commits) between v* tags; commits
+# pushed straight to main are left out. Bumping one part
 # zeroes the parts after it. It commits and tags nothing: merge the result,
 # then tag that merge with v<x.y.z>. A release pull request titled
 # "Release v<x.y.z>" is left out of the changelog.
@@ -22,6 +23,14 @@ shame) next=$proud.$default.$((shame + 1)) ;;
 	exit 2
 	;;
 esac
+if ! echo "$next" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+'; then
+	echo "$next is not PROUD.DEFAULT.SHAME" >&2
+	exit 2
+fi
+if [ "$(git rev-parse --is-shallow-repository)" = true ]; then
+	echo "shallow clone: run git fetch --unshallow --tags first" >&2
+	exit 1
+fi
 if git rev-parse -q --verify "refs/tags/v$next" >/dev/null; then
 	echo "v$next is already tagged" >&2
 	exit 1
@@ -33,18 +42,14 @@ md() { printf '%s\n' "$1" | sed 's/</\\</g'; }
 # section <heading> <date> <rev-list range>
 section() {
 	printf '\n## %s (%s)\n\n' "$1" "$2"
-	git rev-list --first-parent "$3" | while read -r c; do
+	git rev-list --first-parent --merges "$3" | while read -r c; do
 		s=$(git log -1 --format=%s "$c")
-		case $s in
-		"Merge pull request #"*)
-			n=${s#Merge pull request #}
-			n=${n%% *}
-			t=$(git log -1 --format=%b "$c" | head -n1)
-			case $t in "Release v"*) continue ;; esac
-			echo "- $(md "$t") ([#$n]($repo/pull/$n))"
-			;;
-		*) echo "- $(md "$s")" ;;
-		esac
+		case $s in "Merge pull request #"*) ;; *) continue ;; esac
+		n=${s#Merge pull request #}
+		n=${n%% *}
+		t=$(git log -1 --format=%b "$c" | head -n1)
+		case $t in "Release v"*) continue ;; esac
+		echo "- $(md "$t") ([#$n]($repo/pull/$n))"
 	done
 }
 
