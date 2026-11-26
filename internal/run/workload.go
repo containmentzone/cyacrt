@@ -60,7 +60,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	if tap {
 		m.MAC = render.MAC(b.Address) // the bridge only passes this one
 	} else {
-		m.Link.Netns = netnsPath(render.BoxNetns(b.Name))
+		m.Link.Netns = render.NetnsPath(render.BoxNetns(b.Name))
 	}
 	if err := r.up(conf.KindBox, b.Name, render.Box(c, b, tap)); err != nil {
 		return err
@@ -84,7 +84,7 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 	}
 	m := machine(r.bare(conf.KindService, s.Name), s.Workload, img)
 	m.Confined = true
-	m.Link.Netns = netnsPath(render.ServiceNetns(s.Name))
+	m.Link.Netns = render.NetnsPath(render.ServiceNetns(s.Name))
 	// Names resolve through the gateway's resolver, at the gateway end
 	// of the service's link.
 	gwEnd, _ := s.Link()
@@ -264,8 +264,6 @@ func consoleSince(path string, from int64) []byte {
 	n, _ := f.ReadAt(buf, from)
 	return buf[:n]
 }
-
-func netnsPath(ns string) string { return "/run/netns/" + ns }
 
 // orDefault returns v, or def if v is zero.
 func orDefault(v, def int) int {

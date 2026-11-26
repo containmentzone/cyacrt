@@ -18,9 +18,13 @@ import (
 )
 
 // Step is one command: argv, and what to feed its stdin (nft scripts).
+// A step with IfExists runs only if that path exists: that is how a
+// network or gateway that comes back puts the legs of workloads that kept
+// running back in place (see rejoin).
 type Step struct {
-	Args  []string
-	Stdin string
+	Args     []string
+	Stdin    string
+	IfExists string `json:",omitempty"`
 }
 
 // Plan is what a unit does. Up runs in order and stops at the first
@@ -28,10 +32,20 @@ type Step struct {
 // half-finished Up or none at all.
 type Plan struct {
 	Up, Down []Step
+	ifExists string // set by rejoin while it adds steps
 }
 
-func (p *Plan) up(args ...string)   { p.Up = append(p.Up, Step{Args: args}) }
+func (p *Plan) up(args ...string)   { p.Up = append(p.Up, Step{Args: args, IfExists: p.ifExists}) }
 func (p *Plan) down(args ...string) { p.Down = append(p.Down, Step{Args: args}) }
+
+// rejoin adds the steps add makes, each to run only if path exists.
+func (p *Plan) rejoin(path string, add func()) {
+	p.ifExists = path
+	add()
+	p.ifExists = ""
+}
+
+func linkPath(ifname string) string { return "/sys/class/net/" + ifname }
 
 // nft loads table atomically, replacing an older version of it.
 func (p *Plan) nft(family, name, body string) {
@@ -79,8 +93,10 @@ const private = "{ 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 168.63.129
 	"172.16.0.0/12, 192.0.0.0/24, 192.168.0.0/16, 198.18.0.0/15, 224.0.0.0/4, 240.0.0.0/4 }"
 
 // Gateway is the plan for cygateway@<g>: its netns, its uplink, and the
-// firewall that lets legs out through the uplink and nowhere else.
-func Gateway(g *conf.Gateway) Plan {
+// firewall that lets legs out through the uplink and nowhere else. If it
+// comes back while networks and services on it kept running, it puts
+// their legs back: they died with its old netns.
+func Gateway(c *conf.Config, g *conf.Gateway) Plan {
 	var p Plan
 	ns := GatewayNetns(g.Name)
 	p.up("ip", "netns", "add", ns)
@@ -155,6 +171,16 @@ func Gateway(g *conf.Gateway) Plan {
 	}
 }
 `, uplink, private)})
+	for _, name := range conf.Sorted(c.Networks) {
+		if n := c.Networks[name]; n.Gateway == g.Name {
+			p.rejoin(linkPath(Bridge(n)), func() { networkLeg(&p, n) })
+		}
+	}
+	for _, name := range conf.Sorted(c.Services) {
+		if s := c.Services[name]; s.Gateway == g.Name {
+			p.rejoin(NetnsPath(ServiceNetns(s.Name)), func() { serviceLeg(&p, s) })
+		}
+	}
 	// Deleting the netns deletes everything in it, the legs' ends too.
 	p.down("ip", "netns", "del", ns)
 	return p
@@ -180,8 +206,10 @@ func hostForward(g *conf.Gateway, hostIf string) string {
 
 // Network is the plan for cynetwork@<n>: the bridge with the host on .2,
 // a host firewall that lets members reach the host's DNS and nothing
-// else, and the leg into the gateway (.1), if there is one.
-func Network(n *conf.Network) Plan {
+// else, and the leg into the gateway (.1), if there is one. If it comes
+// back while boxes and services on it kept running, it puts their ports,
+// which outlive the bridge, back on it.
+func Network(c *conf.Config, n *conf.Network) Plan {
 	var p Plan
 	br := Bridge(n)
 	// A fixed MAC: a bridge without one takes its lowest port's, so it
@@ -202,19 +230,40 @@ func Network(n *conf.Network) Plan {
 	}
 `, br))
 	if n.Gateway != "" {
-		ns := GatewayNetns(n.Gateway)
-		hostIf := fmt.Sprintf("cynl%d", n.Index)
-		leg := fmt.Sprintf("n%d", n.Index)
-		p.up("ip", "link", "add", hostIf, "type", "veth", "peer", "name", leg, "netns", ns)
-		p.up("ip", "link", "set", hostIf, "master", br)
-		p.up("ip", "link", "set", hostIf, "up")
-		p.up("ip", "-n", ns, "addr", "add", netip.PrefixFrom(n.Router(), 24).String(), "dev", leg)
-		p.up("ip", "-n", ns, "link", "set", leg, "up")
-		p.down("ip", "link", "del", hostIf)
+		networkLeg(&p, n)
+		p.down("ip", "link", "del", networkLegName(n))
+	}
+	var ports []string
+	for _, name := range conf.Sorted(c.Boxes) {
+		if b := c.Boxes[name]; b.Network == n.Name {
+			ports = append(ports, Port(b))
+		}
+	}
+	for _, s := range n.Services {
+		ports = append(ports, serviceLegName(c.Services[s], n))
+	}
+	for _, port := range ports {
+		p.rejoin(linkPath(port), func() {
+			p.up("ip", "link", "set", port, "master", br)
+			p.up("ip", "link", "set", port, "up")
+		})
 	}
 	p.down("ip", "link", "del", br)
 	return p
 }
+
+// networkLeg is network n's leg into its gateway, the gateway's .1 on it.
+func networkLeg(p *Plan, n *conf.Network) {
+	ns := GatewayNetns(n.Gateway)
+	hostIf, leg := networkLegName(n), fmt.Sprintf("n%d", n.Index)
+	p.up("ip", "link", "add", hostIf, "type", "veth", "peer", "name", leg, "netns", ns)
+	p.up("ip", "link", "set", hostIf, "master", Bridge(n))
+	p.up("ip", "link", "set", hostIf, "up")
+	p.up("ip", "-n", ns, "addr", "add", netip.PrefixFrom(n.Router(), 24).String(), "dev", leg)
+	p.up("ip", "-n", ns, "link", "set", leg, "up")
+}
+
+func networkLegName(n *conf.Network) string { return fmt.Sprintf("cynl%d", n.Index) }
 
 // pin is the bridge-family rules that hold the port ifname to one MAC and
 // one IPv4 address, so a machine's source address is its identity.
@@ -247,7 +296,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 	for _, name := range c.AttachedBy(s.Name) {
 		n := c.Networks[name]
 		addr := s.AddressIn(n)
-		hostIf := fmt.Sprintf("cys%dn%d", s.Index, n.Index)
+		hostIf := serviceLegName(s, n)
 		leg := fmt.Sprintf("n%d", n.Index)
 		p.up("ip", "link", "add", hostIf, "type", "veth", "peer", "name", leg, "netns", ns)
 		p.up("ip", "-n", ns, "link", "set", leg, "address", MAC(addr))
@@ -261,15 +310,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 		p.nft("bridge", "cys-"+s.Name, pinTable(rules.String()))
 	}
 
-	gwNs := GatewayNetns(s.Gateway)
-	gwEnd, svcEnd := s.Link()
-	gwIf := fmt.Sprintf("s%d", s.Index)
-	p.up("ip", "-n", ns, "link", "add", "gw", "type", "veth", "peer", "name", gwIf, "netns", gwNs)
-	p.up("ip", "-n", ns, "addr", "add", svcEnd.String(), "dev", "gw")
-	p.up("ip", "-n", ns, "link", "set", "gw", "up")
-	p.up("ip", "-n", gwNs, "addr", "add", gwEnd.String(), "dev", gwIf)
-	p.up("ip", "-n", gwNs, "link", "set", gwIf, "up")
-	p.up("ip", "-n", ns, "route", "add", "default", "via", gwEnd.Addr().String())
+	serviceLeg(&p, s)
 	// A new netns doesn't forward; this keeps it that way even if the
 	// container could change the sysctl.
 	p.Up = append(p.Up, Step{Args: in(ns, "nft", "-f", "-"),
@@ -279,6 +320,27 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 	p.down("ip", "netns", "del", ns)
 	return p
 }
+
+// serviceLeg is service s's /31 into its gateway, and its default route.
+func serviceLeg(p *Plan, s *conf.Service) {
+	ns, gwNs := ServiceNetns(s.Name), GatewayNetns(s.Gateway)
+	gwEnd, svcEnd := s.Link()
+	gwIf := fmt.Sprintf("s%d", s.Index)
+	p.up("ip", "-n", ns, "link", "add", "gw", "type", "veth", "peer", "name", gwIf, "netns", gwNs)
+	p.up("ip", "-n", ns, "addr", "add", svcEnd.String(), "dev", "gw")
+	p.up("ip", "-n", ns, "link", "set", "gw", "up")
+	p.up("ip", "-n", gwNs, "addr", "add", gwEnd.String(), "dev", gwIf)
+	p.up("ip", "-n", gwNs, "link", "set", gwIf, "up")
+	p.up("ip", "-n", ns, "route", "add", "default", "via", gwEnd.Addr().String())
+}
+
+// serviceLegName is the host end of service s's leg on network n.
+func serviceLegName(s *conf.Service, n *conf.Network) string {
+	return fmt.Sprintf("cys%dn%d", s.Index, n.Index)
+}
+
+// NetnsPath is where `ip netns` keeps netns ns, which holds it open.
+func NetnsPath(ns string) string { return "/run/netns/" + ns }
 
 // Box is the plan for cybox@<b>'s link. A VM gets a tap on the bridge
 // (its MAC goes into the VMM config); a runc box gets a netns with eth0

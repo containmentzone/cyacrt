@@ -55,6 +55,11 @@ up:
     	}
     }
     >>>
+  [if /sys/class/net/cyn2]  ip link add cynl2 type veth peer name n2 netns cygw-out
+  [if /sys/class/net/cyn2]  ip link set cynl2 master cyn2
+  [if /sys/class/net/cyn2]  ip link set cynl2 up
+  [if /sys/class/net/cyn2]  ip -n cygw-out addr add 10.42.2.1/24 dev n2
+  [if /sys/class/net/cyn2]  ip -n cygw-out link set n2 up
 down:
   nft delete table inet cygw-out
   ip link del cygw0
@@ -93,6 +98,12 @@ up:
     	}
     }
     >>>
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy link set gw up
+  [if /run/netns/cysvc-llm-proxy]  ip -n cygw-vpn addr add 10.42.255.0/31 dev s0
+  [if /run/netns/cysvc-llm-proxy]  ip -n cygw-vpn link set s0 up
+  [if /run/netns/cysvc-llm-proxy]  ip -n cysvc-llm-proxy route add default via 10.42.255.0
 down:
   ip link del cywg1
   ip netns del cygw-vpn
@@ -119,6 +130,10 @@ up:
     	}
     }
     >>>
+  [if /sys/class/net/cyb1-10]  ip link set cyb1-10 master cyn1
+  [if /sys/class/net/cyb1-10]  ip link set cyb1-10 up
+  [if /sys/class/net/cys0n1]  ip link set cys0n1 master cyn1
+  [if /sys/class/net/cys0n1]  ip link set cys0n1 up
 down:
   nft delete table inet cyn-dev
   ip link del cyn1
@@ -150,6 +165,8 @@ up:
   ip link set cynl2 up
   ip -n cygw-out addr add 10.42.2.1/24 dev n2
   ip -n cygw-out link set n2 up
+  [if /sys/class/net/cyb2-10]  ip link set cyb2-10 master cyn2
+  [if /sys/class/net/cyb2-10]  ip link set cyb2-10 up
 down:
   nft delete table inet cyn-web
   ip link del cynl2

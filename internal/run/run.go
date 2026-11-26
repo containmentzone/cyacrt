@@ -85,11 +85,11 @@ func (r *Runner) Start(ctx context.Context, kind, name string) error {
 	switch kind {
 	case conf.KindGateway:
 		if g := c.Gateways[name]; g != nil {
-			return r.up(kind, name, render.Gateway(g))
+			return r.up(kind, name, render.Gateway(c, g))
 		}
 	case conf.KindNetwork:
 		if n := c.Networks[name]; n != nil {
-			return r.up(kind, name, render.Network(n))
+			return r.up(kind, name, render.Network(c, n))
 		}
 	case conf.KindBox:
 		if b := c.Boxes[name]; b != nil {
@@ -114,6 +114,11 @@ func (r *Runner) up(kind, name string, p render.Plan) error {
 		return err
 	}
 	for _, s := range p.Up {
+		if s.IfExists != "" {
+			if _, err := os.Stat(s.IfExists); err != nil {
+				continue
+			}
+		}
 		if err := r.Exec(s); err != nil {
 			r.Stop(kind, name)
 			return fmt.Errorf("%s: %w", strings.Join(s.Args, " "), err)
