@@ -49,12 +49,16 @@ func seeded(t *testing.T, dir, name, meta string) {
 }
 
 // fakeZFS puts a zfs on PATH that logs its arguments and says every zvol
-// is 1 GiB, and returns the log.
-func fakeZFS(t *testing.T) string {
+// is 1 GiB, or, without zvols, that there are none, and returns the log.
+func fakeZFS(t *testing.T, zvols bool) string {
 	t.Helper()
 	bin := t.TempDir()
 	log := filepath.Join(bin, "log")
-	script := "#!/bin/sh\necho \"$*\" >> " + log + "\n[ \"$1\" = get ] && echo 1073741824\nexit 0\n"
+	get := "echo 1073741824"
+	if !zvols {
+		get = "exit 1"
+	}
+	script := "#!/bin/sh\necho \"$*\" >> " + log + "\n[ \"$1\" = get ] && " + get + "\nexit 0\n"
 	if err := os.WriteFile(filepath.Join(bin, "zfs"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -70,9 +74,9 @@ func TestBox(t *testing.T) {
 		"a.cybox": "[Box]\nSeedImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n" +
 			"Network=lab\nAddress=10.42.3.10\n",
 	})
-	vm := &fakeRuntime{name: "vm", kind: driver.Tap}
-	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "gone", missing: true}, vm}
-	zfs := fakeZFS(t)
+	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm, &fakeRuntime{name: "runc"}}
+	zfs := fakeZFS(t, true)
 	seeded(t, r.State, "a", `{"init":["/sbin/init"],"env":["A=1"],"run_as":"app","cwd":"/srv"}`)
 
 	if err := r.Start(context.Background(), "cybox", "a"); err != nil {
@@ -85,8 +89,8 @@ func TestBox(t *testing.T) {
 	if m.Link.HostIface != "cyb3-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:03:0a" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)
 	}
-	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "10.42.3.2" {
-		t.Errorf("addr %+v: a sealed network has no gateway", m.Addr)
+	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "" {
+		t.Errorf("addr %+v: a sealed network has no gateway and no resolver", m.Addr)
 	}
 	if !slices.Equal(m.Init.Args, []string{"/bin/app", "--x"}) || m.Init.Mode != "command" ||
 		!slices.Equal(m.Init.Env, []string{"A=1", "B=2"}) || m.Init.User != "app" || m.Init.Cwd != "/srv" {
@@ -124,13 +128,14 @@ func TestBoxNoSeedImage(t *testing.T) {
 		"lab.cynetwork": sealed,
 		"a.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
 	})
-	vm := &fakeRuntime{name: "vm", kind: driver.Tap}
+	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
-	fakeZFS(t)
+	fakeZFS(t, false)
 	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "SeedImage=") {
 		t.Fatalf("got %v, want a missing SeedImage= error", err)
 	}
 	seeded(t, r.State, "a", `{"init":["/sbin/init"]}`)
+	fakeZFS(t, true)
 	if err := r.Start(context.Background(), "cybox", "a"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,11 +145,11 @@ func TestService(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
 		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-		"proxy.cyservice": "[Workload]\nImage=img\n\n[Service]\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
+		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
-	fakeZFS(t)
+	fakeZFS(t, true)
 	seeded(t, filepath.Join(r.State, "services"), "proxy", `{"init":["/proxy"],"mode":"command"}`)
 
 	if err := r.Start(context.Background(), "cyservice", "proxy"); err == nil {
@@ -156,7 +161,7 @@ func TestService(t *testing.T) {
 	}
 	m := rc.started
 	want := driver.Link{Netns: "/run/netns/cysvc-proxy"}
-	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "9.9.9.9" {
+	if !reflect.DeepEqual(m.Link, want) || m.Secrets != "/run/credentials/cyservice@proxy.service" || m.Init.DNS != "10.42.255.0" { // its gateway end
 		t.Errorf("link %+v, secrets %q, dns %q", m.Link, m.Secrets, m.Init.DNS)
 	}
 	if m.Disk != "/dev/zvol/tank/cyac/services/proxy" {
@@ -164,16 +169,71 @@ func TestService(t *testing.T) {
 	}
 }
 
-func TestRuntimeChoice(t *testing.T) {
-	r := &Runner{Runtimes: []driver.Runtime{&fakeRuntime{name: "vm", missing: true}, &fakeRuntime{name: "runc"}}}
-	if rt, err := r.runtime(""); err != nil || rt.Name() != "runc" {
-		t.Errorf("first available: %v, %v", rt, err)
+// A box whose zvol exists without its saved image defaults is left alone,
+// never destroyed and reseeded.
+func TestBoxKeepsUnknownDisk(t *testing.T) {
+	r, _ := runner(t, map[string]string{
+		"lab.cynetwork": sealed,
+		"a.cybox":       "[Box]\nSeedImage=img\nNetwork=lab\nAddress=10.42.3.10\n",
+	})
+	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
+	zfs := fakeZFS(t, true)
+	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "exists but") {
+		t.Fatalf("got %v, want a refusal", err)
 	}
-	if _, err := r.runtime("vm"); err == nil {
-		t.Error("picked an unavailable runtime")
+	if calls, _ := os.ReadFile(zfs); strings.Contains(string(calls), "destroy") || strings.Contains(string(calls), "create") {
+		t.Errorf("touched the zvol: %s", calls)
+	}
+}
+
+// A box runs under a VM unless it asks for another runtime: no KVM means
+// it doesn't start, not that it lands in runc.
+func TestBoxRuntime(t *testing.T) {
+	conf := map[string]string{
+		"lab.cynetwork": sealed,
+		"a.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
+		"b.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.11\nRuntime=runc\n",
+	}
+	r, _ := runner(t, conf)
+	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap, missing: true}
+	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
+	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm, rc}
+	fakeZFS(t, true)
+	seeded(t, r.State, "a", `{"init":["/sbin/init"]}`)
+	seeded(t, r.State, "b", `{"init":["/sbin/init"]}`)
+
+	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "Runtime=runc") {
+		t.Errorf("got %v, want a refusal that names Runtime=runc", err)
+	}
+	if rc.started != nil {
+		t.Fatal("fell back to runc")
+	}
+	if err := r.Start(context.Background(), "cybox", "b"); err != nil || rc.started == nil {
+		t.Errorf("Runtime=runc: %v", err)
 	}
 	t.Setenv("CYAC_RUNTIME", "nope")
-	if _, err := r.runtime(""); err == nil {
-		t.Error("ignored CYAC_RUNTIME")
+	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), `no runtime "nope"`) {
+		t.Errorf("ignored CYAC_RUNTIME: %v", err)
+	}
+}
+
+// A service runs under gVisor unless its file names runc, never falls
+// back to runc on its own, and never runs in a VM.
+func TestServiceRuntime(t *testing.T) {
+	for _, tc := range []struct{ runtime, want string }{
+		{"", "set Runtime=runc"},
+		{"Runtime=cloud-hypervisor\n", "runsc or runc"},
+	} {
+		r, _ := runner(t, map[string]string{
+			"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\n",
+			"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
+			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Index=0\nGateway=out\nPort=8080\n",
+		})
+		r.State, r.Dataset = t.TempDir(), "tank/cyac"
+		r.Runtimes = []driver.Runtime{&fakeRuntime{name: "cloud-hypervisor"}, &fakeRuntime{name: "runc", kind: driver.Netns}}
+		if err := r.Start(context.Background(), "cyservice", "proxy"); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%q: got %v, want %q", tc.runtime, err, tc.want)
+		}
 	}
 }

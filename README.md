@@ -51,19 +51,23 @@ WantedBy=cyac.target
 and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
 `cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
 its object, plus `cyac.target`, which `multi-user.target` wants and
-every unit is `PartOf`. Only boxes start on their own: a box pulls in its
-network, the network its gateway, and the box the services on its network,
-so only a cybox may have an `[Install]` section. Nothing starts at boot
-unless a box's file says so there, the same as `systemctl enable` reads:
-`WantedBy=cyac.target` starts it at boot, and any other target or unit
+every unit is `PartOf`. The units depend on each other (a box `Wants` its
+network, a network its gateway, and a box the services on its network),
+so systemd brings things up in order. Restarting a network or
+gateway leaves the boxes and services on it running: when it comes back
+it puts their ports and legs back, so nothing on it needs a restart.
+Networks and gateways stay up until stopped (or `cyac.target` is).
+
+Only boxes start on their own, so only a cybox may have an `[Install]`
+section, read the way `systemctl enable` reads one: `WantedBy=cyac.target`
+starts the box (and what it needs) at boot, and any other target or unit
 works too (`WantedBy=dev.target` for a group you start by hand). Only
-`WantedBy=` and `RequiredBy=` are read. systemd won't enable a generated
-unit, so the generator writes the `.wants`/`.requires` links itself, and
-`systemctl enable`/`disable` don't apply: edit the file and
-`systemctl daemon-reload`. The units depend on each other (a box `BindsTo` its network, a network its
-gateway), so systemd brings things up in order and takes them down in
-reverse, and a network or gateway goes away with the last thing on it. A
-file that doesn't parse, or refers to something missing or broken, still
+`WantedBy=` and `RequiredBy=` are read. Nothing starts at boot without
+one. systemd won't enable a generated unit, so the generator writes the
+`.wants`/`.requires` links itself, and `systemctl enable`/`disable`
+don't apply: edit the file and `systemctl daemon-reload`.
+
+A file that doesn't parse, or refers to something missing or broken, still
 gets a unit, one that fails with the reason when started, so it shows up
 in `systemctl status`.
 
@@ -78,11 +82,11 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox | `[Box]` | `Network=`, `Address=` (required), `SeedImage=` (required until the box has a disk), `Exec=`, `Env=`, `WorkingDirectory=`, `User=`, `CPU=`, `Memory=` (as for cyservice), `DiskSize=` (default 10G), `Runtime=` |
-| cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G) |
+| cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
+| cybox | `[Box]` | `Network=`, `Address=` (required) |
+| cybox | `[Install]` | `WantedBy=`, `RequiredBy=` (unit names, space-separated, repeatable) |
 | cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
-| cybox | `[Install]` | `WantedBy=`, `RequiredBy=` (unit names, space-separated, repeatable) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
 Addresses and interface names come from the indexes in the files, never
@@ -120,11 +124,14 @@ picks one of three modes:
   `cyac shell`.
 
 The same disk boots under one of these runtimes. A box uses its
-`Runtime=`, else `CYAC_RUNTIME`, else the first one this host can run:
+`Runtime=`, else `CYAC_RUNTIME`, else `cloud-hypervisor`. A box never
+falls back to runc on its own: on a host without KVM it fails to start
+until its file says `Runtime=runc`, or the whole machine opts in with
+`services.cyac.defaultRuntime = "runc"` (which sets `CYAC_RUNTIME`).
 
 | | `cloud-hypervisor` (VM) | `runc` (container) |
 |---|---|---|
-| When | `/dev/kvm` usable, `cloud-hypervisor` on PATH, `$CYAC_DIR/vmlinux` present | otherwise |
+| When | the default; needs `/dev/kvm`, `cloud-hypervisor` on PATH and `$CYAC_DIR/vmlinux` | only with `Runtime=runc` |
 | Root | disk as `/dev/vda`, mounted by cyac-init from an initramfs | zvol mounted on the host |
 | Link | a tap on the network's bridge | a veth into the box's own netns |
 | Isolation | a VM boundary | **none worth the name: trusted boxes only** |
@@ -133,9 +140,11 @@ The runc runtime gives a box `CAP_SYS_ADMIN`, `CAP_NET_ADMIN` and a
 writable cgroup subtree, because systemd needs them. Treat it as "my own
 code on my own machine", not as a sandbox.
 
-A third runtime, `runsc`, runs the same bundle under gVisor. It comes
-last for boxes, since systemd doesn't run under gVisor; services use it
-whenever `runsc` is installed, and runc otherwise.
+A third runtime, `runsc`, runs the same bundle under gVisor. A box gets
+it only with `Runtime=runsc`, since systemd doesn't run under gVisor.
+Services run under it by default and under runc only with `Runtime=runc`;
+like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
+`services.cyac.defaultRuntime`) only sets the default for boxes.
 
 **Networking.** Each network is a bridge, `cyn<Index>`, with the gateway's
 leg on `.1`, the host on `.2` and boxes from `.10` up. Every port on the
@@ -165,9 +174,11 @@ container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
 cyac itself never reads them.
 
 **DNS.** `cydns@<network>.socket` listens on the network's `.2`, and
-`cyac dns` answers for `<name>.<network>.cyac.internal` (boxes search that
-zone, so `<name>` works too) from the conf files, for the network's boxes
-and the services it attaches. Everything else is forwarded from inside the
+`cyac dns` answers for `<name>.cyac.internal` (boxes search that zone, so
+`<name>` works too) from the conf files, for the network's boxes and the
+services it attaches; every network has its own resolver, so a service on
+several networks resolves to its address in each. The older
+`<name>.<network>.cyac.internal` still answers as an alias. Everything else is forwarded from inside the
 network's gateway, to its `DNS=` or 1.1.1.1, so a box can only resolve what
 its packets could reach. A sealed network gets no answers for outside
 names.
@@ -318,7 +329,7 @@ its file, and destroy its zvol with `zfs destroy $CYAC_ZFS/boxes/<name>`.
 ## Services: secrets boxes never see
 
 A cyservice is a confined container with an address in every network that
-attaches it (`<name>.<network>.cyac.internal`) and its own way out through a
+attaches it (`<name>.cyac.internal`) and its own way out through a
 gateway. Its `Secret=` lines become `LoadCredential=` on its unit and show up
 read-only in `/run/secrets`, so a secret stays in a file on the host and
 never reaches the nix store or a box.
@@ -332,12 +343,10 @@ elsewhere, `nix build .#cyac-inject-image`):
 
 ```ini
 # /var/lib/cyac/conf/nanogpt.cyservice
-[Workload]
-Image=/var/lib/cyac/images/cyac-inject.tar
+[Service]
+SeedImage=/var/lib/cyac/images/cyac-inject.tar
 Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
 Memory=64M
-
-[Service]
 Index=0
 Gateway=out
 Port=80
@@ -351,7 +360,7 @@ new network). The first start seeds the service's disk, so give it a few
 seconds before calling it from the box:
 
 ```sh
-curl http://nanogpt.<network>.cyac.internal/chat/completions -d @req.json
+curl http://nanogpt.cyac.internal/chat/completions -d @req.json
 ```
 
 The proxy forwards any path under the upstream URL, replaces any value the
@@ -361,7 +370,7 @@ A service's disk is seeded once, like a box's: after the image changes,
 stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
 `$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
 
-`Image=` takes a registry reference or an absolute path to an uncompressed
+`SeedImage=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
 
 ## Host requirements
@@ -396,10 +405,11 @@ required `dataset` option), enables ZFS, loads the `tun` and `bridge`
 modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
 opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
-`cyac.service` and links the guest kernel, if there is one. cyac picks the
-runtime itself: `cloud-hypervisor` when `/dev/kvm` and a guest kernel are
-there, else `runc`. `buildGuestKernel` builds one from the host kernel's
-source:
+`cyac.service` and links the guest kernel, if there is one. Boxes run
+under `cloud-hypervisor`, which needs `/dev/kvm` and a guest kernel, unless
+their `Runtime=` says otherwise; `defaultRuntime = "runc"` moves a whole
+machine of trusted boxes to runc. `buildGuestKernel` builds the guest kernel
+from the host kernel's source:
 
 ```nix
 {
@@ -414,6 +424,7 @@ source:
             enable = true;
             buildGuestKernel = true;   # for Cloud Hypervisor; leave off without KVM
             # guestKernel = ./vmlinux;   # or bring your own
+            # defaultRuntime = "runc";   # no KVM, and every box trusted
             dataset = "rpool/cyac";   # box and service disks become zvols under it
             proxy = {
               domain = "boxes.example.com";   # with a wildcard DNS record pointing here
@@ -441,6 +452,21 @@ those units restart. The module warns about this.
 
 Every PR runs gofmt, `go vet`, `go test` and staticcheck. There is no VM
 test; Cloud Hypervisor is tried on real hosts.
+
+## Versions
+
+Versions follow [PrideVer](https://pridever.org), PROUD.DEFAULT.SHAME:
+PROUD for a release you're proud of, DEFAULT for an okay one, SHAME for
+fixing things too embarrassing to admit. `VERSION` at the root holds
+the number. The Nix package reads it and sets it in the binary with
+`-X main.version` (`cyac version`, and the daemon logs it); a plain
+`go build` says `dev`.
+
+To release, run `scripts/release.sh proud|default|shame` (or give the
+number). It bumps `VERSION` and regenerates [CHANGELOG.md](CHANGELOG.md)
+from the pull requests merged since the last `v*` tag. Merge that as a
+pull request titled "Release v<x.y.z>", then tag the merge commit
+`v<x.y.z>`.
 
 ## What has been tested
 

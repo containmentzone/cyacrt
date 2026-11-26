@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
 	"github.com/containmentzone/cyacrt/internal/render"
 )
@@ -48,10 +49,12 @@ func Command(log io.Writer) Exec {
 type Runner struct {
 	Conf string // conf dir to render from
 	Dir  string // where records go
+	DNS  string // where the gateways' zone files go (see package dns); "" writes none
 	Exec Exec
 	// Workloads: where run dirs and console logs live, the ZFS dataset
-	// their disks are zvols under (see package box), and the runtimes a
-	// box may use, in order of preference. Services always use runc.
+	// their disks are zvols under (see package box), and the runtimes
+	// workloads pick from by name: a box takes its Runtime= (default
+	// cloud-hypervisor), a service runsc or else runc.
 	State    string
 	Dataset  string
 	Runtimes []driver.Runtime
@@ -72,15 +75,21 @@ func (r *Runner) Start(ctx context.Context, kind, name string) error {
 			return p.Err
 		}
 	}
+	// Every start brings the resolvers' zones up to date with the conf.
+	if r.DNS != "" {
+		if err := dns.Write(c, r.DNS); err != nil {
+			return err
+		}
+	}
 	missing := fmt.Errorf("no %s %s in the conf", kind, name)
 	switch kind {
 	case conf.KindGateway:
 		if g := c.Gateways[name]; g != nil {
-			return r.up(kind, name, render.Gateway(g))
+			return r.up(kind, name, render.Gateway(c, g))
 		}
 	case conf.KindNetwork:
 		if n := c.Networks[name]; n != nil {
-			return r.up(kind, name, render.Network(n))
+			return r.up(kind, name, render.Network(c, n))
 		}
 	case conf.KindBox:
 		if b := c.Boxes[name]; b != nil {
@@ -104,7 +113,17 @@ func (r *Runner) up(kind, name string, p render.Plan) error {
 	if err := r.record(kind, name, p.Down); err != nil {
 		return err
 	}
+	skip := "" // a rejoin that failed: the rest of its steps stay out too
 	for _, s := range p.Up {
+		if s.IfExists != "" {
+			if s.IfExists == skip {
+				continue
+			}
+			if _, err := os.Stat(s.IfExists); err != nil || r.Exec(s) != nil {
+				skip = s.IfExists // whatever no longer fits stays out
+			}
+			continue
+		}
 		if err := r.Exec(s); err != nil {
 			r.Stop(kind, name)
 			return fmt.Errorf("%s: %w", strings.Join(s.Args, " "), err)

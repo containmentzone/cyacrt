@@ -26,7 +26,8 @@ let
     environment = {
       CYAC_DIR = cfg.stateDir;
       CYAC_ZFS = cfg.dataset;
-    };
+    }
+    // lib.optionalAttrs (cfg.defaultRuntime != null) { CYAC_RUNTIME = cfg.defaultRuntime; };
   };
 in
 {
@@ -61,11 +62,28 @@ in
       '';
     };
 
+    defaultRuntime = lib.mkOption {
+      type = lib.types.nullOr (
+        lib.types.enum [
+          "cloud-hypervisor"
+          "runc"
+          "runsc"
+        ]
+      );
+      default = null;
+      example = "runc";
+      description = ''
+        Runtime for boxes whose file sets no Runtime= (CYAC_RUNTIME). Null
+        means cloud-hypervisor. Set "runc" on a machine without KVM whose
+        boxes are all trusted: runc is no sandbox. Services ignore this.
+      '';
+    };
+
     buildGuestKernel = lib.mkEnableOption ''
       building a guest kernel from the host kernel's source
       (`boot.kernelPackages.kernel`) as the default guestKernel. Without a
-      guest kernel, Cloud Hypervisor is unavailable and cyac falls back to
-      runc'';
+      guest kernel, Cloud Hypervisor is unavailable, and only boxes with
+      Runtime=runc (or defaultRuntime = "runc") start'';
 
     guestKernel = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
@@ -155,7 +173,7 @@ in
       "d /var/lib/cyac/conf 0700 root root -"
     ]
     ++ lib.optional (cfg.guestKernel != null) "L+ ${cfg.stateDir}/vmlinux - - - - ${cfg.guestKernel}"
-    # The header-injecting proxy's image, at a path a cyservice's Image= can
+    # The header-injecting proxy's image, at a path a cyservice's SeedImage= can
     # name that survives upgrades and garbage collection.
     ++ [
       "d ${cfg.stateDir}/images 0700 root root -"
@@ -227,9 +245,9 @@ in
     };
 
     # cyac-generator turns the files in /var/lib/cyac/conf into units
-    # (cygateway@, cynetwork@, cydns@, cyservice@, cybox@ and cyac.target)
+    # (cygateway@, cydns@, cynetwork@, cyservice@, cybox@ and cyac.target)
     # at boot and on every `systemctl daemon-reload`. These drop-ins give
-    # the workload units the daemon's state dir and runtime pin.
+    # the workload units the daemon's state dir and ZFS dataset.
     systemd.generators.cyac = "${cfg.package}/bin/cyac-generator";
     systemd.services."cybox@" = workloadDropin;
     systemd.services."cyservice@" = workloadDropin;
@@ -238,17 +256,6 @@ in
       80
       443
     ];
-
-    # The host firewall drops input it wasn't told about, and an accept in
-    # cyac's own tables can't overrule a drop in another table. Boxes need
-    # their network's DNS on .2 of its bridge (cyn<index>), so open 53 there.
-    networking.firewall.extraInputRules = lib.mkIf config.networking.nftables.enable ''
-      iifname "cyn*" meta l4proto { tcp, udp } th dport 53 accept
-    '';
-    networking.firewall.extraCommands = lib.mkIf (!config.networking.nftables.enable) ''
-      iptables -w -I nixos-fw -i cyn+ -p udp --dport 53 -j nixos-fw-accept
-      iptables -w -I nixos-fw -i cyn+ -p tcp --dport 53 -j nixos-fw-accept
-    '';
 
     warnings =
       lib.optional (config.networking.nftables.enable && config.networking.nftables.flushRuleset)

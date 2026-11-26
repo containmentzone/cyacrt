@@ -50,7 +50,7 @@ func TestStartStop(t *testing.T) {
 	if err := r.Start(context.Background(), "cynetwork", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.ran) == 0 || f.ran[0] != "ip link add cyn1 type bridge" {
+	if len(f.ran) == 0 || f.ran[0] != "ip link add cyn1 address 02:c7:ac:00:01:02 type bridge" {
 		t.Fatalf("Up ran %q", f.ran)
 	}
 	if err := os.Remove(filepath.Join(r.Conf, "dev.cynetwork")); err != nil {
@@ -60,7 +60,7 @@ func TestStartStop(t *testing.T) {
 	if err := r.Stop("cynetwork", "dev"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"nft delete table inet cyn-dev", "ip link del cynl1", "ip link del cyn1"}
+	want := []string{"ip link del cyn1", "nft delete table inet cyn-dev", "ip link del cynl1"}
 	if strings.Join(f.ran, "\n") != strings.Join(want, "\n") {
 		t.Errorf("Down ran %q, want %q", f.ran, want)
 	}
@@ -121,5 +121,25 @@ func TestStartRefuses(t *testing.T) {
 	}
 	if len(f.ran) != 0 {
 		t.Errorf("ran %q", f.ran)
+	}
+}
+
+// A rejoin runs only if its path exists, and one that fails skips the
+// rest of its steps without failing the plan.
+func TestRejoin(t *testing.T) {
+	r, f := runner(t, nil)
+	here, gone := t.TempDir(), filepath.Join(t.TempDir(), "gone")
+	f.fail = "add"
+	p := render.Plan{Up: []render.Step{
+		{Args: []string{"add", "a"}, IfExists: here},
+		{Args: []string{"addr", "a"}, IfExists: here},
+		{Args: []string{"set", "b"}, IfExists: gone},
+		{Args: []string{"set", "c"}},
+	}}
+	if err := r.up("cynetwork", "x", p); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(f.ran, "; "); got != "add a; set c" {
+		t.Fatalf("ran %q", got)
 	}
 }

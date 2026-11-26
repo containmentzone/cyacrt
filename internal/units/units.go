@@ -3,18 +3,22 @@
 // comparing output: no kernel, no socket, no network.
 //
 // Every object becomes one unit named <primitive>@<name>, with the
-// dependencies that make systemd bring things up in order and take them
-// down in reverse:
+// dependencies that make systemd bring things up in order:
 //
 //	cygateway@g   oneshot: the gateway netns and its uplink
-//	cynetwork@n   oneshot: the bridge; BindsTo its gateway
-//	cydns@n       socket-activated DNS on the network's .2; PartOf the network
-//	cyservice@s   the service container; BindsTo its gateway and every
+//	cydns@g       the gateway's resolver, unprivileged, in its netns;
+//	              PartOf the gateway
+//	cynetwork@n   oneshot: the bridge; Wants its gateway
+//	cyservice@s   the service container; Wants its gateway and every
 //	              network that attaches it
-//	cybox@b       the box; BindsTo its network, Wants the network's services
+//	cybox@b       the box; Wants its network and the network's services
 //
-// Gateways and networks stop when nothing needs them any more, so their
-// interfaces never outlive the boxes on them.
+// Only Wants=: restarting or stopping a gateway or network leaves what
+// runs on it running. When it comes back, it puts their ports and legs
+// back in place (see render.Network and render.Gateway), so a box never
+// needs a restart for its network. For the same reason gateways and
+// networks are not StopWhenUnneeded: they stay up until stopped, or until
+// cyac.target is.
 package units
 
 import (
@@ -24,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/render"
 )
 
 // Paths says where the binaries and the conf dir are, as the units should
@@ -42,8 +47,8 @@ type Output struct {
 }
 
 // Target is a handle on everything cyac runs: every unit is PartOf it,
-// and multi-user.target wants it, so WantedBy=cyac.target starts an
-// object at boot and systemctl stop cyac.target stops them all.
+// and multi-user.target wants it, so WantedBy=cyac.target starts a box
+// at boot and systemctl stop cyac.target stops everything.
 const Target = "cyac.target"
 
 // Generate produces the units for c. Each problem becomes a unit that
@@ -56,12 +61,11 @@ func Generate(c *conf.Config, probs []conf.Problem, p Paths) Output {
 
 	for _, name := range conf.Sorted(c.Gateways) {
 		out.Files[Name(conf.KindGateway, name)] = gateway(c.Gateways[name], p)
+		out.Files["cydns@"+name+".service"] = dnsService(c.Gateways[name], p)
 	}
 	for _, name := range conf.Sorted(c.Networks) {
 		n := c.Networks[name]
 		out.Files[Name(conf.KindNetwork, name)] = network(n, p)
-		out.Files["cydns@"+name+".socket"] = dnsSocket(n, p)
-		out.Files["cydns@"+name+".service"] = dnsService(n, p)
 	}
 	for _, name := range conf.Sorted(c.Services) {
 		out.Files[Name(conf.KindService, name)] = service(c, c.Services[name], p)
@@ -129,7 +133,6 @@ func run(p Paths, verb, kind, name string) string {
 // oneshot is the service section shared by gateways and networks: start
 // creates the kernel objects, stop removes them.
 func oneshot(u *unit, p Paths, kind, name string) string {
-	u.set("StopWhenUnneeded", "yes")
 	u.section("Service")
 	u.set("Type", "oneshot")
 	u.set("RemainAfterExit", "yes")
@@ -140,47 +143,54 @@ func oneshot(u *unit, p Paths, kind, name string) string {
 
 func gateway(g *conf.Gateway, p Paths) string {
 	u := header(conf.KindGateway, g.Name, p, "cyac gateway "+g.Name+" ("+g.Kind+")")
+	u.set("Wants", "cydns@"+g.Name+".service")
 	return oneshot(u, p, conf.KindGateway, g.Name)
 }
 
 func network(n *conf.Network, p Paths) string {
 	u := header(conf.KindNetwork, n.Name, p, "cyac network "+n.Name+" ("+n.Prefix().String()+")")
 	if n.Gateway != "" {
-		u.after("BindsTo", Name(conf.KindGateway, n.Gateway))
+		u.after("Wants", Name(conf.KindGateway, n.Gateway))
 	}
-	u.set("Wants", "cydns@"+n.Name+".socket")
 	return oneshot(u, p, conf.KindNetwork, n.Name)
 }
 
-// The DNS units are PartOf the network rather than BindsTo it: they stop
-// with it, but don't count as needing it, so the network can still stop
-// when its last box does.
-func dnsSocket(n *conf.Network, p Paths) string {
-	u := dnsHeader(n, p)
-	u.section("Socket")
-	addr := n.Host().String() + ":53"
-	u.set("ListenDatagram", addr)
-	u.set("ListenStream", addr)
-	// The socket may start before the bridge has its address.
-	u.set("FreeBind", "yes")
-	return u.b.String()
-}
-
-func dnsService(n *conf.Network, p Paths) string {
-	u := dnsHeader(n, p)
-	u.section("Service")
-	u.set("ExecStart", p.Cyac+" dns "+n.Name)
-	return u.b.String()
-}
-
-func dnsHeader(n *conf.Network, p Paths) *unit {
+// dnsService is the gateway's resolver. It is PartOf the gateway rather
+// than BindsTo it: it stops with it, but doesn't count as needing it, so
+// the gateway can still stop when its last network does. It joins the
+// gateway's netns and nothing else of the host: an unprivileged, throwaway
+// user whose one capability is binding port 53, with memory and task
+// limits, because every box behind the gateway can send it packets.
+func dnsService(g *conf.Gateway, p Paths) string {
 	u := &unit{}
-	fmt.Fprintf(&u.b, "# Generated by cyac-generator from %s. Edit that file, not this one.\n", conf.Path(p.ConfDir, conf.KindNetwork, n.Name))
+	fmt.Fprintf(&u.b, "# Generated by cyac-generator from %s. Edit that file, not this one.\n", conf.Path(p.ConfDir, conf.KindGateway, g.Name))
 	u.section("Unit")
-	u.set("Description", "cyac DNS for network "+n.Name)
-	u.set("PartOf", Name(conf.KindNetwork, n.Name))
-	u.set("After", Name(conf.KindNetwork, n.Name))
-	return u
+	u.set("Description", "cyac DNS for gateway "+g.Name)
+	u.set("PartOf", Name(conf.KindGateway, g.Name))
+	u.set("After", Name(conf.KindGateway, g.Name))
+	u.section("Service")
+	u.set("ExecStart", p.Cyac+" dns "+g.Name)
+	u.set("Restart", "on-failure")
+	u.set("NetworkNamespacePath", "/run/netns/"+render.GatewayNetns(g.Name))
+	u.set("DynamicUser", "yes")
+	u.set("AmbientCapabilities", "CAP_NET_BIND_SERVICE")
+	u.set("CapabilityBoundingSet", "CAP_NET_BIND_SERVICE")
+	u.set("NoNewPrivileges", "yes")
+	u.set("ProtectSystem", "strict")
+	u.set("ProtectHome", "yes")
+	u.set("PrivateDevices", "yes")
+	u.set("ProtectKernelTunables", "yes")
+	u.set("ProtectKernelModules", "yes")
+	u.set("ProtectControlGroups", "yes")
+	u.set("RestrictAddressFamilies", "AF_INET AF_INET6 AF_UNIX")
+	u.set("RestrictNamespaces", "yes")
+	u.set("LockPersonality", "yes")
+	u.set("MemoryDenyWriteExecute", "yes")
+	u.set("SystemCallArchitectures", "native")
+	u.set("SystemCallFilter", "@system-service")
+	u.set("MemoryMax", "256M")
+	u.set("TasksMax", "64")
+	return u.b.String()
 }
 
 // workload is the service section shared by boxes and services: start
@@ -203,18 +213,17 @@ func service(c *conf.Config, s *conf.Service, p Paths) string {
 	for _, n := range c.AttachedBy(s.Name) {
 		deps = append(deps, Name(conf.KindNetwork, n))
 	}
-	u.after("BindsTo", deps...)
+	u.after("Wants", deps...)
 	return workload(u, p, conf.KindService, s.Name, s.Secrets)
 }
 
 func box(c *conf.Config, b *conf.Box, p Paths) string {
 	u := header(conf.KindBox, b.Name, p, "cyac box "+b.Name)
-	u.after("BindsTo", Name(conf.KindNetwork, b.Network))
-	var svcs []string
+	deps := []string{Name(conf.KindNetwork, b.Network)}
 	for _, s := range c.Networks[b.Network].Services {
-		svcs = append(svcs, Name(conf.KindService, s))
+		deps = append(deps, Name(conf.KindService, s))
 	}
-	u.after("Wants", svcs...)
+	u.after("Wants", deps...)
 	return workload(u, p, conf.KindBox, b.Name, nil)
 }
 

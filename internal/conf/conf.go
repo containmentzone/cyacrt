@@ -85,9 +85,9 @@ type Gateway struct {
 	Out string
 }
 
-// Workload is what cybox and cyservice share: an OCI image and how to run
-// it. A box's Image (SeedImage=) is only used to seed a disk that doesn't
-// exist yet, so it may be empty.
+// Workload is what cybox and cyservice share, under the same keys: an OCI
+// image, a disk seeded from it, and how to run it. Image (SeedImage=) is
+// only used to seed a disk that doesn't exist yet, so it may be empty.
 type Workload struct {
 	Image    string
 	Exec     []string // overrides the image's ENTRYPOINT+CMD
@@ -96,10 +96,12 @@ type Workload struct {
 	User     string
 	CPUs     int
 	MemoryMB int
+	DiskMB   int
+	Runtime  string // "" means the kind's default (see package run)
 }
 
-// Service is a runc container with a leg in every network that attaches
-// it and a link to one gateway.
+// Service is a confined container with a leg in every network that
+// attaches it and a link to one gateway.
 type Service struct {
 	Name     string
 	Index    int // 0 to MaxLinkIndex; picks the gateway link /31
@@ -139,15 +141,14 @@ type Box struct {
 	Workload Workload
 	Network  string
 	Address  netip.Addr
-	Runtime  string // "" picks the first available
-	DiskMB   int
 	Install  Install
 }
 
-// Install is a box's [Install] section: the units that pull the
-// object's unit in, as systemctl enable would have them. The generator
-// writes the .wants and .requires links itself, since systemd ignores
-// [Install] in generated units.
+// Install is a box's [Install] section: the units that pull the box's
+// unit in, as systemctl enable would have them. The generator writes the
+// .wants and .requires links itself, since systemd ignores [Install] in
+// generated units. Only boxes have one: a box pulls in its network, the
+// network its gateway, and the box the services on its network.
 type Install struct {
 	WantedBy   []string
 	RequiredBy []string
@@ -213,6 +214,14 @@ func Load(dir string) (*Config, []Problem, error) {
 // Path is where the file for an object lives in dir.
 func Path(dir, kind, name string) string { return filepath.Join(dir, name+"."+kind) }
 
+// sections is the one section each kind keeps its keys in.
+var sections = map[string]string{
+	KindNetwork: "Network",
+	KindGateway: "Gateway",
+	KindService: "Service",
+	KindBox:     "Box",
+}
+
 func (c *Config) parseFile(path, kind, name string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -223,60 +232,47 @@ func (c *Config) parseFile(path, kind, name string) error {
 	if err != nil {
 		return err
 	}
-	byName := map[string]*fields{}
+	// Any section but the kind's own (and a box's [Install]) rejects the
+	// file before anything is stored, so a rejected object never ends up
+	// in the Config.
+	want := sections[kind]
+	var sec, inst *fields
 	for _, s := range secs {
-		if byName[s.name] != nil {
+		dst := &sec
+		switch {
+		case s.name == "Install" && kind == KindBox:
+			dst = &inst
+		case s.name == "Install":
+			return fmt.Errorf("[Install] only applies to a cybox: a %s starts when a box that needs it does", kind)
+		case s.name != want:
+			return fmt.Errorf("unknown section [%s]", s.name)
+		}
+		if *dst != nil {
 			return fmt.Errorf("section [%s] given more than once", s.name)
 		}
-		byName[s.name] = newFields(s)
+		*dst = newFields(s)
 	}
-	take := func(sec string) *fields {
-		f := byName[sec]
-		delete(byName, sec)
-		if f == nil {
-			f = newFields(section{name: sec})
-		}
-		return f
-	}
-	// Everything that can fail on its own goes before the kind's parser,
-	// which adds the object to c.
-	for sec := range byName {
-		if sec == "Install" && kind != KindBox {
-			return fmt.Errorf("[Install] only applies to a cybox: a %s starts when a box that needs it does", kind)
-		}
-		if !slices.Contains(sections[kind], sec) {
-			return fmt.Errorf("unknown section [%s]", sec)
-		}
-	}
-	in, err := parseInstall(take("Install"))
-	if err != nil {
-		return err
+	if sec == nil {
+		sec = newFields(section{name: want})
 	}
 	switch kind {
 	case KindNetwork:
-		err = c.parseNetwork(name, take("Network"))
+		return c.parseNetwork(name, sec)
 	case KindGateway:
-		err = c.parseGateway(name, take("Gateway"))
+		return c.parseGateway(name, sec)
 	case KindService:
-		err = c.parseService(name, take("Workload"), take("Service"))
+		return c.parseService(name, sec)
 	case KindBox:
-		err = c.parseBox(name, take("Box"))
-	}
-	if err != nil {
-		return err
-	}
-	if kind == KindBox {
-		c.Boxes[name].Install = in
+		if inst == nil {
+			inst = newFields(section{name: "Install"})
+		}
+		in, err := parseInstall(inst)
+		if err != nil {
+			return err
+		}
+		return c.parseBox(name, sec, in)
 	}
 	return nil
-}
-
-// sections are the sections each kind's file may have.
-var sections = map[string][]string{
-	KindNetwork: {"Network"},
-	KindGateway: {"Gateway"},
-	KindService: {"Workload", "Service"},
-	KindBox:     {"Box", "Install"},
 }
 
 func (c *Config) parseNetwork(name string, f *fields) error {
@@ -372,13 +368,11 @@ var ifname = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,15}$`)
 
 var secretName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,63}$`)
 
-func (c *Config) parseService(name string, wf, f *fields) error {
+// parseService reads a cyservice, which has all its keys in [Service].
+func (c *Config) parseService(name string, f *fields) error {
 	s := &Service{Name: name}
 	var err error
-	if s.Workload, err = parseWorkload(wf, "Image", true); err != nil {
-		return err
-	}
-	if err := wf.done(); err != nil {
+	if s.Workload, err = parseWorkload(f); err != nil {
 		return err
 	}
 	idx, err := f.one("Index")
@@ -418,11 +412,11 @@ func (c *Config) parseService(name string, wf, f *fields) error {
 	return nil
 }
 
-// parseBox reads a cybox, which has all its keys in [Box].
-func (c *Config) parseBox(name string, f *fields) error {
-	b := &Box{Name: name}
+// parseBox reads a cybox: its keys in [Box], and in its [Install].
+func (c *Config) parseBox(name string, f *fields, in Install) error {
+	b := &Box{Name: name, Install: in}
 	var err error
-	if b.Workload, err = parseWorkload(f, "SeedImage", false); err != nil {
+	if b.Workload, err = parseWorkload(f); err != nil {
 		return err
 	}
 	if b.Network, err = f.one("Network"); err != nil {
@@ -438,16 +432,6 @@ func (c *Config) parseBox(name string, f *fields) error {
 	if b.Address, err = netip.ParseAddr(addr); err != nil || !b.Address.Is4() {
 		return fmt.Errorf("[Box] needs Address= with an IPv4 address, got %q", addr)
 	}
-	if b.Runtime, err = f.one("Runtime"); err != nil {
-		return err
-	}
-	disk, err := f.one("DiskSize")
-	if err != nil {
-		return err
-	}
-	if b.DiskMB, err = sizeMB(disk, "DiskSize"); err != nil {
-		return err
-	}
 	if err := f.done(); err != nil {
 		return err
 	}
@@ -455,7 +439,12 @@ func (c *Config) parseBox(name string, f *fields) error {
 	return nil
 }
 
-var unitName = regexp.MustCompile(`^[A-Za-z0-9:_.\\@-]+\.[a-z]+$`)
+// unitName is a unit name that is safe in a link path: no slash, and no
+// leading dot or @. maxUnitName leaves room in a 255-byte directory name
+// for the ".requires" the generator adds.
+var unitName = regexp.MustCompile(`^[A-Za-z0-9:_\\-][A-Za-z0-9:_.\\@-]*\.[a-z]+$`)
+
+const maxUnitName = 255 - len(".requires")
 
 // parseInstall takes WantedBy= and RequiredBy=, each a space-separated
 // list of unit names that may be given more than once, as in systemd.
@@ -469,7 +458,7 @@ func parseInstall(f *fields) (Install, error) {
 	}{{"WantedBy", &in.WantedBy}, {"RequiredBy", &in.RequiredBy}} {
 		for _, v := range f.all(kv.key) {
 			for _, u := range strings.Fields(v) {
-				if !unitName.MatchString(u) {
+				if !unitName.MatchString(u) || len(u) > maxUnitName {
 					return in, bad(kv.key, u, "not a unit name")
 				}
 				*kv.dst = append(*kv.dst, u)
@@ -479,16 +468,13 @@ func parseInstall(f *fields) (Install, error) {
 	return in, f.done()
 }
 
-// parseWorkload takes the workload keys from f, with the image under
-// imageKey, and leaves the rest of f to the caller.
-func parseWorkload(f *fields, imageKey string, needImage bool) (Workload, error) {
+// parseWorkload takes the keys boxes and services share from f, and
+// leaves the rest of f to the caller.
+func parseWorkload(f *fields) (Workload, error) {
 	var w Workload
 	var err error
-	if w.Image, err = f.one(imageKey); err != nil {
+	if w.Image, err = f.one("SeedImage"); err != nil {
 		return w, err
-	}
-	if needImage && w.Image == "" {
-		return w, fmt.Errorf("[%s] needs %s=", f.section, imageKey)
 	}
 	exec, err := f.one("Exec")
 	if err != nil {
@@ -521,6 +507,16 @@ func parseWorkload(f *fields, imageKey string, needImage bool) (Workload, error)
 		return w, err
 	}
 	if w.MemoryMB, err = sizeMB(mem, "Memory"); err != nil {
+		return w, err
+	}
+	disk, err := f.one("DiskSize")
+	if err != nil {
+		return w, err
+	}
+	if w.DiskMB, err = sizeMB(disk, "DiskSize"); err != nil {
+		return w, err
+	}
+	if w.Runtime, err = f.one("Runtime"); err != nil {
 		return w, err
 	}
 	return w, nil
