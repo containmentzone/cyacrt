@@ -74,10 +74,10 @@ func TestLoad(t *testing.T) {
 			Workload: Workload{Image: "example/box", CPUs: 2, MemoryMB: 4096},
 			Network:  "dev", Address: netip.MustParseAddr("10.42.1.10"),
 			DiskMB: 10240,
-		}},
-		Install: map[string]Install{"cybox@a": {
-			WantedBy:   []string{"cyac.target", "dev.target", "multi-user.target"},
-			RequiredBy: []string{"cybox@b.service"},
+			Install: Install{
+				WantedBy:   []string{"cyac.target", "dev.target", "multi-user.target"},
+				RequiredBy: []string{"cybox@b.service"},
+			},
 		}},
 	}
 	if !reflect.DeepEqual(c, want) {
@@ -127,7 +127,10 @@ func TestFileErrors(t *testing.T) {
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nWantedBy=../evil.target\n", "not a unit name"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nWantedBy=multi-user\n", "not a unit name"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nAlias=y.service\n", "[Install] unknown key Alias="},
-		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\n[Install]\nWantedBy=a.target\nAlso=b.service\n", "[Install] unknown key Also="},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Install]\nWantedBy=a.target\nAlso=b.service\n", "[Install] unknown key Also="},
+		{"x.cygateway", "[Gateway]\nIndex=5\nKind=direct\n[Install]\nWantedBy=a.target\n", "[Install] only applies to a cybox"},
+		{"x.cynetwork", "[Network]\nIndex=5\n[Install]\nWantedBy=a.target\n", "[Install] only applies to a cybox"},
+		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nIndex=5\nPort=1\n[Install]\nWantedBy=a.target\n", "[Install] only applies to a cybox"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n[Extra]\n", "unknown section [Extra]"},
 		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\nAddress=10.42.1.11\n", "unknown section [Workload]"},
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAddress=10.42.1.11\n", "unknown key Image="},
@@ -174,10 +177,10 @@ func TestCascade(t *testing.T) {
 	}
 }
 
-// A file whose [Install] or sections are wrong is left out like any
-// other bad file, so whatever depends on it fails too.
+// A file with a section it may not have is left out like any other bad
+// file, so whatever depends on it fails too.
 func TestBadFileLeftOut(t *testing.T) {
-	for _, extra := range []string{"\n[Install]\nWantedBy=a/b.target\n", "\n[Extra]\n"} {
+	for _, extra := range []string{"\n[Install]\nWantedBy=cyac.target\n", "\n[Extra]\n"} {
 		c, errs := load(t, map[string]string{"out.cygateway": out + extra, "web.cynetwork": "[Network]\nIndex=2\nAttach=gateway:out\n"})
 		if c.Gateways["out"] != nil || errs["out.cygateway"] == "" || errs["web.cynetwork"] == "" {
 			t.Errorf("%q: gateway %v, problems %v", extra, c.Gateways["out"], errs)
