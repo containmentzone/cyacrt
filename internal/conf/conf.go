@@ -141,9 +141,10 @@ type Box struct {
 	Address  netip.Addr
 	Runtime  string // "" picks the first available
 	DiskMB   int
+	Install  Install
 }
 
-// Install is a file's [Install] section: the units that pull the
+// Install is a box's [Install] section: the units that pull the
 // object's unit in, as systemctl enable would have them. The generator
 // writes the .wants and .requires links itself, since systemd ignores
 // [Install] in generated units.
@@ -158,12 +159,7 @@ type Config struct {
 	Gateways map[string]*Gateway
 	Services map[string]*Service
 	Boxes    map[string]*Box
-	// Install is every file's [Install] section, by Key(kind, name).
-	Install map[string]Install
 }
-
-// Key names an object across kinds.
-func Key(kind, name string) string { return kind + "@" + name }
 
 // Problem is a file that can't be used, and why. A file is also a problem
 // when something it depends on is.
@@ -189,7 +185,6 @@ func Load(dir string) (*Config, []Problem, error) {
 		Gateways: map[string]*Gateway{},
 		Services: map[string]*Service{},
 		Boxes:    map[string]*Box{},
-		Install:  map[string]Install{},
 	}
 	ents, err := os.ReadDir(dir)
 	if errors.Is(err, os.ErrNotExist) {
@@ -246,6 +241,9 @@ func (c *Config) parseFile(path, kind, name string) error {
 	// Everything that can fail on its own goes before the kind's parser,
 	// which adds the object to c.
 	for sec := range byName {
+		if sec == "Install" && kind != KindBox {
+			return fmt.Errorf("[Install] only applies to a cybox: a %s starts when a box that needs it does", kind)
+		}
 		if !slices.Contains(sections[kind], sec) {
 			return fmt.Errorf("unknown section [%s]", sec)
 		}
@@ -267,17 +265,17 @@ func (c *Config) parseFile(path, kind, name string) error {
 	if err != nil {
 		return err
 	}
-	if len(in.WantedBy)+len(in.RequiredBy) > 0 {
-		c.Install[Key(kind, name)] = in
+	if kind == KindBox {
+		c.Boxes[name].Install = in
 	}
 	return nil
 }
 
 // sections are the sections each kind's file may have.
 var sections = map[string][]string{
-	KindNetwork: {"Network", "Install"},
-	KindGateway: {"Gateway", "Install"},
-	KindService: {"Workload", "Service", "Install"},
+	KindNetwork: {"Network"},
+	KindGateway: {"Gateway"},
+	KindService: {"Workload", "Service"},
 	KindBox:     {"Box", "Install"},
 }
 

@@ -51,15 +51,16 @@ WantedBy=cyac.target
 and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
 `cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
 its object, plus `cyac.target`, which `multi-user.target` wants and
-every unit is `PartOf`. Nothing starts at boot unless its file says so in
-an `[Install]` section, the same as `systemctl enable` reads:
+every unit is `PartOf`. Only boxes start on their own: a box pulls in its
+network, the network its gateway, and the box the services on its network,
+so only a cybox may have an `[Install]` section. Nothing starts at boot
+unless a box's file says so there, the same as `systemctl enable` reads:
 `WantedBy=cyac.target` starts it at boot, and any other target or unit
 works too (`WantedBy=dev.target` for a group you start by hand). Only
 `WantedBy=` and `RequiredBy=` are read. systemd won't enable a generated
 unit, so the generator writes the `.wants`/`.requires` links itself, and
 `systemctl enable`/`disable` don't apply: edit the file and
-`systemctl daemon-reload`. A gateway or network that a target wants stays
-up after its last box stops. The units depend on each other (a box `BindsTo` its network, a network its
+`systemctl daemon-reload`. The units depend on each other (a box `BindsTo` its network, a network its
 gateway), so systemd brings things up in order and takes them down in
 reverse, and a network or gateway goes away with the last thing on it. A
 file that doesn't parse, or refers to something missing or broken, still
@@ -81,7 +82,7 @@ The full set of keys:
 | cyservice | `[Workload]` | `Image=` (required), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G) |
 | cyservice | `[Service]` | `Index=` (0 to 127), `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Index=` (0 to 253), `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
-| all | `[Install]` | `WantedBy=`, `RequiredBy=` (unit names, space-separated, repeatable) |
+| cybox | `[Install]` | `WantedBy=`, `RequiredBy=` (unit names, space-separated, repeatable) |
 | cygateway | `[Gateway]` | `Index=` (0 to 127), `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
 Addresses and interface names come from the indexes in the files, never
