@@ -220,7 +220,8 @@ func Network(c *conf.Config, n *conf.Network) Plan {
 	p.up("ip", "addr", "add", netip.PrefixFrom(n.Host(), 24).String(), "dev", br)
 	p.up("ip", "link", "set", br, "up")
 	// Down deletes the bridge first, so its ports, which may outlive it,
-	// never sit on it without the host firewall below.
+	// never sit on it without the host firewall below. Off it, their own
+	// tables keep them shut (see detached).
 	p.down("ip", "link", "del", br)
 	p.nft("inet", "cyn-"+n.Name, fmt.Sprintf(`	chain input {
 		type filter hook input priority 0; policy accept;
@@ -278,6 +279,23 @@ func pin(ifname string, addr netip.Addr) string {
 `, ifname, MAC(addr), addr)
 }
 
+// detached is the host rules for ports while they are on no bridge: a
+// network that stops leaves its machines' ports up, and the host must not
+// take or route anything from them until the network puts them back. On
+// a bridge, traffic comes in on the bridge's name, so this never matches.
+func detached(ports ...string) string {
+	set := `"` + strings.Join(ports, `", "`) + `"`
+	return fmt.Sprintf(`	chain input {
+		type filter hook input priority 0; policy accept;
+		iifname { %[1]s } drop
+	}
+	chain forward {
+		type filter hook forward priority 0; policy accept;
+		iifname { %[1]s } drop
+	}
+`, set)
+}
+
 // pinTable puts rules on both bridge hooks: forward for frames to other
 // ports, input for frames to the host itself.
 func pinTable(rules string) string {
@@ -296,6 +314,7 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 	p.up("ip", "-n", ns, "link", "set", "lo", "up")
 
 	var rules strings.Builder
+	var legs []string
 	for _, name := range c.AttachedBy(s.Name) {
 		n := c.Networks[name]
 		addr := s.AddressIn(n)
@@ -308,9 +327,11 @@ func Service(c *conf.Config, s *conf.Service) Plan {
 		p.up("ip", "link", "set", hostIf, "master", Bridge(n))
 		p.up("ip", "link", "set", hostIf, "up")
 		rules.WriteString(pin(hostIf, addr))
+		legs = append(legs, hostIf)
 	}
 	if rules.Len() > 0 {
 		p.nft("bridge", "cys-"+s.Name, pinTable(rules.String()))
+		p.nft("inet", "cys-"+s.Name, detached(legs...))
 	}
 
 	serviceLeg(&p, s)
@@ -373,6 +394,7 @@ func Box(c *conf.Config, b *conf.Box, tap bool) Plan {
 	p.up("ip", "link", "set", port, "master", Bridge(n))
 	p.up("ip", "link", "set", port, "up")
 	p.nft("bridge", "cyb-"+b.Name, pinTable(pin(port, b.Address)))
+	p.nft("inet", "cyb-"+b.Name, detached(port))
 	p.down("ip", "link", "del", port)
 	return p
 }

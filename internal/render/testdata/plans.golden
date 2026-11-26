@@ -203,6 +203,21 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cys-llm-proxy
+    delete table inet cys-llm-proxy
+    table inet cys-llm-proxy {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cys0n1" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cys0n1" } drop
+    	}
+    }
+    >>>
   ip -n cysvc-llm-proxy link add gw type veth peer name s0 netns cygw-vpn
   ip -n cysvc-llm-proxy addr add 10.42.255.1/31 dev gw
   ip -n cysvc-llm-proxy link set gw up
@@ -219,6 +234,7 @@ up:
     >>>
 down:
   nft delete table bridge cys-llm-proxy
+  nft delete table inet cys-llm-proxy
   ip netns del cysvc-llm-proxy
 
 ==> cybox box-a (VM) <==
@@ -247,8 +263,24 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-box-a
+    delete table inet cyb-box-a
+    table inet cyb-box-a {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    }
+    >>>
 down:
   nft delete table bridge cyb-box-a
+  nft delete table inet cyb-box-a
   ip link del cyb1-10
 
 ==> cybox box-a (runc) <==
@@ -283,9 +315,25 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-box-a
+    delete table inet cyb-box-a
+    table inet cyb-box-a {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb1-10" } drop
+    	}
+    }
+    >>>
 down:
   ip netns del cybox-box-a
   nft delete table bridge cyb-box-a
+  nft delete table inet cyb-box-a
   ip link del cyb1-10
 
 ==> cybox box-a networkd <==
@@ -324,8 +372,24 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-site
+    delete table inet cyb-site
+    table inet cyb-site {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    }
+    >>>
 down:
   nft delete table bridge cyb-site
+  nft delete table inet cyb-site
   ip link del cyb2-10
 
 ==> cybox site (runc) <==
@@ -361,9 +425,25 @@ up:
     	}
     }
     >>>
+  nft -f -
+    <<<
+    table inet cyb-site
+    delete table inet cyb-site
+    table inet cyb-site {
+    	chain input {
+    		type filter hook input priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    	chain forward {
+    		type filter hook forward priority 0; policy accept;
+    		iifname { "cyb2-10" } drop
+    	}
+    }
+    >>>
 down:
   ip netns del cybox-site
   nft delete table bridge cyb-site
+  nft delete table inet cyb-site
   ip link del cyb2-10
 
 ==> cybox site networkd <==
