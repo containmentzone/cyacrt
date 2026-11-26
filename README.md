@@ -362,8 +362,8 @@ stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
 `cyac-tailnet` makes one `host:port` on a tailnet reachable as a service.
 It runs its own tailscaled in userspace mode with in-memory state, so it
 needs no TUN and never touches the host's tailnet: it is a node of its own,
-which your ACLs can tag and pin to that one destination. Use an ephemeral,
-tagged auth key; every start logs in afresh. The NixOS module links the
+which your ACLs can tag and pin to that one destination. Every start logs
+in afresh with the same key, so make it reusable, ephemeral and tagged. The NixOS module links the
 image to `/var/lib/cyac/images/cyac-tailnet.tar` (elsewhere, `nix build
 .#cyac-tailnet-image`):
 

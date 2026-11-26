@@ -34,7 +34,9 @@ let
       tailscale --socket="$sock" up --timeout=2m --auth-key="file:$key" ''${TS_HOSTNAME:+--hostname="$TS_HOSTNAME"}
 
       echo "forwarding :$listen to $target on the tailnet"
-      socat "TCP-LISTEN:$listen,fork,reuseaddr" "EXEC:tailscale --socket=$sock nc ''${target%:*} ''${target##*:}" &
+      host=''${target%:*} port=''${target##*:}
+      host=''${host#[} host=''${host%]} # [fd7a::1]:80 -> fd7a::1
+      socat "TCP-LISTEN:$listen,fork,reuseaddr" "EXEC:tailscale --socket=$sock nc $host $port" &
       # Whichever of the two dies first takes the service down with it.
       wait -n
       exit 1
