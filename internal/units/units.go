@@ -20,7 +20,8 @@
 // network that attaches a service whose file isn't there yet) drops that
 // unit's dependencies, and systemd would then stop the bridge or gateway
 // under boxes that are still running. Stopping one on purpose stops what
-// BindsTo it, so a box is never left on a bridge that went away.
+// still BindsTo it. A box whose own file is broken has no BindsTo= until
+// it is fixed, so it stays up if its network is stopped meanwhile.
 package units
 
 import (
