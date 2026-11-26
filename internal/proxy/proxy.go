@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/lease"
 )
 
 const (
@@ -94,7 +95,8 @@ var transport = &http.Transport{
 }
 
 type Server struct {
-	Conf   string // conf dir: where boxes and their addresses come from
+	Conf   string // conf dir: where boxes come from
+	Leases string // lease dir: where their addresses come from (see package lease)
 	Routes string // route dir (see SaveRoute)
 	// Domain is the root domain; port p of box b answers at <p>.<b>.<Domain>.
 	Domain string
@@ -113,6 +115,9 @@ func (s *Server) Reload() error {
 	if err != nil {
 		return err
 	}
+	if err := lease.Read(s.Leases, c); err != nil {
+		return err
+	}
 	saved, err := LoadRoutes(s.Routes)
 	if err != nil {
 		return err
@@ -129,6 +134,9 @@ func (s *Server) Reload() error {
 				continue
 			}
 			sum := sha256.Sum256([]byte(tok))
+			if !b.Address.IsValid() {
+				continue // never started, so not reachable either
+			}
 			routes[Host(pname, name, s.Domain)] = target{IP: b.Address, Port: port, TokenHash: hex.EncodeToString(sum[:])}
 		}
 	}

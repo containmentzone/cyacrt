@@ -13,17 +13,20 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/lease"
 )
 
-// Routes come from the route dir, addresses from the conf, and a route
+// Routes come from the route dir, addresses from the leases, and a route
 // whose box has no file isn't served. Each named port gets its own host,
 // and the bare box host gets nothing.
 func TestReload(t *testing.T) {
 	confDir, routes := t.TempDir(), filepath.Join(t.TempDir(), "routes")
 	for name, content := range map[string]string{
-		"dev.cynetwork": "[Network]\nIndex=1\n",
-		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n",
-		"b.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.11\n",
+		"dev.cynetwork": "[Network]\n",
+		"a.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\n",
+		"b.cybox":       "[Box]\nSeedImage=i\nNetwork=dev\n",
 	} {
 		if err := os.WriteFile(filepath.Join(confDir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)
@@ -44,11 +47,19 @@ func TestReload(t *testing.T) {
 		t.Error("saved a route under a path")
 	}
 
-	s := &Server{Conf: confDir, Routes: routes, Domain: "Boxes.Example.com"}
+	leases := t.TempDir()
+	c, _, err := conf.Load(confDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lease.Assign(leases, c, func(string, string) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Conf: confDir, Leases: leases, Routes: routes, Domain: "Boxes.Example.com"}
 	if err := s.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.1.10" {
+	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.0.10" {
 		t.Errorf("a: %+v, %v", tg, ok)
 	}
 	for host, want := range map[string]struct {
@@ -59,7 +70,7 @@ func TestReload(t *testing.T) {
 		"api.b.boxes.example.com": {3000, "tapi"},
 	} {
 		tg, ok := s.lookup(host)
-		if !ok || tg.Port != want.port || !validToken(tg.TokenHash, want.tok) || tg.IP.String() != "10.42.1.11" {
+		if !ok || tg.Port != want.port || !validToken(tg.TokenHash, want.tok) || tg.IP.String() != "10.42.0.11" {
 			t.Errorf("%s: %+v, %v", host, tg, ok)
 		}
 		if err := s.HostPolicy(context.Background(), host); err != nil {

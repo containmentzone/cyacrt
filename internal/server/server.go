@@ -27,6 +27,7 @@ import (
 
 	"github.com/containmentzone/cyacrt/internal/api"
 	"github.com/containmentzone/cyacrt/internal/conf"
+	"github.com/containmentzone/cyacrt/internal/lease"
 	"github.com/containmentzone/cyacrt/internal/proxy"
 	"github.com/containmentzone/cyacrt/internal/run"
 	"github.com/containmentzone/cyacrt/internal/sh"
@@ -34,8 +35,9 @@ import (
 )
 
 type Server struct {
-	Conf string      // conf dir; boxes are what it defines
-	Run  *run.Runner // to see which boxes run, and reach them
+	Conf   string      // conf dir; boxes are what it defines
+	Leases string      // lease dir, for box addresses (see package lease)
+	Run    *run.Runner // to see which boxes run, and reach them
 	// Routes is where exposed routes are kept (see proxy.SaveRoute).
 	Routes string
 	// Domain is the root domain: port p of box b answers at <p>.<b>.<Domain>.
@@ -120,6 +122,10 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 		reply(w, nil, err)
 		return
 	}
+	if err := lease.Read(s.Leases, c); err != nil {
+		reply(w, nil, err)
+		return
+	}
 	routes, err := proxy.LoadRoutes(s.Routes)
 	if err != nil {
 		reply(w, nil, err)
@@ -128,7 +134,10 @@ func (s *Server) list(w http.ResponseWriter, r *http.Request) {
 	out := []api.Box{}
 	for _, name := range conf.Sorted(c.Boxes) {
 		b := c.Boxes[name]
-		v := api.Box{Name: name, Image: b.Workload.Image, Network: b.Network, IP: b.Address.String(), Status: "stopped"}
+		v := api.Box{Name: name, Image: b.Workload.Image, Network: b.Network, Status: "stopped"}
+		if b.Address.IsValid() {
+			v.IP = b.Address.String()
+		}
 		if rt, _ := s.Run.Running(conf.KindBox, name); rt != nil {
 			v.Status = "running (" + rt.Name() + ")"
 		}

@@ -66,13 +66,13 @@ func fakeZFS(t *testing.T, zvols bool) string {
 	return log
 }
 
-const sealed = "[Network]\nIndex=3\n"
+const sealed = "[Network]\n"
 
 func TestBox(t *testing.T) {
 	r, f := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
 		"a.cybox": "[Box]\nSeedImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n" +
-			"Network=lab\nAddress=10.42.3.10\n",
+			"Network=lab\n",
 	})
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm, &fakeRuntime{name: "runc"}}
@@ -86,7 +86,7 @@ func TestBox(t *testing.T) {
 	if m == nil {
 		t.Fatal("not started")
 	}
-	if m.Link.HostIface != "cyb3-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:03:0a" {
+	if m.Link.HostIface != "cyb0-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:00:0a" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)
 	}
 	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "" {
@@ -106,7 +106,7 @@ func TestBox(t *testing.T) {
 	if calls, _ := os.ReadFile(zfs); !strings.Contains(string(calls), "set volsize=10737418240 tank/cyac/boxes/a\n") {
 		t.Errorf("zvol not grown: %s", calls)
 	}
-	if f.ran[0] != "ip tuntap add dev cyb3-10 mode tap" {
+	if f.ran[0] != "ip tuntap add dev cyb0-10 mode tap" {
 		t.Errorf("plan ran %q", f.ran)
 	}
 
@@ -126,7 +126,7 @@ func TestBox(t *testing.T) {
 func TestBoxNoSeedImage(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
+		"a.cybox":       "[Box]\nNetwork=lab\n",
 	})
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
@@ -143,9 +143,9 @@ func TestBoxNoSeedImage(t *testing.T) {
 
 func TestService(t *testing.T) {
 	r, _ := runner(t, map[string]string{
-		"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\nDNS=9.9.9.9\n",
-		"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nIndex=0\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
+		"out.cygateway":   "[Gateway]\nKind=direct\nDNS=9.9.9.9\n",
+		"dev.cynetwork":   "[Network]\nAttach=service:proxy\n",
+		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
@@ -174,7 +174,7 @@ func TestService(t *testing.T) {
 func TestBoxKeepsUnknownDisk(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox":       "[Box]\nSeedImage=img\nNetwork=lab\nAddress=10.42.3.10\n",
+		"a.cybox":       "[Box]\nSeedImage=img\nNetwork=lab\n",
 	})
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
@@ -192,8 +192,8 @@ func TestBoxKeepsUnknownDisk(t *testing.T) {
 func TestBoxRuntime(t *testing.T) {
 	conf := map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.10\n",
-		"b.cybox":       "[Box]\nNetwork=lab\nAddress=10.42.3.11\nRuntime=runc\n",
+		"a.cybox":       "[Box]\nNetwork=lab\n",
+		"b.cybox":       "[Box]\nNetwork=lab\nRuntime=runc\n",
 	}
 	r, _ := runner(t, conf)
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap, missing: true}
@@ -226,9 +226,9 @@ func TestServiceRuntime(t *testing.T) {
 		{"Runtime=cloud-hypervisor\n", "runsc or runc"},
 	} {
 		r, _ := runner(t, map[string]string{
-			"out.cygateway":   "[Gateway]\nIndex=0\nKind=direct\n",
-			"dev.cynetwork":   "[Network]\nIndex=1\nAttach=service:proxy\n",
-			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Index=0\nGateway=out\nPort=8080\n",
+			"out.cygateway":   "[Gateway]\nKind=direct\n",
+			"dev.cynetwork":   "[Network]\nAttach=service:proxy\n",
+			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Gateway=out\nPort=8080\n",
 		})
 		r.State, r.Dataset = t.TempDir(), "tank/cyac"
 		r.Runtimes = []driver.Runtime{&fakeRuntime{name: "cloud-hypervisor"}, &fakeRuntime{name: "runc", kind: driver.Netns}}

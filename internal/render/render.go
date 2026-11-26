@@ -358,9 +358,11 @@ func serviceLeg(p *Plan, s *conf.Service) {
 	p.up("ip", "-n", ns, "route", "add", "default", "via", gwEnd.Addr().String())
 }
 
-// serviceLegName is the host end of service s's leg on network n.
+// serviceLegName is the host end of service s's leg on network n, named
+// after its address there like a box's port.
 func serviceLegName(s *conf.Service, n *conf.Network) string {
-	return fmt.Sprintf("cys%dn%d", s.Index, n.Index)
+	a := s.AddressIn(n).As4()
+	return fmt.Sprintf("cys%d-%d", a[2], a[3])
 }
 
 // NetnsPath is where `ip netns` keeps netns ns, which holds it open.

@@ -1,5 +1,4 @@
 [Gateway]
-Index=1
 Kind=wireguard
 Config=/run/keys/wg0.conf
 Address=10.64.0.2/32

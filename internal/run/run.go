@@ -21,6 +21,7 @@ import (
 	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/dns"
 	"github.com/containmentzone/cyacrt/internal/driver"
+	"github.com/containmentzone/cyacrt/internal/lease"
 	"github.com/containmentzone/cyacrt/internal/render"
 )
 
@@ -50,7 +51,10 @@ type Runner struct {
 	Conf string // conf dir to render from
 	Dir  string // where records go
 	DNS  string // where the gateways' zone files go (see package dns); "" writes none
-	Exec Exec
+	// Leases is where package lease keeps the numbers that pick
+	// networks', gateways', services' and boxes' addresses.
+	Leases string
+	Exec   Exec
 	// Workloads: where run dirs and console logs live, the ZFS dataset
 	// their disks are zvols under (see package box), and the runtimes
 	// workloads pick from by name: a box takes its Runtime= (default
@@ -74,6 +78,15 @@ func (r *Runner) Start(ctx context.Context, kind, name string) error {
 		if p.Kind == kind && p.Name == name {
 			return p.Err
 		}
+	}
+	// Every start gives new objects their numbers, and frees those of
+	// objects that are gone and no longer running.
+	running := func(kind, name string) bool {
+		_, err := os.Stat(r.path(kind, name))
+		return err == nil
+	}
+	if err := lease.Assign(r.Leases, c, running); err != nil {
+		return err
 	}
 	// Every start brings the resolvers' zones up to date with the conf.
 	if r.DNS != "" {

@@ -132,7 +132,7 @@ func runUnit(args []string) error {
 	if ds == "" && (args[1] == conf.KindBox || args[1] == conf.KindService) {
 		return errors.New("CYAC_ZFS must name the ZFS dataset for disks, e.g. rpool/cyac")
 	}
-	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, DNS: dns.Dir, Exec: run.Command(os.Stderr), State: dir, Dataset: ds, Runtimes: rts}
+	r := &run.Runner{Conf: conf.Dir, Dir: run.Dir, DNS: dns.Dir, Leases: filepath.Join(dir, "leases"), Exec: run.Command(os.Stderr), State: dir, Dataset: ds, Runtimes: rts}
 	if args[0] == "start" {
 		// systemd stops a box or service with SIGTERM; Start then stops
 		// the workload cleanly and returns.
@@ -316,7 +316,7 @@ func daemon(socket string, args []string) error {
 	}
 	slog.Info("cyac daemon starting", "version", version, "state_dir", dir, "conf", conf.Dir, "socket", socket)
 	routes := filepath.Join(dir, "routes")
-	px := &proxy.Server{Conf: conf.Dir, Routes: routes, Domain: *domain}
+	px := &proxy.Server{Conf: conf.Dir, Leases: filepath.Join(dir, "leases"), Routes: routes, Domain: *domain}
 	if err := px.Reload(); err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func daemon(socket string, args []string) error {
 		return err
 	}
 	srv := &server.Server{
-		Conf: conf.Dir, Routes: routes, Domain: *domain, RoutesChanged: px.Reload,
+		Conf: conf.Dir, Leases: px.Leases, Routes: routes, Domain: *domain, RoutesChanged: px.Reload,
 		Run: &run.Runner{State: dir, Dataset: os.Getenv("CYAC_ZFS"), Runtimes: rts},
 	}
 	slog.Info("API listening", "socket", socket)
