@@ -357,6 +357,38 @@ stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
 `Image=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
 
+### One endpoint on a tailnet
+
+`cyac-tailnet` makes one `host:port` on a tailnet reachable as a service.
+It runs its own tailscaled in userspace mode with in-memory state, so it
+needs no TUN and never touches the host's tailnet: it is a node of its own,
+which your ACLs can tag and pin to that one destination. Use an ephemeral,
+tagged auth key; every start logs in afresh. The NixOS module links the
+image to `/var/lib/cyac/images/cyac-tailnet.tar` (elsewhere, `nix build
+.#cyac-tailnet-image`):
+
+```ini
+# /var/lib/cyac/conf/llm.cyservice
+[Workload]
+Image=/var/lib/cyac/images/cyac-tailnet.tar
+Exec=/bin/cyac-tailnet 8080 gpu-box:8080
+Env=TS_HOSTNAME=cyac-llm
+Memory=128M
+
+[Service]
+Index=1
+Gateway=out
+Port=8080
+Secret=authkey:/var/lib/secrets/tailscale-authkey
+```
+
+Boxes on a network that attaches it call `llm.cyac.internal:8080`, and so
+can another service there: point cyac-inject's `-upstream` at it to add a
+key on the way. The gateway only needs to let tailscaled reach Tailscale's
+control plane, DERP and peers, which a direct gateway does. Each connection
+runs `tailscale nc`, so it carries any TCP, but TLS to the target only
+verifies if the client asks for the target's own name.
+
 ## Host requirements
 
 Linux with systemd, root, and these tools on PATH: `ip` (iproute2), `nft`,
