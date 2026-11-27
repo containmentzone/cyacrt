@@ -16,7 +16,8 @@ The whole thing is meant to stay small enough to read in one sitting
   network.
 - **cynetwork**: a bridge with a /24 in `10.42.0.0/16`. Boxes on the
   same network can reach each other; what else they reach is exactly what
-  the network attaches: at most one gateway, and any number of services.
+  the network attaches: at most one gateway, and any of the host's services
+  (up to 128 in all; a network's services and boxes share `.3` to `.254`).
 - **cygateway**: a network namespace with one way out, either the host's
   own route (`Kind=direct`) or a WireGuard tunnel (`Kind=wireguard`).
 - **cyservice**: a confined container that boxes reach on their network
@@ -177,8 +178,9 @@ resolves to its address in each. The older `<name>.<network>.cyac.internal`
 still answers as an alias. The resolver can't read the conf, so every
 `cyac run start` writes each gateway's names to `/run/cyac-dns`, which it
 rereads. Everything else is forwarded out of the gateway's own route, to
-its `DNS=` or 1.1.1.1 and 1.0.0.1, so a box can only resolve what its
-packets could reach. Nothing on the host answers DNS.
+its `DNS=` or 1.1.1.1 and 1.0.0.1, so a box's lookups leave the way its
+traffic does; an answer pointing somewhere the gateway won't forward to
+still resolves, it just can't be reached. Nothing on the host answers DNS.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
 :443. `cyac expose <box> [<name>=<port>...]` exposes named ports of a box, each
