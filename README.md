@@ -104,9 +104,11 @@ then on the disk *is* the box. apt installs, files in `/root`, and
 everything else survive stops, starts and host reboots. That's why the key
 is `SeedImage=`: it's only read when the box has no disk yet, and can be
 changed or dropped afterwards without touching the disk. Raising `DiskSize=` grows the
-zvol on the next start (it never shrinks); a VM grows its own filesystem
-(exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`), and under runc the
-host runs an online `resize2fs`.
+zvol on the next start (it never shrinks). An ext4 root then grows to fit
+online: in a VM cyac-init grows it before switching root, and under runc
+the host runs `resize2fs`. The disk doesn't have to stay ext4: cyac-init
+mounts whatever block filesystem the guest kernel knows, and the host's
+`mount` detects it too. A box that reformats its disk grows it itself.
 
 **What runs in it** is the image's `ENTRYPOINT`+`CMD`, or `Exec=`. cyac
 picks one of three modes:

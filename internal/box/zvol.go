@@ -73,8 +73,9 @@ func (s Store) Destroy(name string) error {
 }
 
 // Grow raises name's zvol to size bytes. It never shrinks one, which would
-// cut off the end of its filesystem. The filesystem grows separately: a VM
-// grows its own, and runc grows a container's on start.
+// cut off the end of its filesystem. The filesystem grows separately, on
+// start and only if it is ext4: cyac-init grows a VM's, the host a
+// container's.
 func (s Store) Grow(name string, size int64) error {
 	cur, err := volsize(s.volume(name))
 	if err != nil || size <= cur {

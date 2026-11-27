@@ -16,6 +16,7 @@ import (
 	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"golang.org/x/sys/unix"
 
 	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
@@ -76,9 +77,16 @@ func (r Runtime) Start(m *driver.Machine) error {
 	}
 	// The zvol may have grown since the last start (DiskSize). A container
 	// can't be trusted with its block device, so the host grows the
-	// filesystem, online; this does nothing if it already fills the zvol.
-	if err := sh.Run("resize2fs", m.Disk); err != nil {
+	// filesystem, online, if it is ext4; this does nothing if it already
+	// fills the zvol. Other filesystems keep their size.
+	var st unix.Statfs_t
+	if err := unix.Statfs(rootfs(m), &st); err != nil {
 		return err
+	}
+	if st.Type == unix.EXT4_SUPER_MAGIC {
+		if err := sh.Run("resize2fs", m.Disk); err != nil {
+			return err
+		}
 	}
 	if err := agent.WriteNetConfig(rootfs(m), m.Init); err != nil {
 		return err
