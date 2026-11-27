@@ -133,7 +133,10 @@ root's copy stays, hidden under the mount, until the next reseed). The
 list only grows: a volume the image or the file stops naming stays
 mounted where it was, so dropping a `VOLUME` line never loses data. To
 drop one, remove it from `kept_volumes` in `$CYAC_DIR/disks/<name>.json`
-and its directory from the data disk. Services have no volumes.
+and its directory from the data disk. A volume can't be `/`, under
+`/dev`, `/proc`, `/sys` or `/run`, or `/etc` or `/etc/systemd`, which
+hold the network config cyac writes on every start; an image `VOLUME`
+there is ignored. Services have no volumes.
 
 Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks); a VM grows its own filesystem

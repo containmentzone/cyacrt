@@ -229,9 +229,14 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 		if err := st.Reseed(next, int64(diskMB)<<20, progress); err != nil {
 			return nil, err
 		}
-		// The old file goes with the old disk; a reseed that dies before
-		// the new one is written runs again on the next start.
-		if err := os.Rename(meta, prevPath(st, name)); err != nil {
+		// A copy of the old file goes with the old disk. The current one
+		// stays until the new one replaces it, so a reseed that dies before
+		// that runs again on the next start.
+		old, err := os.ReadFile(meta)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(prevPath(st, name), old, 0o600); err != nil {
 			return nil, err
 		}
 		os.Remove(reseedPath(st, name))

@@ -17,10 +17,13 @@ import (
 // Volumes is every volume b's data disk should hold: the ones it holds
 // already, its image's VOLUMEs and extra (the file's Volume=s), each
 // once, shortest path first, so a volume inside another mounts after it.
+// An image's VOLUME that can't be one (see agent.VolumeOK) is left out.
 func Volumes(b *Box, extra []string) []string {
-	all := slices.Concat(b.Kept, b.Volumes, extra)
-	for i, v := range all {
-		all[i] = filepath.Clean(v)
+	var all []string
+	for _, v := range slices.Concat(b.Kept, b.Volumes, extra) {
+		if v = filepath.Clean(v); agent.VolumeOK(v) {
+			all = append(all, v)
+		}
 	}
 	slices.SortFunc(all, cmpLen)
 	return slices.Compact(all)
@@ -48,13 +51,22 @@ func (s Store) FillVolumes(b *Box, want []string, sizeBytes int64, progress func
 	}
 	data := s.volume(b.Name + ".data")
 	if !s.Exists(b.Name + ".data") {
+		// Made as <name>.data.new and renamed once it has a filesystem,
+		// so a start that dies halfway leaves no unformatted data disk.
 		progress("making the data disk " + data)
-		if err := createVolume(data, sizeBytes); err != nil {
+		if err := s.Destroy(b.Name + ".data.new"); err != nil {
 			return false, err
 		}
-		if out, err := exec.Command("mkfs.ext4", "-q", "-L", "cyac-data", device(data)).CombinedOutput(); err != nil {
-			sh.Run("zfs", "destroy", data)
+		next := data + ".new"
+		if err := createVolume(next, sizeBytes); err != nil {
+			return false, err
+		}
+		if out, err := exec.Command("mkfs.ext4", "-q", "-L", "cyac-data", device(next)).CombinedOutput(); err != nil {
+			sh.Run("zfs", "destroy", next)
 			return false, fmt.Errorf("mkfs.ext4: %v: %s", err, out)
+		}
+		if err := rename(next, data); err != nil {
+			return false, err
 		}
 	} else if err := growData(data, sizeBytes); err != nil {
 		return false, err
@@ -104,10 +116,15 @@ func growData(data string, sizeBytes int64) error {
 // fillVolume makes the directory on the data disk mounted at data for
 // the volume at path, a copy of path in the root disk mounted at root,
 // or empty if the root has nothing there. One the data disk already has
-// is left as it is.
+// is left as it is, if it is a directory: the box writes the data disk,
+// and runc would follow a symlink there on the host. A copy goes to
+// <dir>.tmp first, so one that died halfway is redone.
 func fillVolume(root, data, path string, progress func(string)) error {
 	dst := filepath.Join(data, agent.VolumeDir(path))
-	if _, err := os.Lstat(dst); err == nil {
+	if fi, err := os.Lstat(dst); err == nil {
+		if !fi.IsDir() {
+			return fmt.Errorf("volume %s: %s on the data disk is not a directory", path, agent.VolumeDir(path))
+		}
 		return nil
 	}
 	src, err := realDir(root, path)
@@ -119,11 +136,15 @@ func fillVolume(root, data, path string, progress func(string)) error {
 		return err
 	}
 	progress("volume " + path + ": filling it from the root disk")
-	if out, err := exec.Command("cp", "-a", "--", src, dst).CombinedOutput(); err != nil {
-		os.RemoveAll(dst)
+	tmp := dst + ".tmp"
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	if out, err := exec.Command("cp", "-a", "--", src, tmp).CombinedOutput(); err != nil {
+		os.RemoveAll(tmp)
 		return fmt.Errorf("fill volume %s: %v: %s", path, err, out)
 	}
-	return nil
+	return os.Rename(tmp, dst)
 }
 
 // realDir returns path inside the tree at root, if every part of it is a

@@ -62,3 +62,16 @@ func TestVolumeDir(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeOK(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/home": true, "/var/lib/docker": true, "/etc/nginx": true, "/etc/ssh": true,
+		"/": false, "home": false, "/home/": false, "/a/../b": false, "../etc": false,
+		"/run": false, "/run/x": false, "/dev/shm": false, "/proc": false, "/sys/fs": false,
+		"/etc": false, "/etc/systemd": false, "/etc/systemd/network": false, "/runner": true,
+	} {
+		if got := VolumeOK(p); got != want {
+			t.Errorf("VolumeOK(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

@@ -12,12 +12,13 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/containmentzone/cyacrt/internal/agent"
 )
 
 // Dir is where the files live. It is under /var, not /etc, so the CLI can
@@ -394,8 +395,8 @@ func (c *Config) parseBox(name string, f *fields) error {
 		return err
 	}
 	for _, v := range f.all("Volume") {
-		if !path.IsAbs(v) || path.Clean(v) != v || v == "/" {
-			return bad("Volume", v, "want a clean absolute path other than /")
+		if !agent.VolumeOK(v) {
+			return bad("Volume", v, "want a clean absolute path, not /, not under /dev, /proc, /sys or /run, and not /etc or /etc/systemd")
 		}
 		b.Volumes = append(b.Volumes, v)
 	}
@@ -431,7 +432,7 @@ func (c *Config) parseBox(name string, f *fields) error {
 func parseWorkload(f *fields) (Workload, error) {
 	var w Workload
 	var err error
-	if old, _ := f.one("SeedImage"); old != "" {
+	if len(f.all("SeedImage")) > 0 {
 		return w, fmt.Errorf("SeedImage= is now Image=")
 	}
 	if w.Image, err = f.one("Image"); err != nil {

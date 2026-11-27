@@ -8,7 +8,7 @@ import (
 )
 
 func TestVolumes(t *testing.T) {
-	b := &Box{Kept: []string{"/old"}, Defaults: Defaults{Volumes: []string{"/var/lib/docker", "/home"}}}
+	b := &Box{Kept: []string{"/old"}, Defaults: Defaults{Volumes: []string{"/var/lib/docker", "/home", "../../etc", "/run/x", "/etc"}}}
 	got := Volumes(b, []string{"/home/", "/srv"})
 	want := []string{"/old", "/srv", "/home", "/var/lib/docker"}
 	if !slices.Equal(got, want) {
@@ -50,5 +50,12 @@ func TestFillVolume(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(data, "home/ubuntu/.profile")); string(got) != "hi" {
 		t.Errorf("refilled: %q", got)
+	}
+	// A symlink the box left on the data disk is no volume.
+	if err := os.Symlink("/etc", filepath.Join(data, "srv")); err != nil {
+		t.Fatal(err)
+	}
+	if err := fillVolume(root, data, "/srv", quiet); err == nil {
+		t.Error("took a symlink on the data disk")
 	}
 }

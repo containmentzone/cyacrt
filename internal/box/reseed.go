@@ -3,6 +3,7 @@ package box
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -139,10 +140,12 @@ func carryFiles(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if !fi.Mode().IsRegular() {
+		// The size check keeps a box from making the host read a huge
+		// file; real ones are a few KiB.
+		if !fi.Mode().IsRegular() || fi.Size() > 64<<10 {
 			continue
 		}
-		data, err := from.ReadFile(name)
+		data, err := readSmall(from, name)
 		if err != nil {
 			return err
 		}
@@ -165,4 +168,15 @@ func carryFiles(src, dst string) error {
 		}
 	}
 	return nil
+}
+
+// readSmall reads name in r, at most 64 KiB of it, whatever its size was
+// when it was checked.
+func readSmall(r *os.Root, name string) ([]byte, error) {
+	f, err := r.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, 64<<10))
 }
