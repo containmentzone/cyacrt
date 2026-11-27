@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/containmentzone/cyacrt/internal/agent"
@@ -103,7 +104,7 @@ func (s Store) fillVolumes(b *Box, want []string, sizeBytes int64, progress func
 	ms = append(ms, mount{s.DiskPath(b.Name), "ro"})
 	err := s.mounted(b.Name, func(dirs []string) error {
 		for _, v := range fresh {
-			if err := fillVolume(dirs[1:], dirs[0], v, progress); err != nil {
+			if err := fillVolume(sources(b.Kept, dirs[0], dirs[1:], v), dirs[0], v, progress); err != nil {
 				return err
 			}
 			b.Kept = append(b.Kept, v)
@@ -116,13 +117,18 @@ func (s Store) fillVolumes(b *Box, want []string, sizeBytes int64, progress func
 
 // growData grows the data disk data to sizeBytes, zvol and ext4, if it
 // is smaller. The box isn't running, so the host resizes it offline,
-// which wants a fresh fsck first.
+// which wants a fresh fsck first. The filesystem is grown whenever it is
+// smaller than the zvol, so a resize that failed is retried.
 func growData(data string, sizeBytes int64) error {
-	cur, err := volsize(data)
-	if err != nil || sizeBytes <= cur {
+	if err := grow(data, sizeBytes); err != nil {
 		return err
 	}
-	if err := grow(data, sizeBytes); err != nil {
+	vol, err := volsize(data)
+	if err != nil {
+		return err
+	}
+	fs, err := ext4Size(device(data))
+	if err != nil || fs >= vol {
 		return err
 	}
 	if out, err := exec.Command("e2fsck", "-fp", device(data)).CombinedOutput(); err != nil {
@@ -134,13 +140,67 @@ func growData(data string, sizeBytes int64) error {
 	return nil
 }
 
+// ext4Size is the size in bytes of the ext4 on dev, from its superblock.
+func ext4Size(dev string) (int64, error) {
+	out, err := exec.Command("dumpe2fs", "-h", dev).Output()
+	if err != nil {
+		return 0, fmt.Errorf("dumpe2fs %s: %v", dev, err)
+	}
+	return parseExt4Size(string(out))
+}
+
+func parseExt4Size(s string) (int64, error) {
+	var count, size int64
+	for line := range strings.Lines(s) {
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		n, _ := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		switch k {
+		case "Block count":
+			count = n
+		case "Block size":
+			size = n
+		}
+	}
+	if count == 0 || size == 0 {
+		return 0, fmt.Errorf("no block count and size in dumpe2fs output")
+	}
+	return count * size, nil
+}
+
+// source is where a new volume's files may come from: path in the tree
+// at dir.
+type source struct{ dir, path string }
+
+// sources lists where the new volume at path is filled from: the kept
+// volume it is inside, if any, since that one's files are what the box
+// sees there now; otherwise each root disk mounted at roots, in order.
+func sources(kept []string, data string, roots []string, path string) []source {
+	var parent string
+	for _, k := range kept {
+		if strings.HasPrefix(path, k+"/") && len(k) > len(parent) {
+			parent = k
+		}
+	}
+	if parent != "" {
+		return []source{{filepath.Join(data, agent.VolumeDir(parent)), strings.TrimPrefix(path, parent)}}
+	}
+	var srcs []source
+	for _, r := range roots {
+		srcs = append(srcs, source{r, path})
+	}
+	return srcs
+}
+
 // fillVolume makes the directory on the data disk mounted at data for
-// the volume at path, a copy of path in the first of the root disks
-// mounted at roots that has it, or empty if none has. One the data disk already has
+// the volume at path, a copy of the first of srcs that has the files, or
+// empty if none has. One the data disk already has
 // is left as it is, if it is a directory: the box writes the data disk,
 // and runc would follow a symlink there on the host. A copy goes to
 // .fill-<dir> first, so one that died halfway is redone.
-func fillVolume(roots []string, data, path string, progress func(string)) error {
+func fillVolume(srcs []source, data, path string, progress func(string)) error {
 	dst := filepath.Join(data, agent.VolumeDir(path))
 	if fi, err := os.Lstat(dst); err == nil {
 		if !fi.IsDir() {
@@ -149,8 +209,8 @@ func fillVolume(roots []string, data, path string, progress func(string)) error 
 		return nil
 	}
 	var src string
-	for _, root := range roots {
-		p, err := realDir(root, path)
+	for _, s := range srcs {
+		p, err := realDir(s.dir, s.path)
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}

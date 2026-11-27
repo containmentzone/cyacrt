@@ -53,7 +53,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 		return err
 	}
 	st := r.store(conf.KindBox)
-	img, err := image(st, b.Name, b.Workload, cmp.Or(b.Workload.DiskMB, defaultDiskMB))
+	img, err := image(st, b.Name, b.Workload, cmp.Or(b.Workload.DiskMB, defaultDiskMB), true)
 	if err != nil {
 		return err
 	}
@@ -104,7 +104,7 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 		}
 		return err
 	}
-	img, err := image(r.store(conf.KindService), s.Name, s.Workload, cmp.Or(s.Workload.DiskMB, defaultDiskMB))
+	img, err := image(r.store(conf.KindService), s.Name, s.Workload, cmp.Or(s.Workload.DiskMB, defaultDiskMB), false)
 	if err != nil {
 		return err
 	}
@@ -212,8 +212,10 @@ func (r *Runner) runtime(want string) (driver.Runtime, error) {
 // first if it has none, reseeding it if it should (see reseedWhy), and
 // growing it to diskMB. Seeding saves the image's defaults next to the
 // disk, so later starts don't need the registry; the file only ever
-// changes when the disk is seeded again.
-func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, error) {
+// changes when the disk is seeded again. volumes says whether the
+// workload has volumes to fill from the old root after a reseed (boxes
+// do, services don't).
+func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool) (*box.Box, error) {
 	meta := imagePath(st, name)
 	progress := func(line string) { log.Print(line) }
 	b, err := loadImage(meta)
@@ -222,13 +224,22 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 			return nil, err
 		}
 		why, err := reseedWhy(st, name, w, b)
+		if err == nil && why != "" && b.FillFrom != "" {
+			// Another reseed would replace <name>.prev before the volumes
+			// that come from it are filled.
+			progress("not reseeding " + name + " (" + why + ") until its volumes from the last reseed are filled")
+			why = ""
+		}
 		if err != nil || why == "" {
 			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))
 		}
 		progress("reseeding " + name + ": " + why)
 		// The data disk and its volumes stay as they are.
 		// A volume new with the new image is filled from the old root.
-		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept, FillFrom: name + ".prev"}
+		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept}
+		if volumes {
+			next.FillFrom = name + ".prev"
+		}
 		if err := st.Reseed(next, int64(diskMB)<<20, progress); err != nil {
 			return nil, err
 		}
