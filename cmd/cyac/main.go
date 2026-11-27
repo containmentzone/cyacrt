@@ -80,7 +80,8 @@ Boxes, networks, gateways and services are files in /var/lib/cyac/conf
 The CLI talks to the daemon on $CYAC_SOCKET (default /run/cyac/cyac.sock).
 The daemon keeps state in $CYAC_DIR (default /var/lib/cyac), and box and
 service disks as zvols under the ZFS dataset $CYAC_ZFS (e.g. rpool/cyac).
-CYAC_RUNTIME=cloud-hypervisor, runc or runsc forces a runtime.
+CYAC_RUNTIME=cloud-hypervisor, runc or runsc is the runtime for boxes whose
+file sets no Runtime= (default cloud-hypervisor); services ignore it.
 `
 
 func main() {

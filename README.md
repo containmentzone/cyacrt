@@ -5,7 +5,7 @@ little VMs, built from any OCI image, on networks you declare, behind an
 HTTPS proxy that is closed by default.
 
 The whole thing is meant to stay small enough to read in one sitting
-(~5,100 lines of Go).
+(~6,300 lines of Go).
 
 ## How it works
 
@@ -16,7 +16,8 @@ The whole thing is meant to stay small enough to read in one sitting
   network.
 - **cynetwork**: a bridge with a /24 in `10.42.0.0/16`. Boxes on the
   same network can reach each other; what else they reach is exactly what
-  the network attaches: at most one gateway, and up to seven services.
+  the network attaches: at most one gateway, and any of the host's services
+  (up to 128 in all; a network's services and boxes share `.3` to `.254`).
 - **cygateway**: a network namespace with one way out, either the host's
   own route (`Kind=direct`) or a WireGuard tunnel (`Kind=wireguard`).
 - **cyservice**: a confined container that boxes reach on their network
@@ -44,7 +45,7 @@ Autostart=yes
 
 `cyac-generator`, a systemd generator, turns the files into units at boot
 and on every `systemctl daemon-reload`: `cygateway@`, `cynetwork@`,
-`cydns@` (socket and service), `cyservice@` and `cybox@`, each named after
+`cydns@` (one per gateway), `cyservice@` and `cybox@`, each named after
 its object, plus `cyac.target`, which starts every `Autostart=yes` box.
 The units depend on each other (a box `Wants` its network, a network its
 gateway), so systemd brings things up in order. Restarting a network or
@@ -69,7 +70,7 @@ The full set of keys:
 | cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
 | cybox | `[Box]` | `Network=`, `Autostart=` |
 | cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
-| cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
+| cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (repeatable) |
 | cygateway | `[Gateway]` | `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
 
 Nobody writes addresses into the files. Boxes and services find each
@@ -142,8 +143,9 @@ like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
 leg on `.1`, the host on `.2`, and its services and boxes anywhere from
 `.3` to `.254`, from one pool. Every port on the bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
 box can't take another's address, and a box's address is its identity.
-The host only answers DNS on `.2` and forwards nothing between the bridge
-and anything else; the only ways out are the ones the network attaches.
+The host takes no new connections from the bridge, not even DNS, and
+forwards nothing between the bridge and anything else; the only ways out
+are the ones the network attaches.
 Networks are IPv4-only: boxes get no IPv6 address at all, not even
 link-local.
 
@@ -155,7 +157,8 @@ masquerades out of its default route (or only `Uplink=`). A WireGuard
 gateway's interface is created in the host netns, so its encrypted
 packets use the host's routes, then moved into the gateway, where the
 tunnel is the only route. A network without a gateway is sealed: its boxes
-reach each other, its services and the proxy, and nothing else.
+reach each other and its services, and nothing else. It has no resolver
+either, so they find each other by address only.
 
 A service gets a netns with a leg on every network that attaches it, on
 an address from that network's pool, and a /31 into its own gateway in `10.42.255.0/24`
@@ -164,15 +167,20 @@ reach the service but never route through it. `Secret=` files reach the
 container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;
 cyac itself never reads them.
 
-**DNS.** `cydns@<network>.socket` listens on the network's `.2`, and
-`cyac dns` answers for `<name>.cyac.internal` (boxes search that zone, so
-`<name>` works too) from the conf files, for the network's boxes and the
-services it attaches; every network has its own resolver, so a service on
-several networks resolves to its address in each. The older
-`<name>.<network>.cyac.internal` still answers as an alias. Everything else is forwarded from inside the
-network's gateway, to its `DNS=` or 1.1.1.1, so a box can only resolve what
-its packets could reach. A sealed network gets no answers for outside
-names.
+**DNS.** Each gateway runs its own resolver, `cyac dns` as
+`cydns@<gateway>.service`, unprivileged inside the gateway's netns. It
+listens on every leg: a box asks its router (`.1`), a service the gateway
+end of its link. It answers for `<name>.cyac.internal` (boxes search that
+zone, so `<name>` works too) with the names the asking client may see: a
+box its own network's boxes and the services it attaches, a service those
+of every network that attaches it, so a service on several networks
+resolves to its address in each. The older `<name>.<network>.cyac.internal`
+still answers as an alias. The resolver can't read the conf, so every
+`cyac run start` writes each gateway's names to `/run/cyac-dns`, which it
+rereads. Everything else is forwarded out of the gateway's own route, to
+its `DNS=` or 1.1.1.1 and 1.0.0.1, so a box's lookups leave the way its
+traffic does; an answer pointing somewhere the gateway won't forward to
+still resolves, it just can't be reached. Nothing on the host answers DNS.
 
 **Proxy.** The daemon's proxy is an `httputil.ReverseProxy` on :80 and
 :443. `cyac expose <box> [<name>=<port>...]` exposes named ports of a box, each
@@ -284,13 +292,14 @@ and the first three are pure, so each is tested by comparing text:
 `driver.Runtime` in `internal/driver` is the seam between `run` and the
 runtimes: `internal/runtime/cloudhypervisor` and `internal/runtime/runc`
 (which is also `runsc`). `internal/box` builds disks from images.
-`internal/dns` is `cyac dns`. `internal/proxy` is the front door.
+`internal/lease` hands out the numbers behind addresses and interface
+names. `internal/dns` is `cyac dns`. `internal/proxy` is the front door.
 `internal/server` serves the API in `internal/api` on the socket, and
 `internal/client` calls it. `cmd/cyac` is the CLI, the daemon and the
 units' `cyac run` and `cyac dns`, and wires concrete runtimes together.
 `cmd/cyac-init` is the static PID 1 and exec agent described above;
 `internal/agent` holds what it shares with the host (its config, the
-initramfs, the exec protocol). A new runtime is one package that
+initramfs, the exec protocol). `internal/sh` runs host commands. A new runtime is one package that
 implements one interface, plus a line in `cmd/cyac/main.go`.
 
 ## Usage
@@ -379,8 +388,7 @@ builds have them all, plus TUN, policy routing and nftables, so tailscale
 works in a box. `cyac` finds `cyac-init` next to its own binary, or at
 `$CYAC_INIT`, and the generator finds `cyac` next to itself. If another
 firewall drops forwarded traffic or input on the bridges (Docker, for
-example, or the NixOS firewall), allow `cyn*` to reach port 53 on the
-host and let the gateways' traffic through.
+example, or the NixOS firewall), let the gateways' traffic through.
 
 ## Nix
 
@@ -394,7 +402,7 @@ On NixOS, the module adds the CLI, `CYAC_DIR` and `CYAC_ZFS` (from the
 required `dataset` option), enables ZFS, loads the `tun` and `bridge`
 modules, enables IP forwarding, creates the state dir and
 `/var/lib/cyac/conf`, installs `cyac-generator` as a systemd generator,
-opens port 53 on `cyn*` in the NixOS firewall, runs `cyac daemon` as
+runs `cyac daemon` as
 `cyac.service` and links the guest kernel, if there is one. Boxes run
 under `cloud-hypervisor`, which needs `/dev/kvm` and a guest kernel, unless
 their `Runtime=` says otherwise; `defaultRuntime = "runc"` moves a whole
