@@ -32,3 +32,18 @@ func TestWriteNetConfig(t *testing.T) {
 		t.Errorf("followed the symlink: %q", got)
 	}
 }
+
+func TestWriteNetConfigHostname(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "etc"), 0o755)
+	// A box that set its own hosts keeps them; a missing hostname is written.
+	os.WriteFile(filepath.Join(dir, "etc/hosts"), []byte("mine\n"), 0o644)
+	if err := WriteNetConfig(dir, Config{Hostname: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"etc/hostname": "a\n", "etc/hosts": "mine\n"} {
+		if got, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}

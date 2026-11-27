@@ -160,12 +160,14 @@ func (r *Runner) cleanup(kind, name string) {
 
 // store is where kind's disks, run dirs and logs live: boxes where the
 // daemon kept them, services in a tree and dataset of their own, so a
-// service can never be handed a box's disk.
+// service can never be handed a box's disk. Both clone their disks from
+// the same images.
 func (r *Runner) store(kind string) box.Store {
+	images := box.Images{Dir: filepath.Join(r.State, "images"), Dataset: r.Dataset + "/images"}
 	if kind == conf.KindService {
-		return box.Store{Dir: filepath.Join(r.State, "services"), Dataset: r.Dataset + "/services"}
+		return box.Store{Dir: filepath.Join(r.State, "services"), Dataset: r.Dataset + "/services", Images: images}
 	}
-	return box.Store{Dir: r.State, Dataset: r.Dataset + "/boxes"}
+	return box.Store{Dir: r.State, Dataset: r.Dataset + "/boxes", Images: images}
 }
 
 // bare is kind/name's machine with only its paths filled in.
@@ -244,7 +246,7 @@ func loadImage(path string) (*box.Box, error) {
 // machine fills in m, a bare machine, for the runtime: the image's
 // defaults with the file's settings on top.
 func machine(m *driver.Machine, w conf.Workload, img *box.Box) *driver.Machine {
-	init := agent.Config{Mode: img.Mode, Args: img.Init, Env: append(img.Env, w.Env...), Cwd: img.Cwd, User: img.RunAs}
+	init := agent.Config{Hostname: m.Name, Mode: img.Mode, Args: img.Init, Env: append(img.Env, w.Env...), Cwd: img.Cwd, User: img.RunAs}
 	if len(w.Exec) > 0 {
 		init.Args, init.Mode = w.Exec, box.ModeFor(w.Exec)
 	}

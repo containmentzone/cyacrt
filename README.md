@@ -84,10 +84,18 @@ bridge or address that is still in use. Once an object is gone from the
 conf and stopped, its numbers are free; a new owner gets one never used
 before if there is one, otherwise the one freed longest ago.
 
-**A box is a disk, not a container.** On a box's first start, cyac pulls
-its image, unpacks it onto an ext4 filesystem on a sparse ZFS zvol
-(`$CYAC_ZFS/boxes/<name>`), and adds a few files: the hostname, an
-`/etc/hosts` that resolves it, and an empty machine-id. It saves the
+**A box is a disk, not a container.** On a box's first start, cyac
+resolves its image to the image ID (the digest of that platform's config).
+The first time it sees an ID, it unpacks the image onto an ext4 filesystem
+on a sparse ZFS zvol (`$CYAC_ZFS/images/<id>`), with an empty machine-id,
+and snapshots it. The box's disk (`$CYAC_ZFS/boxes/<name>`) is a ZFS clone
+of that snapshot, grown to its `DiskSize=`, so boxes from one image share
+its blocks; only a box asking for a smaller disk than the image's gets a
+copy unpacked of its own. Each image records when a box was last seeded
+from it (`$CYAC_DIR/images/<id>.json`), for pruning later; a clone pins its
+image's snapshot, so ZFS won't destroy an image while a box cloned from it
+exists. The box's first start writes its hostname and an `/etc/hosts` that
+resolves it, where missing. It saves the
 image's defaults (command, `Env`, `WorkingDir`, `USER`, login user) next to
 the disk, so later starts don't need the registry. Every start also writes
 a systemd-networkd config for `eth0` with the box's address, gateway and

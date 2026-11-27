@@ -10,6 +10,15 @@ import "path/filepath"
 type Box struct {
 	Name  string `json:"name"`
 	Image string `json:"image"`
+	// ImageID is the ID of the image Image resolved to when the disk was
+	// seeded: the digest of its config, which is per platform.
+	ImageID string `json:"image_id,omitempty"`
+	Defaults
+}
+
+// Defaults are what an image says to run and how, the same for every
+// workload seeded from it.
+type Defaults struct {
 	// Init is the image's ENTRYPOINT+CMD, e.g. /usr/local/bin/init for
 	// exeuntu, or /sbin/init if the image has neither. Mode says what runs
 	// it (see agent.Config.Mode): "" makes it PID 1, "command" runs it
@@ -31,16 +40,18 @@ type Box struct {
 // Store is where a kind of workload keeps its files, and its disks as
 // ZFS zvols:
 //
-//	<dataset>/<name>               disk, at /dev/zvol/<dataset>/<name>
+//	<dataset>/<name>               disk, at /dev/zvol/<dataset>/<name>,
+//	                               usually a clone of an image (see Images)
 //	<dir>/disks/<name>.json        what seeding learned from the image (Box)
 //	<dir>/run/<name>/              runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  console, across runs
 type Store struct {
 	Dir     string
 	Dataset string
+	Images  Images
 }
 
-func (s Store) DiskPath(name string) string { return "/dev/zvol/" + s.volume(name) }
+func (s Store) DiskPath(name string) string { return device(s.volume(name)) }
 func (s Store) RunDir(name string) string   { return filepath.Join(s.Dir, "run", name) }
 func (s Store) ConsoleLog(name string) string {
 	return filepath.Join(s.Dir, "logs", name+".console.log")
