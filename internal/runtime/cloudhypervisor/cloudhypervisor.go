@@ -6,7 +6,7 @@
 // networkd config carries the same address.
 //
 // A guest reboot resets the VM in place. A guest poweroff (ACPI) ends the
-// cloud-hypervisor process, which is how the daemon sees a box stop itself.
+// cloud-hypervisor process, which is how its unit sees a box stop itself.
 //
 // TODO: confine Cloud Hypervisor with its --landlock rules.
 package cloudhypervisor

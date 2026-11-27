@@ -62,7 +62,7 @@ func WriteNetConfig(dir string, c Config) error {
 	return ReplaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)
 }
 
-// replaceFile replaces name in root, without following a symlink there.
+// ReplaceFile replaces name in root, without following a symlink there.
 func ReplaceFile(root *os.Root, name, content string) error {
 	if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 		return err

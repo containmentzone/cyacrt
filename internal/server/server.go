@@ -75,7 +75,7 @@ func (w *statusWriter) WriteHeader(code int) {
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Hijack is only used by exec, which then answers 101 itself.
+// Hijack is only used by exec and console, which then answer 101 themselves.
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	w.status = http.StatusSwitchingProtocols
 	return http.NewResponseController(w.ResponseWriter).Hijack()

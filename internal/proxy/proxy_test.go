@@ -131,9 +131,6 @@ func TestCrossHost(t *testing.T) {
 		if _, err := r.Cookie(cookieName); err == nil {
 			t.Error("box got the proxy cookie")
 		}
-		if _, err := r.Cookie(oldCookie); err == nil {
-			t.Error("box got the old proxy cookie")
-		}
 		w.Header().Set("Origin-Agent-Cluster", "?0")
 		w.Header().Add("Set-Cookie", "s=1; Path=/; Domain=boxes.example.com; HttpOnly")
 		w.Header().Add("Set-Cookie", "t=2; domain=.example.com; Domain =x.example.com")
@@ -176,7 +173,6 @@ func TestCrossHost(t *testing.T) {
 		} else {
 			r.AddCookie(&http.Cookie{Name: cookieName, Value: "tok"})
 		}
-		r.AddCookie(&http.Cookie{Name: oldCookie, Value: "tok"})
 		w := httptest.NewRecorder()
 		s.ServeHTTP(w, r)
 		if w.Code != c.code {

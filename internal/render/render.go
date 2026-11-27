@@ -206,8 +206,8 @@ func hostForward(g *conf.Gateway, hostIf string) string {
 }
 
 // Network is the plan for cynetwork@<n>: the bridge with the host on .2,
-// a host firewall that lets members reach the host's DNS and nothing
-// else, and the leg into the gateway (.1), if there is one. If it comes
+// a host firewall that lets members answer the host (the proxy) and
+// reach nothing on it, and the leg into the gateway (.1), if there is one. If it comes
 // back while boxes and services on it kept running, it puts their ports,
 // which outlive the bridge, back on it.
 func Network(c *conf.Config, n *conf.Network) Plan {
@@ -215,7 +215,7 @@ func Network(c *conf.Config, n *conf.Network) Plan {
 	br := Bridge(n)
 	// A fixed MAC: a bridge without one takes its lowest port's, so it
 	// would change whenever a service's leg comes or goes, and every
-	// box's ARP entry for the host's DNS on .2 would go stale with it.
+	// box's ARP entry for the host on .2 (the proxy) would go stale with it.
 	p.up("ip", "link", "add", br, "address", MAC(n.Host()), "type", "bridge")
 	p.up("ip", "addr", "add", netip.PrefixFrom(n.Host(), 24).String(), "dev", br)
 	p.up("ip", "link", "set", br, "up")
@@ -402,8 +402,8 @@ func Box(c *conf.Config, b *conf.Box, tap bool) Plan {
 }
 
 // Networkd is the systemd-networkd config cyac writes into the box for
-// eth0 on every start. A sealed network gets no default route, and DNS is
-// always the host's responder on .2. Networks are IPv4-only, so eth0 gets
+// eth0 on every start. DNS is the gateway's resolver on the router (.1);
+// a sealed network has neither. Networks are IPv4-only, so eth0 gets
 // no IPv6 address at all: with even a link-local one, glibc's
 // AI_ADDRCONFIG counts IPv6 as usable, and apt, curl and the like try
 // every AAAA record (and fail with "Network is unreachable") first.

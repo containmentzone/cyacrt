@@ -66,8 +66,8 @@ func (n *Network) Prefix() netip.Prefix {
 	return netip.PrefixFrom(netip.AddrFrom4([4]byte{10, 42, byte(n.Index), 0}), 24)
 }
 
-// Router is the gateway's leg (.1); Host is the host's address, which
-// serves DNS and is where the proxy dials from (.2).
+// Router is the gateway's leg (.1), where its resolver answers; Host is
+// the host's address, which the proxy dials from (.2).
 func (n *Network) Router() netip.Addr { return n.Addr(1) }
 func (n *Network) Host() netip.Addr   { return n.Addr(2) }
 

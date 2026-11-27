@@ -41,7 +41,6 @@ const (
 	// cookieName's __Host- prefix makes browsers refuse it with a Domain,
 	// so no other host can set or shadow it.
 	cookieName = "__Host-cyac_token"
-	oldCookie  = "cyac_token" // before the prefix; never forwarded either
 	loginPath  = "/__cyac/login"
 )
 
@@ -266,7 +265,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if fromHeader {
 				pr.Out.Header.Del("Authorization")
 			}
-			stripCookies(pr.Out, cookieName, oldCookie)
+			stripCookies(pr.Out, cookieName)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			resp.Header.Del("Origin-Agent-Cluster") // ours is already set

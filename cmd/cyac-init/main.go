@@ -36,7 +36,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "agent" {
 		fatal(serveAgent())
 	}
-	// The daemon runs this through the agent to stop a VM.
+	// The unit's `cyac run` runs this through the agent to stop a VM.
 	if len(os.Args) > 1 && os.Args[1] == "poweroff" {
 		fatal(syscall.Kill(1, agent.PowerOffSignal))
 	}
