@@ -239,8 +239,12 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 		if err := os.WriteFile(prevPath(st, name), old, 0o600); err != nil {
 			return nil, err
 		}
+		if err := saveImage(meta, next); err != nil {
+			return nil, err
+		}
+		// Only now: a reseed that died before this runs again.
 		os.Remove(reseedPath(st, name))
-		return next, saveImage(meta, next)
+		return next, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
