@@ -399,9 +399,10 @@ curl http://nanogpt.cyac.internal/chat/completions -d @req.json
 The proxy forwards any path under the upstream URL, replaces any value the
 box sent for the header, and passes on no `X-Forwarded-*` headers. It reads
 the secret once at start, so restart `cyservice@nanogpt` after changing it.
-A service's disk is seeded once, like a box's: after the image changes,
-stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
-`$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
+A service's disk reseeds like a box's when its `Image=` changes.
+`cyac reseed` covers only boxes, so to pick up a rebuilt image under the
+same tag, stop the service, `zfs destroy $CYAC_ZFS/services/nanogpt` and
+remove `$CYAC_DIR/services/disks/nanogpt.json`.
 
 `Image=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
