@@ -29,6 +29,11 @@ func Volumes(b *Box, extra []string) []string {
 	return slices.Compact(all)
 }
 
+// Mountable is kept without the paths agent.VolumeOK refuses.
+func Mountable(kept []string) []string {
+	return slices.DeleteFunc(slices.Clone(kept), func(v string) bool { return !agent.VolumeOK(v) })
+}
+
 func cmpLen(x, y string) int {
 	if len(x) != len(y) {
 		return len(x) - len(y)

@@ -102,3 +102,10 @@ func TestFillVolumeAfterReseed(t *testing.T) {
 		t.Errorf("var/log not taken from the new root: %q", got)
 	}
 }
+
+func TestMountable(t *testing.T) {
+	got := Mountable([]string{"/home", "/run/app", "/etc", "/var/log"})
+	if want := []string{"/home", "/var/log"}; !slices.Equal(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}

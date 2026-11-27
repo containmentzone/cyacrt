@@ -1,6 +1,8 @@
 package runc
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -66,5 +68,17 @@ func TestVolumeMounts(t *testing.T) {
 	want := []string{"/run/x/data/home /home", `/run/x/data/var-lib-my\x2dapp /var/lib/my-app`}
 	if !slices.Equal(got, want) {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCheckVolumes(t *testing.T) {
+	data := t.TempDir()
+	os.Mkdir(filepath.Join(data, "home"), 0o755)
+	os.Symlink("/etc", filepath.Join(data, "srv"))
+	if err := checkVolumes(data, []string{"/home"}); err != nil {
+		t.Errorf("a directory: %v", err)
+	}
+	if err := checkVolumes(data, []string{"/home", "/srv"}); err == nil {
+		t.Error("took a symlink on the data disk")
 	}
 }

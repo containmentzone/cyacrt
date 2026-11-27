@@ -10,6 +10,7 @@ package runc
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +89,9 @@ func (r Runtime) Start(m *driver.Machine) error {
 			return err
 		}
 		if err := sh.Run("mount", "-o", "discard", m.Data, dataDir(m)); err != nil {
+			return err
+		}
+		if err := checkVolumes(dataDir(m), m.Volumes); err != nil {
 			return err
 		}
 	}
@@ -263,4 +267,20 @@ func baseMounts(confined bool) []specs.Mount {
 		mounts = append(mounts, specs.Mount{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "rw"}})
 	}
 	return mounts
+}
+
+// checkVolumes makes sure each volume's directory on the data disk at
+// data is one. The box writes that disk (a VM's guest as well), and runc
+// would follow a symlink there on the host when it bind-mounts it.
+func checkVolumes(data string, vols []string) error {
+	for _, v := range vols {
+		fi, err := os.Lstat(filepath.Join(data, agent.VolumeDir(v)))
+		if err != nil {
+			return fmt.Errorf("volume %s: %w", v, err)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("volume %s: %s on the data disk is not a directory", v, agent.VolumeDir(v))
+		}
+	}
+	return nil
 }
