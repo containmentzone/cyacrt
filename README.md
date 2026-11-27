@@ -139,8 +139,8 @@ like boxes, they never fall back on their own. `CYAC_RUNTIME` (and
 `services.cyac.defaultRuntime`) only sets the default for boxes.
 
 **Networking.** Each network is a bridge, `cyn<number>`, with the gateway's
-leg on `.1`, the host on `.2`, services on `.3` to `.9` and boxes from
-`.10` up. Every port on the bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
+leg on `.1`, the host on `.2`, and its services and boxes anywhere from
+`.3` to `.254`, from one pool. Every port on the bridge is pinned by nftables to its machine's MAC and IPv4 address, so a
 box can't take another's address, and a box's address is its identity.
 The host only answers DNS on `.2` and forwards nothing between the bridge
 and anything else; the only ways out are the ones the network attaches.
@@ -158,7 +158,7 @@ tunnel is the only route. A network without a gateway is sealed: its boxes
 reach each other, its services and the proxy, and nothing else.
 
 A service gets a netns with a leg on every network that attaches it, on
-one of `.3` to `.9`, and a /31 into its own gateway in `10.42.255.0/24`
+an address from that network's pool, and a /31 into its own gateway in `10.42.255.0/24`
 as its default route. The netns forwards nothing, and the container gets neither `CAP_NET_ADMIN` nor `CAP_SYS_ADMIN`, so a box can
 reach the service but never route through it. `Secret=` files reach the
 container through the unit's `LoadCredential=`, at `/run/secrets/<NAME>`;

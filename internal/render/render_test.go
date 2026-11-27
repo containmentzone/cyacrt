@@ -90,7 +90,7 @@ func TestPlans(t *testing.T) {
 // Interface names must fit Linux's 15 bytes at the largest indexes.
 func TestNameLengths(t *testing.T) {
 	n := &conf.Network{Index: conf.MaxNetworkIndex}
-	s := &conf.Service{Index: conf.MaxLinkIndex, Octets: map[string]byte{n.Name: 2 + conf.MaxServices}}
+	s := &conf.Service{Index: conf.MaxLinkIndex, Octets: map[string]byte{n.Name: conf.LastMember}}
 	b := &conf.Box{Address: n.Prefix().Addr().Next()}
 	for _, name := range []string{
 		Bridge(n), Port(b),

@@ -51,7 +51,7 @@ func TestAssign(t *testing.T) {
 		t.Fatal(err)
 	}
 	n, s := c.Networks["dev"], c.Services["proxy"]
-	if got := c.Boxes["a"].Address.String(); got != "10.42.0.10" {
+	if got := c.Boxes["a"].Address.String(); got != "10.42.0.4" {
 		t.Errorf("box a at %s", got)
 	}
 	if got := s.AddressIn(n).String(); got != "10.42.0.3" {
@@ -70,7 +70,7 @@ func TestAssign(t *testing.T) {
 	if c.Networks["dev"].Index != 0 || c.Networks["aa"].Index != 1 {
 		t.Errorf("dev %d, aa %d", c.Networks["dev"].Index, c.Networks["aa"].Index)
 	}
-	if c.Boxes["a"].Address.String() != "10.42.0.10" || c.Boxes["aa"].Address.String() != "10.42.0.11" {
+	if c.Boxes["a"].Address.String() != "10.42.0.4" || c.Boxes["aa"].Address.String() != "10.42.0.5" {
 		t.Errorf("a %s, aa %s", c.Boxes["a"].Address, c.Boxes["aa"].Address)
 	}
 
@@ -79,7 +79,7 @@ func TestAssign(t *testing.T) {
 	if err := Read(dir, r); err != nil {
 		t.Fatal(err)
 	}
-	if r.Boxes["a"].Address.String() != "10.42.0.10" || r.Boxes["new"].Address.IsValid() {
+	if r.Boxes["a"].Address.String() != "10.42.0.4" || r.Boxes["new"].Address.IsValid() {
 		t.Errorf("read: a %s, new %s", r.Boxes["a"].Address, r.Boxes["new"].Address)
 	}
 }
@@ -92,7 +92,7 @@ func TestFree(t *testing.T) {
 	if err := Assign(dir, load(t, two), none); err != nil {
 		t.Fatal(err)
 	}
-	// a is .10, b is .11. a's file goes while a still runs.
+	// proxy is .3, a .4, b .5. a's file goes while a still runs.
 	gone := with(map[string]string{"b.cybox": two["b.cybox"], "c.cybox": two["b.cybox"]})
 	delete(gone, "a.cybox")
 	c := load(t, gone)
@@ -100,17 +100,17 @@ func TestFree(t *testing.T) {
 	if err := Assign(dir, c, running); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Boxes["c"].Address.String(); got != "10.42.0.12" {
-		t.Errorf("c took %s while a still runs on .10", got)
+	if got := c.Boxes["c"].Address.String(); got != "10.42.0.6" {
+		t.Errorf("c took %s while a still runs on .4", got)
 	}
-	// a stopped: .10 is freed, but d still gets the never-used .13.
+	// a stopped: .4 is freed, but d still gets the never-used .7.
 	c = load(t, with(map[string]string{"b.cybox": two["b.cybox"], "c.cybox": two["b.cybox"], "d.cybox": two["b.cybox"]}))
 	delete(c.Boxes, "a")
 	if err := Assign(dir, c, none); err != nil {
 		t.Fatal(err)
 	}
-	if got := c.Boxes["d"].Address.String(); got != "10.42.0.13" {
-		t.Errorf("d got %s, want the never-used .13", got)
+	if got := c.Boxes["d"].Address.String(); got != "10.42.0.7" {
+		t.Errorf("d got %s, want the never-used .7", got)
 	}
 }
 
@@ -140,5 +140,36 @@ func TestOldestFreed(t *testing.T) {
 	}
 	if _, err := take(pool, "x/6", 0, 2, true); err == nil {
 		t.Error("took a lease from a full pool")
+	}
+}
+
+// Services and boxes share their network's pool, so a network can attach
+// more services than the old seven, and no two members share an address.
+func TestSharedPool(t *testing.T) {
+	files := with(nil)
+	attach := "[Network]\nAttach=gateway:out\n"
+	for _, name := range []string{"s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10"} {
+		files[name+".cyservice"] = files["proxy.cyservice"]
+		attach += "Attach=service:" + name + "\n"
+	}
+	files["dev.cynetwork"] = attach
+	c := load(t, files)
+	if err := Assign(t.TempDir(), c, none); err != nil {
+		t.Fatal(err)
+	}
+	n := c.Networks["dev"]
+	seen := map[string]string{c.Boxes["a"].Address.String(): "a"}
+	for name, s := range c.Services {
+		if name == "proxy" {
+			continue
+		}
+		a := s.AddressIn(n).String()
+		if other, ok := seen[a]; ok {
+			t.Errorf("%s and %s both at %s", name, other, a)
+		}
+		seen[a] = name
+	}
+	if len(seen) != 11 {
+		t.Errorf("%d addresses for 11 members: %v", len(seen), seen)
 	}
 }

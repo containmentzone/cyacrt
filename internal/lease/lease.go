@@ -80,9 +80,9 @@ func assign(dir string, c *conf.Config, live Live) error {
 		s.Octets = map[string]byte{}
 		wants = append(wants, want{"service", conf.KindService + "/" + name, 0, conf.MaxLinkIndex, func(i int) { s.Index = i }})
 		// A service's address on a network is a lease in that network's
-		// own pool, .3 to .9.
+		// pool, which it shares with the network's boxes.
 		for _, net := range c.AttachedBy(name) {
-			wants = append(wants, want{"service-on-" + net, conf.KindService + "/" + name, 3, 2 + conf.MaxServices,
+			wants = append(wants, want{"on-" + net, conf.KindService + "/" + name, conf.FirstMember, conf.LastMember,
 				func(i int) { s.Octets[net] = byte(i) }})
 		}
 	}
@@ -90,7 +90,7 @@ func assign(dir string, c *conf.Config, live Live) error {
 	// the time the box gets its address.
 	for _, name := range conf.Sorted(c.Boxes) {
 		b := c.Boxes[name]
-		wants = append(wants, want{"box-on-" + b.Network, conf.KindBox + "/" + name, 10, 254,
+		wants = append(wants, want{"on-" + b.Network, conf.KindBox + "/" + name, conf.FirstMember, conf.LastMember,
 			func(i int) { b.Address = c.Networks[b.Network].Addr(byte(i)) }})
 	}
 

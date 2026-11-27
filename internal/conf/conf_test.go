@@ -123,9 +123,6 @@ func TestFileErrors(t *testing.T) {
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\n", "unknown key Image="},
 		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
-		{"x.cynetwork", "[Network]\n" +
-			"Attach=service:a\nAttach=service:b\nAttach=service:c\nAttach=service:d\n" +
-			"Attach=service:e\nAttach=service:f\nAttach=service:g\nAttach=service:h\n", "at most 7 services"},
 		{"proxy.cybox", bx, "name already used by cyservice proxy"},
 	} {
 		t.Run(tc.file+"/"+tc.want, func(t *testing.T) {

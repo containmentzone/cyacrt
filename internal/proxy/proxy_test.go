@@ -59,7 +59,7 @@ func TestReload(t *testing.T) {
 	if err := s.Reload(); err != nil {
 		t.Fatal(err)
 	}
-	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.0.10" {
+	if tg, ok := s.lookup("Web.A.boxes.example.com:443"); !ok || tg.Port != 8080 || tg.IP.String() != "10.42.0.3" {
 		t.Errorf("a: %+v, %v", tg, ok)
 	}
 	for host, want := range map[string]struct {
@@ -70,7 +70,7 @@ func TestReload(t *testing.T) {
 		"api.b.boxes.example.com": {3000, "tapi"},
 	} {
 		tg, ok := s.lookup(host)
-		if !ok || tg.Port != want.port || !validToken(tg.TokenHash, want.tok) || tg.IP.String() != "10.42.0.11" {
+		if !ok || tg.Port != want.port || !validToken(tg.TokenHash, want.tok) || tg.IP.String() != "10.42.0.4" {
 			t.Errorf("%s: %+v, %v", host, tg, ok)
 		}
 		if err := s.HostPolicy(context.Background(), host); err != nil {
