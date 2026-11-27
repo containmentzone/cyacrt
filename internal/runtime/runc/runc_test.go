@@ -53,3 +53,18 @@ func TestGVisorCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeMounts(t *testing.T) {
+	m := &driver.Machine{Name: "x", RunDir: "/run/x", CPUs: 1, MemMiB: 64,
+		Data: "/dev/zvol/tank/boxes/x.data", Volumes: []string{"/home", "/var/lib/my-app"}}
+	var got []string
+	for _, mnt := range (Runtime{}).containerSpec(m).Mounts {
+		if mnt.Type == "bind" {
+			got = append(got, mnt.Source+" "+mnt.Destination)
+		}
+	}
+	want := []string{"/run/x/data/home /home", `/run/x/data/var-lib-my\x2dapp /var/lib/my-app`}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}

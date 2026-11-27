@@ -13,9 +13,14 @@ import (
 
 // Machine is everything a driver needs to know about one box.
 type Machine struct {
-	Name   string
-	Disk   string // the box's ext4 disk: its zvol's device
-	RunDir string // private scratch dir; exists only while running
+	Name string
+	Disk string // the box's root disk: its zvol's device
+	// Data is the box's data disk, or empty if it has none, and Volumes
+	// the paths bind-mounted from it, shortest first: each from the
+	// directory agent.VolumeDir names.
+	Data    string
+	Volumes []string
+	RunDir  string // private scratch dir; exists only while running
 	// The init's console: runtimes append its output to ConsoleLog, which
 	// outlives the run, and feed it input from the FIFO at ConsoleIn.
 	ConsoleLog string

@@ -3,11 +3,13 @@ package box
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -135,6 +137,7 @@ func unpack(img v1.Image, tmp, vol string, size int64, progress func(string)) (D
 	if d.Expose, err = exposes(cfg.Config.Labels); err != nil {
 		return d, err
 	}
+	d.Volumes = slices.Sorted(maps.Keys(cfg.Config.Volumes))
 	switch v := cfg.Config.Labels[rootLabel]; v {
 	case "keep":
 		d.KeepRoot = true

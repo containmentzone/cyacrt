@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	v1 "github.com/google/go-containerregistry/pkg/v1"
@@ -75,29 +76,36 @@ func ResolveID(ref string) (string, error) {
 // carry mounts disk from read-only and disk to, and copies what
 // identifies the box from one to the other (see carryFiles).
 func (s Store) carry(from, to string) error {
-	dir, err := os.MkdirTemp(filepath.Join(s.Dir, "disks"), to+"-")
+	return s.mounted(to, func(dirs []string) error { return carryFiles(dirs[0], dirs[1]) },
+		mount{device(s.volume(from)), "ro"}, mount{device(s.volume(to)), "rw"})
+}
+
+type mount struct{ dev, opts string }
+
+// mounted mounts each of ms on a dir of its own under <dir>/disks, calls
+// fn with those dirs, and unmounts them again.
+func (s Store) mounted(name string, fn func(dirs []string) error, ms ...mount) error {
+	dir, err := os.MkdirTemp(filepath.Join(s.Dir, "disks"), name+"-")
 	if err != nil {
 		return err
 	}
 	// os.Remove, never RemoveAll: if an unmount failed, the dirs still
 	// hold the disks.
 	defer os.Remove(dir)
-	src, dst := filepath.Join(dir, "from"), filepath.Join(dir, "to")
-	for _, d := range []string{src, dst} {
+	var dirs []string
+	for i, m := range ms {
+		d := filepath.Join(dir, strconv.Itoa(i))
 		if err := os.Mkdir(d, 0o700); err != nil {
 			return err
 		}
 		defer os.Remove(d)
+		if err := sh.Run("mount", "-o", m.opts, m.dev, d); err != nil {
+			return err
+		}
+		defer sh.Run("umount", d)
+		dirs = append(dirs, d)
 	}
-	if err := sh.Run("mount", "-o", "ro", device(s.volume(from)), src); err != nil {
-		return err
-	}
-	defer sh.Run("umount", src)
-	if err := sh.Run("mount", device(s.volume(to)), dst); err != nil {
-		return err
-	}
-	defer sh.Run("umount", dst)
-	return carryFiles(src, dst)
+	return fn(dirs)
 }
 
 // carryFiles copies the machine ID and SSH host keys from the tree at

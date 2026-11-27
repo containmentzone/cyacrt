@@ -47,3 +47,18 @@ func TestWriteNetConfigHostname(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeDir(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home":               "home",
+		"/var/lib/docker":     "var-lib-docker",
+		"/var/lib/my-app":     `var-lib-my\x2dapp`,
+		"/srv/.hidden":        "srv-.hidden",
+		"/.dot":               `\x2edot`,
+		"/var/lib/tailscale/": "var-lib-tailscale",
+	} {
+		if got := VolumeDir(in); got != want {
+			t.Errorf("VolumeDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

@@ -122,6 +122,8 @@ func TestFileErrors(t *testing.T) {
 		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\n", "unknown section [Workload]"},
 		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "SeedImage= is now Image="},
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nRoot=maybe\n", "want keep or replace"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=home\n", "clean absolute path"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=/\n", "clean absolute path"},
 		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
 		{"proxy.cybox", bx, "name already used by cyservice proxy"},

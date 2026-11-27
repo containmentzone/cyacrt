@@ -14,6 +14,10 @@ type Box struct {
 	// seeded: the digest of its config, which is per platform.
 	ImageID string `json:"image_id,omitempty"`
 	Defaults
+	// Kept are the volumes the box's data disk holds, each filled once,
+	// when it first appeared (see FillVolumes). A volume stays mounted
+	// even if the image and the file stop naming it.
+	Kept []string `json:"kept_volumes,omitempty"`
 }
 
 // Defaults are what an image says to run and how, the same for every
@@ -39,6 +43,8 @@ type Defaults struct {
 	// seeded from it is never reseeded when the workload's image changes,
 	// unless the workload says Root=replace.
 	KeepRoot bool `json:"keep_root,omitempty"`
+	// Volumes are the image's VOLUMEs, sorted.
+	Volumes []string `json:"volumes,omitempty"`
 }
 
 // Store is where a kind of workload keeps its files, and its disks as
@@ -48,6 +54,8 @@ type Defaults struct {
 //	                               usually a clone of an image (see Images)
 //	<dataset>/<name>.new           the disk a reseed is making (see Reseed)
 //	<dataset>/<name>.prev          the disk before the last reseed
+//	<dataset>/<name>.data          a box's data disk: its volumes, which
+//	                               outlive reseeds (see FillVolumes)
 //	<dir>/disks/<name>.json        what seeding learned from the image (Box)
 //	<dir>/run/<name>/              runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  console, across runs
@@ -58,6 +66,7 @@ type Store struct {
 }
 
 func (s Store) DiskPath(name string) string { return device(s.volume(name)) }
+func (s Store) DataPath(name string) string { return device(s.volume(name + ".data")) }
 func (s Store) RunDir(name string) string   { return filepath.Join(s.Dir, "run", name) }
 func (s Store) ConsoleLog(name string) string {
 	return filepath.Join(s.Dir, "logs", name+".console.log")

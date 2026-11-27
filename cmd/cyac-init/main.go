@@ -75,17 +75,28 @@ func main() {
 }
 
 // switchRoot mounts the box's disk at /newroot, whatever its filesystem,
-// grows it if it is ext4, sets up its API
+// grows it if it is ext4, mounts its volumes, sets up its API
 // filesystems and /run/cyac, and makes it the root.
 func switchRoot() error {
 	if err := syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount /dev: %w", err)
 	}
-	if err := mountAny("/dev/vda", "/newroot"); err != nil {
+	if err := mountAny("/dev/vda", "/newroot", ""); err != nil {
 		return err
 	}
 	// The disk may have grown since the last boot (DiskSize).
 	grow("/dev/vda", "/newroot")
+	data, err := os.ReadFile("/cyac.json")
+	if err != nil {
+		return err
+	}
+	var cfg agent.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return err
+	}
+	if err := mountVolumes(cfg.Volumes); err != nil {
+		return err
+	}
 	// systemd and NixOS's stage 2 take these over as they find them.
 	for _, m := range []struct{ dir, fstype, opts string }{
 		{"dev", "devtmpfs", ""},
@@ -113,15 +124,7 @@ func switchRoot() error {
 	if err := os.WriteFile("/newroot"+self, bin, 0o755); err != nil {
 		return err
 	}
-	data, err := os.ReadFile("/cyac.json")
-	if err != nil {
-		return err
-	}
 	if err := os.WriteFile("/newroot"+configPath, data, 0o644); err != nil {
-		return err
-	}
-	var cfg agent.Config
-	if err := json.Unmarshal(data, &cfg); err != nil {
 		return err
 	}
 	if err := agent.WriteNetConfig("/newroot", cfg); err != nil {

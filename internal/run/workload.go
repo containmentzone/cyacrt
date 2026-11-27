@@ -25,6 +25,7 @@ const (
 	defaultCPUs     = 1
 	defaultMemoryMB = 1024
 	defaultDiskMB   = 10 << 10
+	defaultDataMB   = 10 << 10
 )
 
 // vmRuntime is what a box runs under unless its file (Runtime=) or
@@ -51,12 +52,23 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 		}
 		return err
 	}
-	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, cmp.Or(b.Workload.DiskMB, defaultDiskMB))
+	st := r.store(conf.KindBox)
+	img, err := image(st, b.Name, b.Workload, cmp.Or(b.Workload.DiskMB, defaultDiskMB))
+	if err != nil {
+		return err
+	}
+	changed, err := st.FillVolumes(img, box.Volumes(img, b.Volumes), int64(cmp.Or(b.DataMB, defaultDataMB))<<20, func(line string) { log.Print(line) })
+	if changed {
+		err = errors.Join(err, saveImage(imagePath(st, b.Name), img))
+	}
 	if err != nil {
 		return err
 	}
 	n := c.Networks[b.Network]
 	m := machine(r.bare(conf.KindBox, b.Name), b.Workload, img)
+	if len(img.Kept) > 0 {
+		m.Data, m.Volumes, m.Init.Volumes = st.DataPath(b.Name), img.Kept, img.Kept
+	}
 	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits()}
 	if n.Gateway != "" {
 		// The gateway's resolver listens on the router's address.
@@ -212,7 +224,8 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))
 		}
 		progress("reseeding " + name + ": " + why)
-		next := &box.Box{Name: name, Image: w.Image}
+		// The data disk and its volumes stay as they are.
+		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept}
 		if err := st.Reseed(next, int64(diskMB)<<20, progress); err != nil {
 			return nil, err
 		}

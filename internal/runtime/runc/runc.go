@@ -39,6 +39,7 @@ func (Runtime) LinkKind() driver.LinkKind  { return driver.Netns }
 func containerID(m *driver.Machine) string { return "cyac-" + m.Name }
 func rootfs(m *driver.Machine) string      { return filepath.Join(m.RunDir, "rootfs") }
 func initConfig(m *driver.Machine) string  { return filepath.Join(m.RunDir, "init.json") }
+func dataDir(m *driver.Machine) string     { return filepath.Join(m.RunDir, "data") }
 
 // bin is the OCI runtime's binary, which is also this runtime's name.
 func (r Runtime) bin() string {
@@ -79,12 +80,19 @@ func (r Runtime) Start(m *driver.Machine) error {
 	// can't be trusted with its block device, so the host grows the
 	// filesystem, online, if it is ext4; this does nothing if it already
 	// fills the zvol. Other filesystems keep their size.
-	var st unix.Statfs_t
-	if err := unix.Statfs(rootfs(m), &st); err != nil {
+	if err := growExt4(m.Disk, rootfs(m)); err != nil {
 		return err
 	}
-	if st.Type == unix.EXT4_SUPER_MAGIC {
-		if err := sh.Run("resize2fs", m.Disk); err != nil {
+	// The data disk holds the volumes the spec bind-mounts (see
+	// containerSpec), and grows the same way.
+	if m.Data != "" {
+		if err := os.Mkdir(dataDir(m), 0o700); err != nil {
+			return err
+		}
+		if err := sh.Run("mount", "-o", "discard", m.Data, dataDir(m)); err != nil {
+			return err
+		}
+		if err := growExt4(m.Data, dataDir(m)); err != nil {
 			return err
 		}
 	}
@@ -121,6 +129,19 @@ func (r Runtime) Start(m *driver.Machine) error {
 	return cmd.Run()
 }
 
+// growExt4 grows the filesystem on dev, mounted at dir, to fill dev, if
+// it is ext4. Other filesystems keep their size.
+func growExt4(dev, dir string) error {
+	var st unix.Statfs_t
+	if err := unix.Statfs(dir, &st); err != nil {
+		return err
+	}
+	if st.Type != unix.EXT4_SUPER_MAGIC {
+		return nil
+	}
+	return sh.Run("resize2fs", dev)
+}
+
 func (r Runtime) Stop(m *driver.Machine) error {
 	// SIGRTMIN+3 (37 on Linux) asks systemd (or cyac-init) for a clean
 	// halt; runc only takes it by number.
@@ -149,6 +170,7 @@ func (r Runtime) Running(m *driver.Machine) bool {
 func (r Runtime) Cleanup(m *driver.Machine) {
 	r.run("delete", "--force", containerID(m))
 	sh.Run("umount", rootfs(m))
+	sh.Run("umount", dataDir(m))
 }
 
 func (r Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
@@ -177,6 +199,10 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 			{Destination: "/run/cyac/init", Type: "bind", Source: r.Init, Options: []string{"bind", "ro"}},
 			{Destination: "/run/cyac/config.json", Type: "bind", Source: initConfig(m), Options: []string{"bind", "ro"}},
 		}
+	}
+	for _, v := range m.Volumes {
+		initMounts = append(initMounts, specs.Mount{Destination: v, Type: "bind",
+			Source: filepath.Join(dataDir(m), agent.VolumeDir(v)), Options: []string{"rbind"}})
 	}
 	if m.Secrets != "" {
 		initMounts = append(initMounts, specs.Mount{Destination: "/run/secrets", Type: "bind", Source: m.Secrets,

@@ -67,7 +67,7 @@ The full set of keys:
 | Kind | Section | Keys |
 |---|---|---|
 | cybox, cyservice | `[Box]`, `[Service]` | `Image=` (required until it has a disk; a change reseeds it), `Root=keep` or `replace` (reseed when `Image=` changes; default: what the image's `cyac.nullvoid.space/root` label says, else replace), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
-| cybox | `[Box]` | `Network=`, `Autostart=` |
+| cybox | `[Box]` | `Network=`, `Autostart=`, `Volume=/path` (repeatable; kept on the data disk, on top of the image's `VOLUME`s), `DataSize=` (default 10G, shared by all volumes) |
 | cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
 | cygateway | `[Gateway]` | `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
@@ -106,7 +106,8 @@ everything else survive stops, starts and host reboots.
 **Changing `Image=` reseeds the disk.** On the next start, a box whose
 `Image=` names another image than its disk came from gets a new disk,
 cloned from the new image, with only its machine ID and SSH host keys
-carried over; everything else on the old disk is gone from the box. The
+carried over; everything else on the old disk is gone from the box,
+except its volumes (below). The
 new disk is made as `<name>.new` and swapped in by `zfs rename`, so the
 old one is untouched until then and stays as `<name>.prev` (and its
 defaults as `disks/<name>.prev.json`) until the next reseed. Dropping
@@ -117,6 +118,21 @@ another image (`--force`: always), and restarts the box if it runs. To
 never reseed, set `Root=keep` on the box, or label the image
 `cyac.nullvoid.space/root=keep`; `Root=replace` overrides the label, and
 `cyac reseed` overrides both. Services reseed the same way.
+
+**Volumes outlive reseeds.** A box's volumes are its image's `VOLUME`s
+plus its `Volume=`s. They live on a second zvol, `$CYAC_ZFS/boxes/<name>.data`
+(an ext4 of `DataSize=`, made when the box first has a volume), as one
+directory each, named like systemd names a path's mount unit
+(`/var/lib/docker` is `var-lib-docker`), bind-mounted at its path: by
+cyac-init from `/dev/vdb` in a VM, by the host under runc. All volumes
+share the one disk and its size, and a full disk is an ordinary "no space
+left" in the box. A new volume is filled once from what the root disk has
+at its path, as Docker fills a new volume from its image (copied: the
+root's copy stays, hidden under the mount, until the next reseed). The
+list only grows: a volume the image or the file stops naming stays
+mounted where it was, so dropping a `VOLUME` line never loses data. To
+drop one, remove it from `kept_volumes` in `$CYAC_DIR/disks/<name>.json`
+and its directory from the data disk. Services have no volumes.
 
 Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks). An ext4 root then grows to fit

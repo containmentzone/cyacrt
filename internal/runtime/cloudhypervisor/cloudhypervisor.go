@@ -95,22 +95,27 @@ func (r Runtime) Start(m *driver.Machine) error {
 	defer in.Close()
 	// With --serial tty, Cloud Hypervisor's stdin and stdout are the guest
 	// serial console.
-	cmd := exec.Command(binary,
-		"--api-socket", "path="+socket(m),
+	args := []string{
+		"--api-socket", "path=" + socket(m),
 		"--kernel", r.Kernel,
 		"--initramfs", initrd,
 		"--cmdline", cmdline,
 		"--cpus", fmt.Sprintf("boot=%d", m.CPUs),
 		"--memory", fmt.Sprintf("size=%dM", m.MemMiB),
+		"--net", fmt.Sprintf("tap=%s,mac=%s,id=eth0", m.Link.HostIface, m.MAC),
+		"--vsock", "cid=3,socket=" + vsock(m),
+		"--serial", "tty",
+		"--console", "off",
 		// image_type=raw: without it, Cloud Hypervisor guards sector 0 against
 		// a guest rewriting the format probe, and ext4 rewrites block 0 (it holds
 		// the superblock) on every mount.
-		"--disk", "path="+m.Disk+",id=rootfs,image_type=raw",
-		"--net", fmt.Sprintf("tap=%s,mac=%s,id=eth0", m.Link.HostIface, m.MAC),
-		"--vsock", "cid=3,socket="+vsock(m),
-		"--serial", "tty",
-		"--console", "off",
-	)
+		"--disk", "path=" + m.Disk + ",id=rootfs,image_type=raw",
+	}
+	// The data disk, if any, comes second: the guest's /dev/vdb.
+	if m.Data != "" {
+		args = append(args, "path="+m.Data+",id=data,image_type=raw")
+	}
+	cmd := exec.Command(binary, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	// Its own session, so a signal to the daemon's process group (Ctrl-C
 	// on a foreground daemon) doesn't reach it; the daemon stops it.

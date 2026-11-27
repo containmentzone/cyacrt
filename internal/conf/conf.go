@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -151,8 +152,12 @@ func link(third byte, index int) (netip.Prefix, netip.Prefix) {
 
 // Box is a VM (or runc container) with a disk, in one network.
 type Box struct {
-	Name      string
-	Workload  Workload
+	Name     string
+	Workload Workload
+	// Volumes are paths kept on the box's data disk, on top of its
+	// image's VOLUMEs: they outlive a reseed (Volume=, repeatable).
+	Volumes   []string
+	DataMB    int // the data disk's size, shared by every volume (DataSize=)
 	Network   string
 	Address   netip.Addr // in its network, leased (see FirstMember)
 	Autostart bool       // started with cyac.target
@@ -386,6 +391,19 @@ func (c *Config) parseBox(name string, f *fields) error {
 	b := &Box{Name: name}
 	var err error
 	if b.Workload, err = parseWorkload(f); err != nil {
+		return err
+	}
+	for _, v := range f.all("Volume") {
+		if !path.IsAbs(v) || path.Clean(v) != v || v == "/" {
+			return bad("Volume", v, "want a clean absolute path other than /")
+		}
+		b.Volumes = append(b.Volumes, v)
+	}
+	data, err := f.one("DataSize")
+	if err != nil {
+		return err
+	}
+	if b.DataMB, err = sizeMB(data, "DataSize"); err != nil {
 		return err
 	}
 	if b.Network, err = f.one("Network"); err != nil {

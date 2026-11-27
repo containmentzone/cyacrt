@@ -3,12 +3,15 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/containmentzone/cyacrt/internal/agent"
 )
 
 // ext4ResizeFS is EXT4_IOC_RESIZE_FS, _IOW('f', 16, __u64): the ioctl
@@ -18,17 +21,50 @@ const ext4ResizeFS = 0x40086610
 // mountAny mounts dev at dir as the first filesystem type the kernel
 // accepts, trying each block filesystem it knows, as busybox mount does
 // without -t. A box may reformat its disk; this finds what it chose.
-func mountAny(dev, dir string) error {
+//
+// opts are tried first, then no options, for a filesystem that knows
+// none of them.
+func mountAny(dev, dir, opts string) error {
 	types, err := blockFilesystems()
 	if err != nil {
 		return err
 	}
-	for _, t := range types {
-		if err = syscall.Mount(dev, dir, t, 0, ""); err == nil {
-			return nil
+	for _, o := range slices.Compact([]string{opts, ""}) {
+		for _, t := range types {
+			if err = syscall.Mount(dev, dir, t, 0, o); err == nil {
+				return nil
+			}
 		}
 	}
 	return fmt.Errorf("mount %s: none of %v took it (last: %v)", dev, types, err)
+}
+
+// mountVolumes bind-mounts each of paths into the root at /newroot from
+// its directory on the data disk, /dev/vdb, which is grown first if it
+// is ext4. discard hands what the box frees back to the host's zvol.
+func mountVolumes(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	const data = "/data"
+	if err := os.MkdirAll(data, 0o755); err != nil {
+		return err
+	}
+	if err := mountAny("/dev/vdb", data, "discard"); err != nil {
+		return err
+	}
+	grow("/dev/vdb", data)
+	for _, p := range paths {
+		dst := filepath.Join("/newroot", p)
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return fmt.Errorf("volume %s: %w", p, err)
+		}
+		if err := syscall.Mount(filepath.Join(data, agent.VolumeDir(p)), dst, "", syscall.MS_BIND, ""); err != nil {
+			return fmt.Errorf("volume %s: %w", p, err)
+		}
+	}
+	// The bind mounts keep the data disk mounted.
+	return syscall.Unmount(data, 0)
 }
 
 // blockFilesystems lists the filesystems the kernel can mount from a
