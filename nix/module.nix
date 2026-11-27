@@ -33,7 +33,7 @@ in
 {
   imports = [
     (lib.mkRemovedOptionModule [ "services" "cyac" "kernel" ]
-      "cyac picks its runtime itself now. Set services.cyac.buildGuestKernel = true for Cloud Hypervisor."
+      "Boxes run under Cloud Hypervisor unless they set Runtime= (or services.cyac.defaultRuntime). Set services.cyac.buildGuestKernel = true for a guest kernel."
     )
   ];
 
