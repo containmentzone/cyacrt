@@ -18,6 +18,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 
 	"github.com/containmentzone/cyacrt/internal/agent"
+	"github.com/containmentzone/cyacrt/internal/sh"
 )
 
 // loginUserLabels name the user `cyac shell` logs in as, in order of
@@ -50,49 +51,93 @@ func exposes(labels map[string]string) (map[string]int, error) {
 	return ports, nil
 }
 
-// Seed builds a box's disk from an OCI image: pull, flatten, unpack into a
-// scratch dir, drop in a few config files, pick PID 1, and mkfs.ext4 -d it onto a sparse
-// zvol of the requested size. It runs once per box; afterwards the disk is
-// the box and the image is no longer consulted. progress gets a line per
-// step and, while unpacking, every few seconds. Seed fills in the rest of
-// b from the image, including the mode it picks (see pickMode).
+// Seed gives a box its disk from an OCI image. The image is resolved to
+// its ID and unpacked once per ID (see Images); the box's disk is a clone
+// of that, grown to sizeBytes, and the box takes the image's defaults.
+// Only a box that asks for a smaller disk than the image's gets one of
+// its own, unpacked again, since a clone can't shrink. Either way it runs
+// once per box; afterwards the disk is the box and the image is no longer
+// consulted. progress gets a line per step and, while unpacking, every
+// few seconds.
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
 	img, err := pull(b.Image)
 	if err != nil {
 		return fmt.Errorf("pull %s: %w", b.Image, err)
 	}
-	if digest, err := img.Digest(); err == nil {
-		layers, _ := img.Layers()
+	id, err := img.ConfigName()
+	if err != nil {
+		return err
+	}
+	b.ImageID = id.String()
+	unlock, err := s.Images.lock(id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	rec, err := s.Images.get(img, id, progress)
+	if err != nil {
+		return err
+	}
+	b.Defaults = rec.Defaults
+
+	imageSize, err := volsize(s.Images.volume(id))
+	if err != nil {
+		return err
+	}
+	if sizeBytes >= imageSize {
+		progress("cloning " + s.Images.snapshot(id) + " to " + s.volume(b.Name))
+		if err := cloneVolume(s.Images.snapshot(id), s.volume(b.Name)); err != nil {
+			return err
+		}
+		if err := s.Grow(b.Name, sizeBytes); err != nil {
+			return err
+		}
+	} else {
+		progress(fmt.Sprintf("%s is smaller than the image's %s, unpacking it again", mib(sizeBytes), mib(imageSize)))
+		if _, err := unpack(img, filepath.Join(s.Dir, "disks"), s.volume(b.Name), sizeBytes, progress); err != nil {
+			return err
+		}
+	}
+	return s.Images.used(id, rec)
+}
+
+// unpack writes img's filesystem to vol, a new zvol of size bytes, or of
+// the size the tree needs if size is 0: pull, flatten, unpack into a
+// scratch dir under tmp, drop in a few config files, pick PID 1, and
+// mkfs.ext4 -d it onto the zvol. It returns the image's defaults.
+func unpack(img v1.Image, tmp, vol string, size int64, progress func(string)) (Defaults, error) {
+	var d Defaults
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return d, err
+	}
+	d.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
+	d.Env, d.Cwd, d.RunAs = cfg.Config.Env, cfg.Config.WorkingDir, cfg.Config.User
+	for _, label := range loginUserLabels {
+		if u := cfg.Config.Labels[label]; u != "" {
+			if !validUser.MatchString(u) {
+				return d, fmt.Errorf("label %s=%q is not a valid user name", label, u)
+			}
+			d.User = u
+			break
+		}
+	}
+	if d.Expose, err = exposes(cfg.Config.Labels); err != nil {
+		return d, err
+	}
+	if layers, err := img.Layers(); err == nil {
 		var compressed int64
 		for _, l := range layers {
 			n, _ := l.Size()
 			compressed += n
 		}
-		progress(fmt.Sprintf("downloading and unpacking %d layers (%s compressed) of %s", len(layers), mib(compressed), digest))
-	}
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		return err
-	}
-	b.Init = append(cfg.Config.Entrypoint, cfg.Config.Cmd...)
-	b.Env, b.Cwd, b.RunAs = cfg.Config.Env, cfg.Config.WorkingDir, cfg.Config.User
-	for _, label := range loginUserLabels {
-		if u := cfg.Config.Labels[label]; u != "" {
-			if !validUser.MatchString(u) {
-				return fmt.Errorf("label %s=%q is not a valid user name", label, u)
-			}
-			b.User = u
-			break
-		}
-	}
-	if b.Expose, err = exposes(cfg.Config.Labels); err != nil {
-		return err
+		progress(fmt.Sprintf("downloading and unpacking %d layers (%s compressed)", len(layers), mib(compressed)))
 	}
 
-	scratch, err := os.MkdirTemp(filepath.Join(s.Dir, "disks"), b.Name+".seed-")
+	scratch, err := os.MkdirTemp(tmp, filepath.Base(vol)+".seed-")
 	if err != nil {
-		return err
+		return d, err
 	}
 	defer os.RemoveAll(scratch)
 
@@ -119,23 +164,28 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	out, err := untar.CombinedOutput()
 	close(done)
 	if err != nil {
-		return fmt.Errorf("unpack image: %v: %s", err, out)
+		return d, fmt.Errorf("unpack image: %v: %s", err, out)
 	}
 	progress("unpacked " + mib(counted.n.Load()))
 
-	if err := writeBoxConfig(scratch, b); err != nil {
-		return err
+	if err := prepare(scratch, &d); err != nil {
+		return d, err
+	}
+	if size == 0 {
+		if size, err = treeSize(scratch); err != nil {
+			return d, err
+		}
 	}
 
-	progress("writing a " + mib(sizeBytes) + " ext4 disk to " + s.volume(b.Name))
-	if err := s.createVolume(b.Name, sizeBytes); err != nil {
-		return err
+	progress("writing a " + mib(size) + " ext4 disk to " + vol)
+	if err := createVolume(vol, size); err != nil {
+		return d, err
 	}
-	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "cyac-root", "-d", scratch, s.DiskPath(b.Name)).CombinedOutput(); err != nil {
-		s.Destroy(b.Name)
-		return fmt.Errorf("mkfs.ext4: %v: %s", err, out)
+	if out, err := exec.Command("mkfs.ext4", "-q", "-F", "-L", "cyac-root", "-d", scratch, device(vol)).CombinedOutput(); err != nil {
+		sh.Run("zfs", "destroy", vol)
+		return d, fmt.Errorf("mkfs.ext4: %v: %s", err, out)
 	}
-	return nil
+	return d, nil
 }
 
 // pull fetches ref from its registry, or, if ref is an absolute path,
@@ -148,43 +198,37 @@ func pull(ref string) (v1.Image, error) {
 	return crane.Pull(ref, crane.WithPlatform(&v1.Platform{OS: "linux", Architecture: runtime.GOARCH}))
 }
 
-// writeBoxConfig picks the box's mode and drops the only files cyac adds
-// to an image: hostname, hosts (so `hostname -f` resolves), and an empty
-// machine-id so systemd generates a fresh one on first boot. The network
-// config is written on every start instead (agent.WriteNetConfig).
+// prepare picks the image's mode and readies the tree for any workload:
+// an empty machine-id, so systemd generates a fresh one on first boot,
+// and no hostname or hosts, which a workload gets on its first start
+// (agent.WriteNetConfig), as it gets its network config on every start.
 // The scratch tree is untrusted image content, so all writes go through
 // os.Root, which refuses to follow symlinks out of it.
-func writeBoxConfig(scratch string, b *Box) error {
+func prepare(scratch string, d *Defaults) error {
 	root, err := os.OpenRoot(scratch)
 	if err != nil {
 		return err
 	}
 	defer root.Close()
-	if err := pickMode(root, b); err != nil {
+	if err := pickMode(root, d); err != nil {
 		return err
-	}
-
-	files := map[string]string{
-		"etc/hostname":   b.Name + "\n",
-		"etc/hosts":      "127.0.0.1 localhost\n127.0.1.1 " + b.Name + "\n::1 localhost ip6-localhost ip6-loopback\n",
-		"etc/machine-id": "",
 	}
 	if err := root.Mkdir("etc", 0o755); err != nil && !os.IsExist(err) {
 		return err
 	}
-	for name, content := range files {
-		if err := agent.ReplaceFile(root, name, content); err != nil {
+	for _, name := range []string{"etc/hostname", "etc/hosts"} {
+		if err := root.Remove(name); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 	}
-	return nil
+	return agent.ReplaceFile(root, "etc/machine-id", "")
 }
 
 // pickMode settles what runs b.Init: an init (named init or systemd, like
 // exeuntu's /usr/local/bin/init) becomes PID 1, any other command runs
 // under cyac-init, like a container, and an image with neither a command
 // nor /sbin/init gets pause mode.
-func pickMode(root *os.Root, b *Box) error {
+func pickMode(root *os.Root, b *Defaults) error {
 	if len(b.Init) == 0 {
 		if _, err := root.Lstat("sbin/init"); err != nil {
 			b.Mode = "pause"

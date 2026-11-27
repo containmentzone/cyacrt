@@ -31,9 +31,11 @@ type Config struct {
 	Cwd  string   `json:"cwd,omitempty"`
 	User string   `json:"user,omitempty"`
 	// DNS and Network (a systemd-networkd config for eth0) are written
-	// into the box on every start, see WriteNetConfig.
-	DNS     string `json:"dns,omitempty"`
-	Network string `json:"network,omitempty"`
+	// into the box on every start, Hostname on its first, see
+	// WriteNetConfig.
+	Hostname string `json:"hostname,omitempty"`
+	DNS      string `json:"dns,omitempty"`
+	Network  string `json:"network,omitempty"`
 }
 
 // WriteNetConfig writes c's resolver to /etc/resolv.conf and c.Network to
@@ -41,8 +43,12 @@ type Config struct {
 // before the box's init runs. Doing it on every start keeps a box in step
 // with the host when cyac's subnet changes. resolv.conf replaces whatever
 // the image has there, including a symlink to systemd-resolved's stub,
-// which isn't running yet (or at all) when the box needs DNS. dir is
-// untrusted image content, so the writes go through os.Root.
+// which isn't running yet (or at all) when the box needs DNS.
+// /etc/hostname and /etc/hosts (so `hostname -f` resolves) are written
+// only where missing, as on a box's first start: disks come from images
+// that leave them out, so one image serves every box, and after that
+// they are the box's to change. dir is untrusted image content, so the
+// writes go through os.Root.
 func WriteNetConfig(dir string, c Config) error {
 	root, err := os.OpenRoot(dir)
 	if err != nil {
@@ -51,6 +57,19 @@ func WriteNetConfig(dir string, c Config) error {
 	defer root.Close()
 	if err := root.MkdirAll("etc/systemd/network", 0o755); err != nil {
 		return err
+	}
+	if c.Hostname != "" {
+		for name, content := range map[string]string{
+			"etc/hostname": c.Hostname + "\n",
+			"etc/hosts":    "127.0.0.1 localhost\n127.0.1.1 " + c.Hostname + "\n::1 localhost ip6-localhost ip6-loopback\n",
+		} {
+			if _, err := root.Lstat(name); !errors.Is(err, os.ErrNotExist) {
+				continue // there already, or something we leave be
+			}
+			if err := ReplaceFile(root, name, content); err != nil {
+				return err
+			}
+		}
 	}
 	resolv := "# written by cyac on every start\n"
 	if c.DNS != "" { // a box on a sealed network has no resolver
