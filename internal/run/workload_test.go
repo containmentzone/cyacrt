@@ -89,7 +89,7 @@ func TestBox(t *testing.T) {
 	if m.Link.HostIface != "cyb0-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:00:0a" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)
 	}
-	if m.Addr.Gateway.IsValid() || m.Addr.DNS != "" {
+	if m.Addr.Gateway.IsValid() || m.Init.DNS != "" {
 		t.Errorf("addr %+v: a sealed network has no gateway and no resolver", m.Addr)
 	}
 	if !slices.Equal(m.Init.Args, []string{"/bin/app", "--x"}) || m.Init.Mode != "command" ||

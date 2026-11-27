@@ -50,7 +50,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 		}
 		return err
 	}
-	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, orDefault(b.Workload.DiskMB, defaultDiskMB))
+	img, err := image(r.store(conf.KindBox), b.Name, b.Workload, cmp.Or(b.Workload.DiskMB, defaultDiskMB))
 	if err != nil {
 		return err
 	}
@@ -59,9 +59,9 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits()}
 	if n.Gateway != "" {
 		// The gateway's resolver listens on the router's address.
-		m.Addr.Gateway, m.Addr.DNS = n.Router(), n.Router().String()
+		m.Addr.Gateway, m.Init.DNS = n.Router(), n.Router().String()
 	}
-	m.Init.DNS, m.Init.Network = m.Addr.DNS, render.Networkd(c, b)
+	m.Init.Network = render.Networkd(c, b)
 	tap := rt.LinkKind() == driver.Tap
 	m.Link.HostIface = render.Port(b)
 	if tap {
@@ -89,7 +89,7 @@ func (r *Runner) service(ctx context.Context, c *conf.Config, s *conf.Service) e
 		}
 		return err
 	}
-	img, err := image(r.store(conf.KindService), s.Name, s.Workload, orDefault(s.Workload.DiskMB, defaultDiskMB))
+	img, err := image(r.store(conf.KindService), s.Name, s.Workload, cmp.Or(s.Workload.DiskMB, defaultDiskMB))
 	if err != nil {
 		return err
 	}
@@ -254,7 +254,7 @@ func machine(m *driver.Machine, w conf.Workload, img *box.Box) *driver.Machine {
 	if w.User != "" {
 		init.User = w.User
 	}
-	m.Init, m.CPUs, m.MemMiB = init, orDefault(w.CPUs, defaultCPUs), orDefault(w.MemoryMB, defaultMemoryMB)
+	m.Init, m.CPUs, m.MemMiB = init, cmp.Or(w.CPUs, defaultCPUs), cmp.Or(w.MemoryMB, defaultMemoryMB)
 	return m
 }
 
@@ -274,12 +274,4 @@ func consoleSince(path string, from int64) []byte {
 	buf := make([]byte, fi.Size()-from)
 	n, _ := f.ReadAt(buf, from)
 	return buf[:n]
-}
-
-// orDefault returns v, or def if v is zero.
-func orDefault(v, def int) int {
-	if v == 0 {
-		return def
-	}
-	return v
 }

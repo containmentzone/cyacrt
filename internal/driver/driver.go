@@ -38,13 +38,12 @@ type Machine struct {
 	Confined bool
 }
 
-// Addr is a box's static network config. cyac writes it into the box on
-// every start (see agent.WriteNetConfig).
+// Addr is a VM's address, which the guest kernel brings eth0 up with
+// (the ip= boot argument). Gateway is invalid on a sealed network.
 type Addr struct {
 	IP      netip.Addr
 	Prefix  int
 	Gateway netip.Addr
-	DNS     string
 }
 
 // LinkKind is the kind of attachment a runtime consumes.
