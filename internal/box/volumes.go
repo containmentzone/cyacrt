@@ -241,6 +241,13 @@ func fillVolume(srcs []source, data, path string, progress func(string)) error {
 // directory there and none a symlink, which would lead the copy out of
 // the tree.
 func realDir(root, path string) (string, error) {
+	// The root may itself sit on the data disk (a kept parent volume),
+	// where the guest could have swapped it for a symlink.
+	if fi, err := os.Lstat(root); err != nil {
+		return "", err
+	} else if !fi.IsDir() {
+		return "", fmt.Errorf("volume %s: source %s is not a directory", path, root)
+	}
 	p := root
 	for part := range strings.SplitSeq(strings.Trim(path, "/"), "/") {
 		p = filepath.Join(p, part)

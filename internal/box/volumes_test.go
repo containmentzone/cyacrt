@@ -135,3 +135,17 @@ func TestFillNestedVolume(t *testing.T) {
 		t.Errorf("got %q, want the kept /home's copy", got)
 	}
 }
+
+func TestFillNestedVolumeSymlinkedParent(t *testing.T) {
+	root, data, host := t.TempDir(), t.TempDir(), t.TempDir()
+	os.MkdirAll(filepath.Join(host, "u"), 0o755)
+	os.WriteFile(filepath.Join(host, "u/secret"), []byte("host"), 0o600)
+	os.Symlink(host, filepath.Join(data, "home"))
+	srcs := sources([]string{"/home"}, data, []string{root}, "/home/u")
+	if err := fillVolume(srcs, data, "/home/u", func(string) {}); err == nil {
+		t.Fatal("filled from a symlinked kept volume")
+	}
+	if _, err := os.Stat(filepath.Join(data, "home-u/secret")); err == nil {
+		t.Error("copied host files")
+	}
+}
