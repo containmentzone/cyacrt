@@ -90,6 +90,15 @@ func (s Store) seed(b *Box, vol string, sizeBytes int64, progress func(string)) 
 	if err != nil {
 		return err
 	}
+	// A record from before an image's volumes and root label were read
+	// lacks them; the image's config always has them.
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return err
+	}
+	if rec.Volumes, rec.KeepRoot, err = imageVolumes(cfg); err != nil {
+		return err
+	}
 	b.Defaults = rec.Defaults
 
 	imageSize, err := volsize(s.Images.volume(id))
@@ -137,13 +146,8 @@ func unpack(img v1.Image, tmp, vol string, size int64, progress func(string)) (D
 	if d.Expose, err = exposes(cfg.Config.Labels); err != nil {
 		return d, err
 	}
-	d.Volumes = slices.Sorted(maps.Keys(cfg.Config.Volumes))
-	switch v := cfg.Config.Labels[rootLabel]; v {
-	case "keep":
-		d.KeepRoot = true
-	case "", "replace":
-	default:
-		return d, fmt.Errorf("label %s=%q: want keep or replace", rootLabel, v)
+	if d.Volumes, d.KeepRoot, err = imageVolumes(cfg); err != nil {
+		return d, err
 	}
 	if layers, err := img.Layers(); err == nil {
 		var compressed int64
@@ -287,3 +291,17 @@ func (c *counter) Read(p []byte) (int, error) {
 }
 
 func mib(n int64) string { return fmt.Sprintf("%d MiB", n>>20) }
+
+// imageVolumes reads an image's VOLUMEs and whether its root label says
+// to keep the root (see Defaults).
+func imageVolumes(cfg *v1.ConfigFile) ([]string, bool, error) {
+	vols := slices.Sorted(maps.Keys(cfg.Config.Volumes))
+	switch v := cfg.Config.Labels[rootLabel]; v {
+	case "keep":
+		return vols, true, nil
+	case "", "replace":
+		return vols, false, nil
+	default:
+		return nil, false, fmt.Errorf("label %s=%q: want keep or replace", rootLabel, v)
+	}
+}

@@ -43,9 +43,19 @@ func cmpLen(x, y string) int {
 // Docker fills a new volume from the image: copied, not moved, so the
 // root keeps its copy under the mount, until the next reseed. Then it
 // joins b.Kept, and is never filled again. It reports whether b.Kept
-// changed. A box with no volumes gets no data disk. name must not be
+// changed. After a reseed, a new volume is filled from the old root
+// (b.FillFrom) where that has the path, and from the new one where it
+// doesn't. A box with no volumes gets no data disk. name must not be
 // running.
 func (s Store) FillVolumes(b *Box, want []string, sizeBytes int64, progress func(string)) (bool, error) {
+	changed, err := s.fillVolumes(b, want, sizeBytes, progress)
+	if err == nil && b.FillFrom != "" {
+		b.FillFrom, changed = "", true
+	}
+	return changed, err
+}
+
+func (s Store) fillVolumes(b *Box, want []string, sizeBytes int64, progress func(string)) (bool, error) {
 	if len(want) == 0 {
 		return false, nil
 	}
@@ -80,15 +90,21 @@ func (s Store) FillVolumes(b *Box, want []string, sizeBytes int64, progress func
 	if len(fresh) == 0 {
 		return false, nil
 	}
+	// The data disk first, then the roots to fill from, in order.
+	ms := []mount{{device(data), "rw"}}
+	if b.FillFrom != "" && s.Exists(b.FillFrom) {
+		ms = append(ms, mount{s.DiskPath(b.FillFrom), "ro"})
+	}
+	ms = append(ms, mount{s.DiskPath(b.Name), "ro"})
 	err := s.mounted(b.Name, func(dirs []string) error {
 		for _, v := range fresh {
-			if err := fillVolume(dirs[0], dirs[1], v, progress); err != nil {
+			if err := fillVolume(dirs[1:], dirs[0], v, progress); err != nil {
 				return err
 			}
 			b.Kept = append(b.Kept, v)
 		}
 		return nil
-	}, mount{s.DiskPath(b.Name), "ro"}, mount{device(data), "rw"})
+	}, ms...)
 	slices.SortFunc(b.Kept, cmpLen)
 	return true, err
 }
@@ -114,12 +130,12 @@ func growData(data string, sizeBytes int64) error {
 }
 
 // fillVolume makes the directory on the data disk mounted at data for
-// the volume at path, a copy of path in the root disk mounted at root,
-// or empty if the root has nothing there. One the data disk already has
+// the volume at path, a copy of path in the first of the root disks
+// mounted at roots that has it, or empty if none has. One the data disk already has
 // is left as it is, if it is a directory: the box writes the data disk,
 // and runc would follow a symlink there on the host. A copy goes to
 // .fill-<dir> first, so one that died halfway is redone.
-func fillVolume(root, data, path string, progress func(string)) error {
+func fillVolume(roots []string, data, path string, progress func(string)) error {
 	dst := filepath.Join(data, agent.VolumeDir(path))
 	if fi, err := os.Lstat(dst); err == nil {
 		if !fi.IsDir() {
@@ -127,13 +143,21 @@ func fillVolume(root, data, path string, progress func(string)) error {
 		}
 		return nil
 	}
-	src, err := realDir(root, path)
-	if errors.Is(err, fs.ErrNotExist) {
+	var src string
+	for _, root := range roots {
+		p, err := realDir(root, path)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		src = p
+		break
+	}
+	if src == "" {
 		progress("volume " + path + ": new and empty")
 		return os.Mkdir(dst, 0o755)
-	}
-	if err != nil {
-		return err
 	}
 	progress("volume " + path + ": filling it from the root disk")
 	// VolumeDir never starts a name with ".", so this can't be a volume.

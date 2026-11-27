@@ -18,6 +18,11 @@ type Box struct {
 	// when it first appeared (see FillVolumes). A volume stays mounted
 	// even if the image and the file stop naming it.
 	Kept []string `json:"kept_volumes,omitempty"`
+	// FillFrom names the disk a reseed just replaced (<name>.prev). A
+	// volume new since then is filled from it first, so data a box kept
+	// on its root moves to the data disk instead of being lost; the next
+	// FillVolumes clears it.
+	FillFrom string `json:"fill_from,omitempty"`
 }
 
 // Defaults are what an image says to run and how, the same for every

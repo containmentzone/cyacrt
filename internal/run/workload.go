@@ -225,7 +225,8 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 		}
 		progress("reseeding " + name + ": " + why)
 		// The data disk and its volumes stay as they are.
-		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept}
+		// A volume new with the new image is filled from the old root.
+		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept, FillFrom: name + ".prev"}
 		if err := st.Reseed(next, int64(diskMB)<<20, progress); err != nil {
 			return nil, err
 		}
