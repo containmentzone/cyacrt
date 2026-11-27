@@ -90,11 +90,14 @@ func (i Images) get(img v1.Image, id v1.Hash, progress func(string)) (*Image, er
 		sh.Run("zfs", "destroy", i.volume(id))
 		return nil, err
 	}
-	return &Image{Defaults: d}, nil
+	// Written now, not once the workload's disk is made, so the image is
+	// complete even if that fails.
+	rec := &Image{Defaults: d}
+	return rec, i.used(id, rec)
 }
 
-// used records that a workload was just seeded from id. Writing the file
-// is also what marks a newly unpacked image as complete.
+// used records that a workload was just seeded from id, or, for a newly
+// unpacked image, that it is complete.
 func (i Images) used(id v1.Hash, rec *Image) error {
 	rec.LastUsed = time.Now().UTC()
 	data, err := json.MarshalIndent(rec, "", "  ")
