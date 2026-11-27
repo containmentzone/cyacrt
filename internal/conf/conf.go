@@ -42,14 +42,16 @@ var Kinds = []string{KindGateway, KindNetwork, KindService, KindBox}
 //
 //	10.42.255.<2*Index>/31       a service's link to its gateway
 //
-// and in each network, .1 is the gateway, .2 the host, .3 to .9 services
-// and .10 to .254 boxes. Nobody picks these numbers: package lease hands them out by kind and name,
+// and in each network, .1 is the gateway, .2 the host, and .3 to .254 its
+// services and boxes, from one pool. Nobody picks these numbers: package
+// lease hands them out by kind and name,
 // before anything renders, since boxes and services find each other by
 // name in DNS and only need the numbers to be unique and to stay put.
 const (
 	MaxNetworkIndex = 253
 	MaxLinkIndex    = 127
-	MaxServices     = 7 // per network: .3 to .9
+	FirstMember     = 3   // a network's services and boxes: .3
+	LastMember      = 254 // to .254
 )
 
 // Network is a Linux bridge: one broadcast domain on 10.42.<Index>.0/24.
@@ -110,7 +112,7 @@ type Workload struct {
 type Service struct {
 	Name     string
 	Index    int             // 0 to MaxLinkIndex, leased; picks the gateway link /31
-	Octets   map[string]byte // network -> last octet there, .3 to .9, leased
+	Octets   map[string]byte // network -> last octet there, leased (see FirstMember)
 	Workload Workload
 	Gateway  string
 	Port     int
@@ -145,7 +147,7 @@ type Box struct {
 	Name      string
 	Workload  Workload
 	Network   string
-	Address   netip.Addr // .10 to .254 of its network, leased
+	Address   netip.Addr // in its network, leased (see FirstMember)
 	Autostart bool       // started with cyac.target
 }
 
@@ -266,9 +268,6 @@ func (c *Config) parseNetwork(name string, f *fields) error {
 		case kind == "service":
 			if slices.Contains(n.Services, target) {
 				return bad("Attach", a, "given twice")
-			}
-			if len(n.Services) == MaxServices {
-				return fmt.Errorf("a network attaches at most %d services", MaxServices)
 			}
 			n.Services = append(n.Services, target)
 		case kind == "gateway":

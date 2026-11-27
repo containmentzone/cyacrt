@@ -86,7 +86,7 @@ func TestBox(t *testing.T) {
 	if m == nil {
 		t.Fatal("not started")
 	}
-	if m.Link.HostIface != "cyb0-10" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:00:0a" {
+	if m.Link.HostIface != "cyb0-3" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:00:03" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)
 	}
 	if m.Addr.Gateway.IsValid() || m.Init.DNS != "" {
@@ -106,7 +106,7 @@ func TestBox(t *testing.T) {
 	if calls, _ := os.ReadFile(zfs); !strings.Contains(string(calls), "set volsize=10737418240 tank/cyac/boxes/a\n") {
 		t.Errorf("zvol not grown: %s", calls)
 	}
-	if f.ran[0] != "ip tuntap add dev cyb0-10 mode tap" {
+	if f.ran[0] != "ip tuntap add dev cyb0-3 mode tap" {
 		t.Errorf("plan ran %q", f.ran)
 	}
 
