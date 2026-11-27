@@ -74,18 +74,15 @@ func main() {
 	supervise(cfg, vm)
 }
 
-// switchRoot mounts the box's disk at /newroot, whatever its filesystem,
-// grows it if it is ext4, mounts its volumes, sets up its API
+// switchRoot mounts the box's disk at /newroot, mounts its volumes, sets up its API
 // filesystems and /run/cyac, and makes it the root.
 func switchRoot() error {
 	if err := syscall.Mount("devtmpfs", "/dev", "devtmpfs", 0, ""); err != nil {
 		return fmt.Errorf("mount /dev: %w", err)
 	}
-	if err := mountAny("/dev/vda", "/newroot", ""); err != nil {
-		return err
+	if err := syscall.Mount("/dev/vda", "/newroot", "ext4", 0, ""); err != nil {
+		return fmt.Errorf("mount /dev/vda: %w", err)
 	}
-	// The disk may have grown since the last boot (DiskSize).
-	grow("/dev/vda", "/newroot")
 	data, err := os.ReadFile("/cyac.json")
 	if err != nil {
 		return err

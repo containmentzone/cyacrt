@@ -121,7 +121,8 @@ never reseed, set `Root=keep` on the box, or label the image
 
 **Volumes outlive reseeds.** A box's volumes are its image's `VOLUME`s
 plus its `Volume=`s. They live on a second zvol, `$CYAC_ZFS/boxes/<name>.data`
-(an ext4 of `DataSize=`, made when the box first has a volume), as one
+(an ext4 of `DataSize=`, made when the box first has a volume, and grown
+by the host while the box is stopped when `DataSize=` rises), as one
 directory each, named like systemd names a path's mount unit
 (`/var/lib/docker` is `var-lib-docker`), bind-mounted at its path: by
 cyac-init from `/dev/vdb` in a VM, by the host under runc. All volumes
@@ -135,11 +136,9 @@ drop one, remove it from `kept_volumes` in `$CYAC_DIR/disks/<name>.json`
 and its directory from the data disk. Services have no volumes.
 
 Raising `DiskSize=` grows the
-zvol on the next start (it never shrinks). An ext4 root then grows to fit
-online: in a VM cyac-init grows it before switching root, and under runc
-the host runs `resize2fs`. The disk doesn't have to stay ext4: cyac-init
-mounts whatever block filesystem the guest kernel knows, and the host's
-`mount` detects it too. A box that reformats its disk grows it itself.
+zvol on the next start (it never shrinks); a VM grows its own filesystem
+(exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`), and under runc the
+host runs an online `resize2fs`.
 
 **What runs in it** is the image's `ENTRYPOINT`+`CMD`, or `Exec=`. cyac
 picks one of three modes:

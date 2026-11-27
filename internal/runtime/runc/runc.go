@@ -16,7 +16,6 @@ import (
 	"time"
 
 	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"golang.org/x/sys/unix"
 
 	"github.com/containmentzone/cyacrt/internal/agent"
 	"github.com/containmentzone/cyacrt/internal/driver"
@@ -78,21 +77,17 @@ func (r Runtime) Start(m *driver.Machine) error {
 	}
 	// The zvol may have grown since the last start (DiskSize). A container
 	// can't be trusted with its block device, so the host grows the
-	// filesystem, online, if it is ext4; this does nothing if it already
-	// fills the zvol. Other filesystems keep their size.
-	if err := growExt4(m.Disk, rootfs(m)); err != nil {
+	// filesystem, online; this does nothing if it already fills the zvol.
+	if err := sh.Run("resize2fs", m.Disk); err != nil {
 		return err
 	}
 	// The data disk holds the volumes the spec bind-mounts (see
-	// containerSpec), and grows the same way.
+	// containerSpec). FillVolumes grew it, if it had to.
 	if m.Data != "" {
 		if err := os.Mkdir(dataDir(m), 0o700); err != nil {
 			return err
 		}
 		if err := sh.Run("mount", "-o", "discard", m.Data, dataDir(m)); err != nil {
-			return err
-		}
-		if err := growExt4(m.Data, dataDir(m)); err != nil {
 			return err
 		}
 	}
@@ -127,19 +122,6 @@ func (r Runtime) Start(m *driver.Machine) error {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = in, log, log
 	return cmd.Run()
-}
-
-// growExt4 grows the filesystem on dev, mounted at dir, to fill dev, if
-// it is ext4. Other filesystems keep their size.
-func growExt4(dev, dir string) error {
-	var st unix.Statfs_t
-	if err := unix.Statfs(dir, &st); err != nil {
-		return err
-	}
-	if st.Type != unix.EXT4_SUPER_MAGIC {
-		return nil
-	}
-	return sh.Run("resize2fs", dev)
 }
 
 func (r Runtime) Stop(m *driver.Machine) error {

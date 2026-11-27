@@ -56,7 +56,7 @@ func (s Store) FillVolumes(b *Box, want []string, sizeBytes int64, progress func
 			sh.Run("zfs", "destroy", data)
 			return false, fmt.Errorf("mkfs.ext4: %v: %s", err, out)
 		}
-	} else if err := grow(data, sizeBytes); err != nil {
+	} else if err := growData(data, sizeBytes); err != nil {
 		return false, err
 	}
 	var fresh []string
@@ -79,6 +79,26 @@ func (s Store) FillVolumes(b *Box, want []string, sizeBytes int64, progress func
 	}, mount{s.DiskPath(b.Name), "ro"}, mount{device(data), "rw"})
 	slices.SortFunc(b.Kept, cmpLen)
 	return true, err
+}
+
+// growData grows the data disk data to sizeBytes, zvol and ext4, if it
+// is smaller. The box isn't running, so the host resizes it offline,
+// which wants a fresh fsck first.
+func growData(data string, sizeBytes int64) error {
+	cur, err := volsize(data)
+	if err != nil || sizeBytes <= cur {
+		return err
+	}
+	if err := grow(data, sizeBytes); err != nil {
+		return err
+	}
+	if out, err := exec.Command("e2fsck", "-fp", device(data)).CombinedOutput(); err != nil {
+		return fmt.Errorf("e2fsck %s: %v: %s", data, err, out)
+	}
+	if out, err := exec.Command("resize2fs", device(data)).CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs %s: %v: %s", data, err, out)
+	}
+	return nil
 }
 
 // fillVolume makes the directory on the data disk mounted at data for
