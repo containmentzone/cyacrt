@@ -15,7 +15,7 @@ import (
 func TestPid(t *testing.T) {
 	m := &driver.Machine{RunDir: t.TempDir()}
 	other := &driver.Machine{RunDir: t.TempDir()}
-	cmd := exec.Command("sh", "-c", "sleep 30; :", "--api-socket", "path="+socket(m))
+	cmd := exec.Command("sh", "-c", "sleep 30", "--api-socket", "path="+socket(m))
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -26,8 +26,7 @@ func TestPid(t *testing.T) {
 		}
 	}
 	// Start returns once exec has begun, which can be before the kernel
-	// has the new argv in /proc/<pid>/cmdline, and sh may exec sleep
-	// (losing the args) unless something follows it.
+	// has the new argv in /proc/<pid>/cmdline.
 	for range 100 {
 		if argv, _ := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/cmdline"); len(argv) > 0 {
 			break
