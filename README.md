@@ -34,7 +34,7 @@ Attach=gateway:out
 
 # web.cybox
 [Box]
-SeedImage=ghcr.io/boldsoftware/exeuntu
+Image=ghcr.io/boldsoftware/exeuntu
 CPU=2
 Memory=4G
 Network=dev
@@ -66,7 +66,7 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
+| cybox, cyservice | `[Box]`, `[Service]` | `Image=` (required until it has a disk; a change reseeds it), `Root=keep` or `replace` (reseed when `Image=` changes; default: what the image's `cyac.nullvoid.space/root` label says, else replace), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
 | cybox | `[Box]` | `Network=`, `Autostart=` |
 | cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
@@ -101,9 +101,24 @@ the disk, so later starts don't need the registry. Every start also writes
 a systemd-networkd config for `eth0` with the box's address, gateway and
 DNS, and an `/etc/resolv.conf` that points at the network's resolver. From
 then on the disk *is* the box. apt installs, files in `/root`, and
-everything else survive stops, starts and host reboots. That's why the key
-is `SeedImage=`: it's only read when the box has no disk yet, and can be
-changed or dropped afterwards without touching the disk. Raising `DiskSize=` grows the
+everything else survive stops, starts and host reboots.
+
+**Changing `Image=` reseeds the disk.** On the next start, a box whose
+`Image=` names another image than its disk came from gets a new disk,
+cloned from the new image, with only its machine ID and SSH host keys
+carried over; everything else on the old disk is gone from the box. The
+new disk is made as `<name>.new` and swapped in by `zfs rename`, so the
+old one is untouched until then and stays as `<name>.prev` (and its
+defaults as `disks/<name>.prev.json`) until the next reseed. Dropping
+`Image=`, or leaving it as it is, keeps the disk. A tag that moved in its
+registry is the same `Image=`, so starts never need the registry;
+`cyac reseed <name>` follows it, reseeding if the tag now resolves to
+another image (`--force`: always), and restarts the box if it runs. To
+never reseed, set `Root=keep` on the box, or label the image
+`cyac.nullvoid.space/root=keep`; `Root=replace` overrides the label, and
+`cyac reseed` overrides both. Services reseed the same way.
+
+Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks). An ext4 root then grows to fit
 online: in a VM cyac-init grows it before switching root, and under runc
 the host runs `resize2fs`. The disk doesn't have to stay ext4: cyac-init
@@ -345,7 +360,7 @@ elsewhere, `nix build .#cyac-inject-image`):
 ```ini
 # /var/lib/cyac/conf/nanogpt.cyservice
 [Service]
-SeedImage=/var/lib/cyac/images/cyac-inject.tar
+Image=/var/lib/cyac/images/cyac-inject.tar
 Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
 Memory=64M
 Gateway=out
@@ -370,7 +385,7 @@ A service's disk is seeded once, like a box's: after the image changes,
 stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
 `$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
 
-`SeedImage=` takes a registry reference or an absolute path to an uncompressed
+`Image=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
 
 ## Host requirements

@@ -93,10 +93,17 @@ type Gateway struct {
 }
 
 // Workload is what cybox and cyservice share, under the same keys: an OCI
-// image, a disk seeded from it, and how to run it. Image (SeedImage=) is
-// only used to seed a disk that doesn't exist yet, so it may be empty.
+// image, a disk seeded from it, and how to run it. Image may be empty
+// once the disk exists: the disk then stays as it is.
 type Workload struct {
-	Image    string
+	// Image is the image the disk is seeded from. When it changes, the
+	// disk is seeded again from the new one, unless Root says keep.
+	Image string
+	// Root is "keep" to never reseed the disk when Image changes,
+	// "replace" to reseed it, or "" to follow the image the disk came
+	// from: its cyac.nullvoid.space/root=keep label keeps it, and without
+	// one it is replaced.
+	Root     string
 	Exec     []string // overrides the image's ENTRYPOINT+CMD
 	Env      []string // KEY=VALUE, added to the image's
 	WorkDir  string
@@ -406,7 +413,10 @@ func (c *Config) parseBox(name string, f *fields) error {
 func parseWorkload(f *fields) (Workload, error) {
 	var w Workload
 	var err error
-	if w.Image, err = f.one("SeedImage"); err != nil {
+	if old, _ := f.one("SeedImage"); old != "" {
+		return w, fmt.Errorf("SeedImage= is now Image=")
+	}
+	if w.Image, err = f.one("Image"); err != nil {
 		return w, err
 	}
 	exec, err := f.one("Exec")
@@ -451,6 +461,12 @@ func parseWorkload(f *fields) (Workload, error) {
 	}
 	if w.Runtime, err = f.one("Runtime"); err != nil {
 		return w, err
+	}
+	if w.Root, err = f.one("Root"); err != nil {
+		return w, err
+	}
+	if w.Root != "" && w.Root != "keep" && w.Root != "replace" {
+		return w, bad("Root", w.Root, "want keep or replace")
 	}
 	return w, nil
 }

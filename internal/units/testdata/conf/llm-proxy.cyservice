@@ -1,5 +1,5 @@
 [Service]
-SeedImage=ghcr.io/example/llm-proxy
+Image=ghcr.io/example/llm-proxy
 Memory=256M
 Gateway=vpn
 Port=8080

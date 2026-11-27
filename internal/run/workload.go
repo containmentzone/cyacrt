@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -194,14 +195,34 @@ func (r *Runner) runtime(want string) (driver.Runtime, error) {
 }
 
 // image returns what the workload's image says to run, seeding its disk
-// first if it has none, or growing it to diskMB if it has. Seeding saves
-// the image's defaults next to the disk, so later starts don't need the
-// registry; the file only ever changes when the disk is seeded again.
+// first if it has none, reseeding it if it should (see reseedWhy), and
+// growing it to diskMB. Seeding saves the image's defaults next to the
+// disk, so later starts don't need the registry; the file only ever
+// changes when the disk is seeded again.
 func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, error) {
 	meta := imagePath(st, name)
+	progress := func(line string) { log.Print(line) }
 	b, err := loadImage(meta)
 	if err == nil {
-		return b, st.Grow(name, int64(diskMB)<<20)
+		if err := st.Recover(name); err != nil {
+			return nil, err
+		}
+		why, err := reseedWhy(st, name, w, b)
+		if err != nil || why == "" {
+			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))
+		}
+		progress("reseeding " + name + ": " + why)
+		next := &box.Box{Name: name, Image: w.Image}
+		if err := st.Reseed(next, int64(diskMB)<<20, progress); err != nil {
+			return nil, err
+		}
+		// The old file goes with the old disk; a reseed that dies before
+		// the new one is written runs again on the next start.
+		if err := os.Rename(meta, prevPath(st, name)); err != nil {
+			return nil, err
+		}
+		os.Remove(reseedPath(st, name))
+		return next, saveImage(meta, next)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
@@ -216,20 +237,96 @@ func image(st box.Store, name string, w conf.Workload, diskMB int) (*box.Box, er
 		return nil, fmt.Errorf("%s exists but %s doesn't; destroy the zvol to reseed it, or restore the file", st.DiskPath(name), meta)
 	}
 	if w.Image == "" {
-		return nil, fmt.Errorf("no disk yet and no SeedImage= to seed one from")
+		return nil, fmt.Errorf("no disk yet and no Image= to seed one from")
 	}
 	b = &box.Box{Name: name, Image: w.Image}
-	if err := st.Seed(b, int64(diskMB)<<20, func(line string) { log.Print(line) }); err != nil {
+	if err := st.Seed(b, int64(diskMB)<<20, progress); err != nil {
 		return nil, err
 	}
+	return b, saveImage(meta, b)
+}
+
+// reseedWhy says why name's disk, seeded as b says, should be seeded
+// again from w.Image, or "" if it shouldn't:
+//
+//   - w.Image names another image than the disk came from, unless Root=
+//     says keep, or the disk's image does (Defaults.KeepRoot) and Root=
+//     doesn't say replace. A tag that moved in its registry is the same
+//     name, so starts never need the registry.
+//   - `cyac reseed` asked for it (see MarkReseed): if the name now
+//     resolves to another image, or always with --force. This is how a
+//     moved tag is followed, and it overrides keep.
+func reseedWhy(st box.Store, name string, w conf.Workload, b *box.Box) (string, error) {
+	if w.Image == "" {
+		return "", nil // nothing to seed from: the disk stays
+	}
+	asked, err := os.ReadFile(reseedPath(st, name))
+	switch {
+	case err == nil && strings.TrimSpace(string(asked)) == "force":
+		return "cyac reseed --force", nil
+	case err == nil:
+		id, err := box.ResolveID(w.Image)
+		if err != nil {
+			return "", err
+		}
+		if id == b.ImageID {
+			log.Printf("%s still resolves to %s; not reseeding %s", w.Image, id, name)
+			return "", os.Remove(reseedPath(st, name))
+		}
+		return fmt.Sprintf("cyac reseed: %s now resolves to %s", w.Image, id), nil
+	case !errors.Is(err, os.ErrNotExist):
+		return "", err
+	}
+	if b.Image == "" || w.Image == b.Image {
+		return "", nil
+	}
+	keep := w.Root == "keep" || w.Root == "" && b.KeepRoot
+	if keep {
+		log.Printf("Image= changed from %s to %s, but %s keeps its disk (%s); `cyac reseed --force %s` replaces it",
+			b.Image, w.Image, name, keepReason(w), name)
+		return "", nil
+	}
+	return fmt.Sprintf("Image= changed from %s to %s", b.Image, w.Image), nil
+}
+
+func keepReason(w conf.Workload) string {
+	if w.Root == "keep" {
+		return "Root=keep"
+	}
+	return "its image says cyac.nullvoid.space/root=keep"
+}
+
+// MarkReseed asks for the box's disk to be seeded again on its next
+// start (see reseedWhy).
+func (r *Runner) MarkReseed(name string, force bool) error {
+	st := r.store(conf.KindBox)
+	if _, err := loadImage(imagePath(st, name)); err != nil {
+		return fmt.Errorf("%s has no disk yet: %w", name, err)
+	}
+	mark := ""
+	if force {
+		mark = "force"
+	}
+	return os.WriteFile(reseedPath(st, name), []byte(mark), 0o600)
+}
+
+func saveImage(path string, b *box.Box) error {
 	data, err := json.MarshalIndent(b, "", "  ")
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err := os.WriteFile(meta+".tmp", data, 0o600); err != nil {
-		return nil, err
+	if err := os.WriteFile(path+".tmp", data, 0o600); err != nil {
+		return err
 	}
-	return b, os.Rename(meta+".tmp", meta)
+	return os.Rename(path+".tmp", path)
+}
+
+func prevPath(st box.Store, name string) string {
+	return filepath.Join(st.Dir, "disks", name+".prev.json")
+}
+
+func reseedPath(st box.Store, name string) string {
+	return filepath.Join(st.Dir, "disks", name+".reseed")
 }
 
 func imagePath(st box.Store, name string) string { return filepath.Join(st.Dir, "disks", name+".json") }

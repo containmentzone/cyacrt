@@ -31,6 +31,10 @@ var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 // default, as <name>.
 const exposeLabel = "cyac.nullvoid.space/expose."
 
+// rootLabel set to "keep" marks an image whose disks are never reseeded
+// when a workload moves to another image (see Defaults.KeepRoot).
+const rootLabel = "cyac.nullvoid.space/root"
+
 // exposes reads the default exposes from an image's labels, by name.
 func exposes(labels map[string]string) (map[string]int, error) {
 	var ports map[string]int
@@ -60,6 +64,11 @@ func exposes(labels map[string]string) (map[string]int, error) {
 // consulted. progress gets a line per step and, while unpacking, every
 // few seconds.
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
+	return s.seed(b, s.volume(b.Name), sizeBytes, progress)
+}
+
+// seed makes vol, a new disk for b, as Seed describes.
+func (s Store) seed(b *Box, vol string, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
 	img, err := pull(b.Image)
 	if err != nil {
@@ -86,16 +95,16 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 		return err
 	}
 	if sizeBytes >= imageSize {
-		progress("cloning " + s.Images.snapshot(id) + " to " + s.volume(b.Name))
-		if err := cloneVolume(s.Images.snapshot(id), s.volume(b.Name)); err != nil {
+		progress("cloning " + s.Images.snapshot(id) + " to " + vol)
+		if err := cloneVolume(s.Images.snapshot(id), vol); err != nil {
 			return err
 		}
-		if err := s.Grow(b.Name, sizeBytes); err != nil {
+		if err := grow(vol, sizeBytes); err != nil {
 			return err
 		}
 	} else {
 		progress(fmt.Sprintf("%s is smaller than the image's %s, unpacking it again", mib(sizeBytes), mib(imageSize)))
-		if _, err := unpack(img, filepath.Join(s.Dir, "disks"), s.volume(b.Name), sizeBytes, progress); err != nil {
+		if _, err := unpack(img, filepath.Join(s.Dir, "disks"), vol, sizeBytes, progress); err != nil {
 			return err
 		}
 	}
@@ -125,6 +134,13 @@ func unpack(img v1.Image, tmp, vol string, size int64, progress func(string)) (D
 	}
 	if d.Expose, err = exposes(cfg.Config.Labels); err != nil {
 		return d, err
+	}
+	switch v := cfg.Config.Labels[rootLabel]; v {
+	case "keep":
+		d.KeepRoot = true
+	case "", "replace":
+	default:
+		return d, fmt.Errorf("label %s=%q: want keep or replace", rootLabel, v)
 	}
 	if layers, err := img.Layers(); err == nil {
 		var compressed int64

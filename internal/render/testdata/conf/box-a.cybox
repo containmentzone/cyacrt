@@ -1,5 +1,5 @@
 [Box]
-SeedImage=ghcr.io/boldsoftware/exeuntu
+Image=ghcr.io/boldsoftware/exeuntu
 CPU=2
 Memory=4G
 Network=dev

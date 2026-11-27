@@ -37,9 +37,9 @@ func load(t *testing.T, files map[string]string) (*Config, map[string]string) {
 const (
 	out = "[Gateway]\nKind=direct\n"
 	dev = "[Network]\nAttach=service:proxy\nAttach=gateway:out\n"
-	prx = "[Service]\nSeedImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n" +
+	prx = "[Service]\nImage=example/proxy\nExec=/bin/proxy --listen ':8080' \"a b\"\nEnv=A=1\nEnv=B=2\n" +
 		"DiskSize=1G\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/run/keys/key\n"
-	bx = "[Box]\nSeedImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nDiskSize=10G\nAutostart=yes\n"
+	bx = "[Box]\nImage=example/box\nCPU=2\nMemory=4G\nNetwork=dev\nDiskSize=10G\nAutostart=yes\n"
 )
 
 func TestLoad(t *testing.T) {
@@ -102,7 +102,7 @@ func TestFileErrors(t *testing.T) {
 		{"x.cynetwork", "[Netwrok]\n", "unknown section [Netwrok]"},
 		{"x.cynetwork", "Attach=gateway:out\n", "outside a section"},
 		{"x.cynetwork", "[Network]\nIndex=3\n", "unknown key Index="},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAddress=10.42.1.10\n", "unknown key Address="},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAddress=10.42.1.10\n", "unknown key Address="},
 		{"x.cygateway", "[Gateway]\nKind=tor\n", "want direct or wireguard"},
 		{"x.cygateway", "[Gateway]\nKind=wireguard\n", "Kind=wireguard needs an absolute path"},
 		{"x.cygateway", "[Gateway]\nKind=wireguard\nConfig=/k\n", "needs the tunnel's IPv4 address"},
@@ -111,16 +111,17 @@ func TestFileErrors(t *testing.T) {
 		{"x.cygateway", "[Gateway]\nKind=direct\nUplink=eth0\"\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nKind=direct\nUplink=averyverylongname\n", "want a host interface name"},
 		{"x.cygateway", "[Gateway]\nKind=wireguard\nConfig=/k\nAddress=10.64.0.2/32\nUplink=eth0\n", "only applies to Kind=direct"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=0\n", "Port=0"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
-		{"x.cyservice", "[Service]\nSeedImage=i\nExec=sh -c 'oops\nGateway=out\nPort=1\n", "unterminated"},
-		{"x.cyservice", "[Workload]\nSeedImage=i\n[Service]\nGateway=out\nPort=1\n", "unknown section [Workload]"},
-		{"x.cyservice", "[Service]\nImage=i\nGateway=out\nPort=1\n", "unknown key Image="},
-		{"x.cybox", "[Box]\nSeedImage=i\nMemory=lots\nNetwork=dev\n", "Memory=lots"},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\nAutostart=maybe\n", "want yes or no"},
-		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n[Extra]\n", "unknown section [Extra]"},
-		{"x.cybox", "[Workload]\nSeedImage=i\n[Box]\nNetwork=dev\n", "unknown section [Workload]"},
-		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\n", "unknown key Image="},
+		{"x.cyservice", "[Service]\nImage=i\nGateway=out\nPort=0\n", "Port=0"},
+		{"x.cyservice", "[Service]\nImage=i\nGateway=out\nPort=1\nSecret=KEY:rel\n", "NAME:/absolute/path"},
+		{"x.cyservice", "[Service]\nImage=i\nExec=sh -c 'oops\nGateway=out\nPort=1\n", "unterminated"},
+		{"x.cyservice", "[Workload]\nImage=i\n[Service]\nGateway=out\nPort=1\n", "unknown section [Workload]"},
+		{"x.cyservice", "[Service]\nSeedImage=i\nGateway=out\nPort=1\n", "SeedImage= is now Image="},
+		{"x.cybox", "[Box]\nImage=i\nMemory=lots\nNetwork=dev\n", "Memory=lots"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nAutostart=maybe\n", "want yes or no"},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\n[Extra]\n", "unknown section [Extra]"},
+		{"x.cybox", "[Workload]\nImage=i\n[Box]\nNetwork=dev\n", "unknown section [Workload]"},
+		{"x.cybox", "[Box]\nSeedImage=i\nNetwork=dev\n", "SeedImage= is now Image="},
+		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nRoot=maybe\n", "want keep or replace"},
 		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\n", "unknown key CPUs="},
 		{"Bad.cybox", "", "invalid name"},
 		{"proxy.cybox", bx, "name already used by cyservice proxy"},
@@ -191,7 +192,7 @@ func TestINIContinuation(t *testing.T) {
 func TestRejectedFileLeftOut(t *testing.T) {
 	c, errs := load(t, map[string]string{
 		"out.cygateway":   out,
-		"proxy.cyservice": "[Workload]\nSeedImage=i\n[Service]\nGateway=out\nPort=1\n",
+		"proxy.cyservice": "[Workload]\nImage=i\n[Service]\nGateway=out\nPort=1\n",
 	})
 	if errs["proxy.cyservice"] == "" || c.Services["proxy"] != nil {
 		t.Errorf("problems %v, service %+v", errs, c.Services["proxy"])

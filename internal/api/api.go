@@ -16,6 +16,7 @@
 //	POST   /v1/boxes/{name}/route/regen  Regen → Exposed
 //	POST   /v1/boxes/{name}/exec     Exec, then 101 and raw terminal bytes both ways
 //	POST   /v1/boxes/{name}/console  101, then the console log's tail and new output; input goes to the console
+//	POST   /v1/boxes/{name}/reseed   Reseed; restarts the box if it runs
 //
 // Errors come back as a non-2xx status with an Error body, except inside
 // the exec and console streams.
@@ -58,6 +59,13 @@ type Host struct {
 // means all of them.
 type Regen struct {
 	Names []string `json:"names"`
+}
+
+// Reseed seeds the box's disk again from its Image= on its next start,
+// if that now names another image (a tag that moved), or always with
+// Force. It overrides Root=keep.
+type Reseed struct {
+	Force bool `json:"force,omitempty"`
 }
 
 // Exec starts a command on a pty in the box. Rows and Cols set the initial

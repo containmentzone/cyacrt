@@ -1,6 +1,6 @@
 # cyac-inject (cmd/cyac-inject) as an image a cyservice can use: an
 # uncompressed `docker save` tarball holding the static binary and a CA
-# bundle, nothing else. Point a service's SeedImage= at the store path.
+# bundle, nothing else. Point a service's Image= at the store path.
 {
   buildGoModule,
   dockerTools,

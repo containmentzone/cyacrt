@@ -27,8 +27,8 @@ func load(t *testing.T, files map[string]string) *conf.Config {
 var base = map[string]string{
 	"out.cygateway":   "[Gateway]\nKind=direct\n",
 	"dev.cynetwork":   "[Network]\nAttach=gateway:out\nAttach=service:proxy\n",
-	"proxy.cyservice": "[Service]\nSeedImage=i\nGateway=out\nPort=80\n",
-	"a.cybox":         "[Box]\nSeedImage=i\nNetwork=dev\n",
+	"proxy.cyservice": "[Service]\nImage=i\nGateway=out\nPort=80\n",
+	"a.cybox":         "[Box]\nImage=i\nNetwork=dev\n",
 }
 
 func with(extra map[string]string) map[string]string {
@@ -62,7 +62,7 @@ func TestAssign(t *testing.T) {
 	// nothing that had one moves.
 	c = load(t, with(map[string]string{
 		"aa.cynetwork": "[Network]\n",
-		"aa.cybox":     "[Box]\nSeedImage=i\nNetwork=dev\n",
+		"aa.cybox":     "[Box]\nImage=i\nNetwork=dev\n",
 	}))
 	if err := Assign(dir, c, none); err != nil {
 		t.Fatal(err)
@@ -75,7 +75,7 @@ func TestAssign(t *testing.T) {
 	}
 
 	// Read sees the same, and gives nothing to an object without a lease.
-	r := load(t, with(map[string]string{"new.cybox": "[Box]\nSeedImage=i\nNetwork=dev\n"}))
+	r := load(t, with(map[string]string{"new.cybox": "[Box]\nImage=i\nNetwork=dev\n"}))
 	if err := Read(dir, r); err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestAssign(t *testing.T) {
 // stopped, its number is free again, but a never-used one goes first.
 func TestFree(t *testing.T) {
 	dir := t.TempDir()
-	two := with(map[string]string{"b.cybox": "[Box]\nSeedImage=i\nNetwork=dev\n"})
+	two := with(map[string]string{"b.cybox": "[Box]\nImage=i\nNetwork=dev\n"})
 	if err := Assign(dir, load(t, two), none); err != nil {
 		t.Fatal(err)
 	}

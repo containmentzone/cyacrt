@@ -35,6 +35,10 @@ type Defaults struct {
 	// Expose is what `cyac expose` serves by default, from the image's
 	// cyac.nullvoid.space/expose.<name>=<port> labels.
 	Expose map[string]int `json:"expose,omitempty"`
+	// KeepRoot is the image's cyac.nullvoid.space/root=keep label: a disk
+	// seeded from it is never reseeded when the workload's image changes,
+	// unless the workload says Root=replace.
+	KeepRoot bool `json:"keep_root,omitempty"`
 }
 
 // Store is where a kind of workload keeps its files, and its disks as
@@ -42,6 +46,8 @@ type Defaults struct {
 //
 //	<dataset>/<name>               disk, at /dev/zvol/<dataset>/<name>,
 //	                               usually a clone of an image (see Images)
+//	<dataset>/<name>.new           the disk a reseed is making (see Reseed)
+//	<dataset>/<name>.prev          the disk before the last reseed
 //	<dir>/disks/<name>.json        what seeding learned from the image (Box)
 //	<dir>/run/<name>/              runtime files while running (bundle, sockets)
 //	<dir>/logs/<name>.console.log  console, across runs
