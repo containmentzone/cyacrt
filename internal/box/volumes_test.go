@@ -51,6 +51,18 @@ func TestFillVolume(t *testing.T) {
 	if got, _ := os.ReadFile(filepath.Join(data, "home/ubuntu/.profile")); string(got) != "hi" {
 		t.Errorf("refilled: %q", got)
 	}
+	// Filling /home/x doesn't touch the volume /home/x.tmp.
+	if err := os.MkdirAll(filepath.Join(root, "home/x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.Mkdir(filepath.Join(data, "home-x.tmp"), 0o755)
+	os.WriteFile(filepath.Join(data, "home-x.tmp/keep"), nil, 0o644)
+	if err := fillVolume(root, data, "/home/x", quiet); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(data, "home-x.tmp/keep")); err != nil {
+		t.Errorf("another volume was touched: %v", err)
+	}
 	// A symlink the box left on the data disk is no volume.
 	if err := os.Symlink("/etc", filepath.Join(data, "srv")); err != nil {
 		t.Fatal(err)

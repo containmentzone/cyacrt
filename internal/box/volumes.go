@@ -118,7 +118,7 @@ func growData(data string, sizeBytes int64) error {
 // or empty if the root has nothing there. One the data disk already has
 // is left as it is, if it is a directory: the box writes the data disk,
 // and runc would follow a symlink there on the host. A copy goes to
-// <dir>.tmp first, so one that died halfway is redone.
+// .fill-<dir> first, so one that died halfway is redone.
 func fillVolume(root, data, path string, progress func(string)) error {
 	dst := filepath.Join(data, agent.VolumeDir(path))
 	if fi, err := os.Lstat(dst); err == nil {
@@ -136,7 +136,8 @@ func fillVolume(root, data, path string, progress func(string)) error {
 		return err
 	}
 	progress("volume " + path + ": filling it from the root disk")
-	tmp := dst + ".tmp"
+	// VolumeDir never starts a name with ".", so this can't be a volume.
+	tmp := filepath.Join(data, ".fill-"+agent.VolumeDir(path))
 	if err := os.RemoveAll(tmp); err != nil {
 		return err
 	}
