@@ -15,10 +15,14 @@ import (
 func TestPid(t *testing.T) {
 	m := &driver.Machine{RunDir: t.TempDir()}
 	other := &driver.Machine{RunDir: t.TempDir()}
-	cmd := exec.Command("sh", "-c", "sleep 30", "--api-socket", "path="+socket(m))
+	// A plain sleep with the socket as its argv[0]: no shell, which may
+	// exec its last command and drop the args.
+	cmd := exec.Command("sleep", "30")
+	cmd.Args[0] = "path=" + socket(m)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	defer cmd.Wait()
 	defer cmd.Process.Kill()
 	for _, mm := range []*driver.Machine{m, other} {
 		if err := os.WriteFile(pidFile(mm), []byte(strconv.Itoa(cmd.Process.Pid)), 0o600); err != nil {
@@ -28,7 +32,7 @@ func TestPid(t *testing.T) {
 	// Start returns once exec has begun, which can be before the kernel
 	// has the new argv in /proc/<pid>/cmdline.
 	for range 100 {
-		if argv, _ := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/cmdline"); len(argv) > 0 {
+		if pid(m) != 0 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
