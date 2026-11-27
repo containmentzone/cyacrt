@@ -144,9 +144,9 @@ func network(n *conf.Network, p Paths) string {
 	return oneshot(u, p, conf.KindNetwork, n.Name)
 }
 
-// dnsService is the gateway's resolver. It is PartOf the gateway rather
-// than BindsTo it: it stops with it, but doesn't count as needing it, so
-// the gateway can still stop when its last network does. It joins the
+// dnsService is the gateway's resolver. It is PartOf the gateway, so it
+// stops and restarts with it, and After it, as it runs in the gateway's
+// netns. It joins the
 // gateway's netns and nothing else of the host: an unprivileged, throwaway
 // user whose one capability is binding port 53, with memory and task
 // limits, because every box behind the gateway can send it packets.
