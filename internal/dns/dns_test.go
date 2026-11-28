@@ -109,10 +109,6 @@ func TestZone(t *testing.T) {
 		{boxA, "a.cyac.internal.", dnsmessage.TypeAAAA, dnsmessage.RCodeSuccess, ""},
 		{boxA, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""}, // on lab
 		{boxA, "x.a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
-		// the old per-network names still answer, but only for this network
-		{boxA, "a.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.4"},
-		{boxA, "proxy.dev.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.0.3"},
-		{boxA, "b.lab.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
 		// lab shares the gateway but sees only its own names
 		{boxB, "b.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeSuccess, "10.42.1.3"},
 		{boxB, "a.cyac.internal.", dnsmessage.TypeA, dnsmessage.RCodeNameError, ""},
@@ -178,7 +174,7 @@ func TestServe(t *testing.T) {
 	go s.Serve(ctx, pc, l)
 
 	// The source is 127.0.0.1, which is no client: refused, over both.
-	q := query(t, "a.dev.cyac.internal.", dnsmessage.TypeA)
+	q := query(t, "a.cyac.internal.", dnsmessage.TypeA)
 	u, err := net.Dial("udp", pc.LocalAddr().String())
 	if err != nil {
 		t.Fatal(err)

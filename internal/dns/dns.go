@@ -3,9 +3,8 @@
 // a box asks its router (.1) and a service asks the gateway end of its
 // link; nothing on the host is involved. It answers for <name>.cyac.internal
 // from the names each client may see (a box its own network's boxes and
-// services, a service those of every network that attaches it), with the
-// older <name>.<network>.cyac.internal as an alias, and forwards every
-// other question to the gateway's resolver. Forwarded queries leave by
+// services, a service those of every network that attaches it), and
+// forwards every other question to the gateway's resolver. Forwarded queries leave by
 // the gateway's own route (its uplink or its tunnel), like any other
 // traffic from the netns.
 //
@@ -63,9 +62,8 @@ type Client struct {
 // ZoneFor builds g's zone from the conf: every network behind g sees its
 // own boxes and services, and every service behind g sees the names of
 // all the networks that attach it. A service that shares several of
-// those networks with another resolves, under the flat name, to its
-// address in the first of them (in name order); the alias with the
-// network is exact.
+// those networks with another resolves to its address in the first of
+// them (in name order).
 func ZoneFor(c *conf.Config, g *conf.Gateway) Zone {
 	z := Zone{Upstreams: DefaultUpstreams}
 	if g.DNS != "" {
@@ -76,7 +74,6 @@ func ZoneFor(c *conf.Config, g *conf.Gateway) Zone {
 			if _, ok := into[name+"."+zone]; !ok {
 				into[name+"."+zone] = addr
 			}
-			into[name+"."+n.Name+"."+zone] = addr // pre-flattening alias
 		}
 		for _, name := range conf.Sorted(c.Boxes) {
 			if b := c.Boxes[name]; b.Network == n.Name {

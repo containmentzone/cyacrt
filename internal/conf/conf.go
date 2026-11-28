@@ -432,9 +432,6 @@ func (c *Config) parseBox(name string, f *fields) error {
 func parseWorkload(f *fields) (Workload, error) {
 	var w Workload
 	var err error
-	if len(f.all("SeedImage")) > 0 {
-		return w, fmt.Errorf("SeedImage= is now Image=")
-	}
 	if w.Image, err = f.one("Image"); err != nil {
 		return w, err
 	}
