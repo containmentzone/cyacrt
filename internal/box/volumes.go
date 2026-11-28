@@ -30,11 +30,6 @@ func Volumes(b *Box, extra []string) []string {
 	return slices.Compact(all)
 }
 
-// Mountable is kept without the paths agent.VolumeOK refuses.
-func Mountable(kept []string) []string {
-	return slices.DeleteFunc(slices.Clone(kept), func(v string) bool { return !agent.VolumeOK(v) })
-}
-
 func cmpLen(x, y string) int {
 	if len(x) != len(y) {
 		return len(x) - len(y)
@@ -196,16 +191,12 @@ func sources(kept []string, data string, roots []string, path string) []source {
 
 // fillVolume makes the directory on the data disk mounted at data for
 // the volume at path, a copy of the first of srcs that has the files, or
-// empty if none has. One the data disk already has
-// is left as it is, if it is a directory: the box writes the data disk,
-// and runc would follow a symlink there on the host. A copy goes to
+// empty if none has. One the data disk already has is left as it is,
+// whatever the box made of it. A copy goes to
 // .fill-<dir> first, so one that died halfway is redone.
 func fillVolume(srcs []source, data, path string, progress func(string)) error {
 	dst := filepath.Join(data, agent.VolumeDir(path))
-	if fi, err := os.Lstat(dst); err == nil {
-		if !fi.IsDir() {
-			return fmt.Errorf("volume %s: %s on the data disk is not a directory", path, agent.VolumeDir(path))
-		}
+	if _, err := os.Lstat(dst); err == nil {
 		return nil
 	}
 	var src string

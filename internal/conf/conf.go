@@ -396,7 +396,7 @@ func (c *Config) parseBox(name string, f *fields) error {
 	}
 	for _, v := range f.all("Volume") {
 		if !agent.VolumeOK(v) {
-			return bad("Volume", v, "want a clean absolute path, not /, not under /dev, /proc, /sys or /run, and not /etc or /etc/systemd")
+			return bad("Volume", v, "want a clean absolute path other than /")
 		}
 		b.Volumes = append(b.Volumes, v)
 	}

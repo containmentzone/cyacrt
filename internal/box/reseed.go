@@ -140,14 +140,8 @@ func carryFiles(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		// The size check keeps a box from making the host read a huge
-		// file; real ones are a few KiB.
-		if !fi.Mode().IsRegular() || fi.Size() > 64<<10 {
+		if !fi.Mode().IsRegular() {
 			continue
-		}
-		data, err := readSmall(from, name)
-		if err != nil {
-			return err
 		}
 		if err := to.MkdirAll(path.Dir(name), 0o755); err != nil {
 			return err
@@ -155,28 +149,27 @@ func carryFiles(src, dst string) error {
 		if err := to.Remove(name); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
-		f, err := to.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fi.Mode().Perm())
-		if err != nil {
-			return err
-		}
-		_, err = f.Write(data)
-		if cerr := f.Close(); err == nil {
-			err = cerr
-		}
-		if err != nil {
+		if err := copyFile(from, to, name, fi.Mode().Perm()); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// readSmall reads name in r, at most 64 KiB of it, whatever its size was
-// when it was checked.
-func readSmall(r *os.Root, name string) ([]byte, error) {
-	f, err := r.Open(name)
+// copyFile copies name from one tree to the other, where it must not exist.
+func copyFile(from, to *os.Root, name string, perm fs.FileMode) error {
+	src, err := from.Open(name)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	defer f.Close()
-	return io.ReadAll(io.LimitReader(f, 64<<10))
+	defer src.Close()
+	dst, err := to.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(dst, src)
+	if cerr := dst.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }

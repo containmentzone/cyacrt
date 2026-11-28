@@ -132,16 +132,14 @@ at its path, as Docker fills a new volume from its image (copied: the
 root's copy stays, hidden under the mount, until the next reseed). A
 volume that is new with a reseed (a box from before volumes, or an image
 that adds a `VOLUME`) is filled from the old root where it has the path,
-so data the box kept there moves over instead of being replaced (and
-the box doesn't reseed again until that is done). A volume inside a kept
+so data the box kept there moves over instead of being replaced. A volume inside a kept
 one starts with what that one has at its path. The
 list only grows: a volume the image or the file stops naming stays
 mounted where it was, so dropping a `VOLUME` line never loses data. To
 drop one, remove it from `kept_volumes` in `$CYAC_DIR/disks/<name>.json`
-and its directory from the data disk. A volume can't be `/`, under
-`/dev`, `/proc`, `/sys` or `/run`, or `/etc` or `/etc/systemd`, which
-hold the network config cyac writes on every start; an image `VOLUME`
-there is ignored. Services have no volumes.
+and its directory from the data disk. A volume can be any absolute path
+but `/`; one over `/etc` hides the network config cyac writes there on
+every start, which is the box's own problem. Services have no volumes.
 
 Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks); a VM grows its own filesystem

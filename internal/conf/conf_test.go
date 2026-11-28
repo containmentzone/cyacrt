@@ -124,8 +124,6 @@ func TestFileErrors(t *testing.T) {
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nRoot=maybe\n", "want keep or replace"},
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=home\n", "clean absolute path"},
 		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=/\n", "clean absolute path"},
-		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=/run/x\n", "clean absolute path"},
-		{"x.cybox", "[Box]\nImage=i\nNetwork=dev\nVolume=/etc\n", "clean absolute path"},
 		{"x.cybox", "[Box]\nSeedImage=\nNetwork=dev\n", "SeedImage= is now Image="},
 		{"x.cybox", "[Box]\nSeedImage=a\nSeedImage=b\nNetwork=dev\n", "SeedImage= is now Image="},
 		{"x.cybox", "[Box]\nCPUs=2\nNetwork=dev\n", "unknown key CPUs="},

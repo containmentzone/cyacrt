@@ -66,9 +66,7 @@ func (r *Runner) box(ctx context.Context, c *conf.Config, b *conf.Box) error {
 	}
 	n := c.Networks[b.Network]
 	m := machine(r.bare(conf.KindBox, b.Name), b.Workload, img)
-	// A kept volume that can no longer be one (see agent.VolumeOK) stays
-	// on the data disk but isn't mounted.
-	if vols := box.Mountable(img.Kept); len(vols) > 0 {
+	if vols := img.Kept; len(vols) > 0 {
 		m.Data, m.Volumes, m.Init.Volumes = st.DataPath(b.Name), vols, vols
 	}
 	m.Addr = driver.Addr{IP: b.Address, Prefix: n.Prefix().Bits()}
@@ -224,12 +222,6 @@ func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool)
 			return nil, err
 		}
 		why, err := reseedWhy(st, name, w, b)
-		if err == nil && why != "" && b.FillFrom != "" {
-			// Another reseed would replace <name>.prev before the volumes
-			// that come from it are filled.
-			progress("not reseeding " + name + " (" + why + ") until its volumes from the last reseed are filled")
-			why = ""
-		}
 		if err != nil || why == "" {
 			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))
 		}

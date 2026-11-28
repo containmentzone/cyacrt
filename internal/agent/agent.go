@@ -44,25 +44,10 @@ type Config struct {
 }
 
 // VolumeOK reports whether path can be a volume: a clean absolute path
-// other than /, outside the API filesystems (/dev, /proc, /sys, /run)
-// that would mount over it, and not above the network config that cyac
-// writes into the root on every start (/etc/resolv.conf and
-// /etc/systemd/network), which a volume would hide.
+// other than /. Where a box puts its volumes is its own business, even
+// over /etc or /run.
 func VolumeOK(path string) bool {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
-		return false
-	}
-	for _, api := range []string{"/dev", "/proc", "/sys", "/run"} {
-		if path == api || strings.HasPrefix(path, api+"/") {
-			return false
-		}
-	}
-	for _, w := range []string{"/etc/resolv.conf", "/etc/systemd/network/"} {
-		if strings.HasPrefix(w, path+"/") {
-			return false
-		}
-	}
-	return true
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
 }
 
 // VolumeDir is the directory on a box's data disk that holds the volume
