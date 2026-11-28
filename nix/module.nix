@@ -31,12 +31,6 @@ let
   };
 in
 {
-  imports = [
-    (lib.mkRemovedOptionModule [ "services" "cyac" "kernel" ]
-      "Boxes run under Cloud Hypervisor unless they set Runtime= (or services.cyac.defaultRuntime). Set services.cyac.buildGuestKernel = true for a guest kernel."
-    )
-  ];
-
   options.services.cyac = {
     enable = lib.mkEnableOption "the cyac runtime (daemon and proxy, CLI, kernel modules, sysctls, state dir)";
 

@@ -182,19 +182,3 @@ func NewMachineID() string {
 	rand.Read(b)
 	return hex.EncodeToString(b)
 }
-
-// MachineID returns the machine ID on name's disk, so a box from before
-// the host kept them keeps its own, or a new one if the disk has none.
-func (s Store) MachineID(name string) (string, error) {
-	id := NewMachineID()
-	err := s.mounted(name, func(dirs []string) error {
-		b, err := os.ReadFile(filepath.Join(dirs[0], "etc/machine-id"))
-		if old := strings.TrimSpace(string(b)); err == nil && len(old) == 32 {
-			if _, err := hex.DecodeString(old); err == nil {
-				id = old
-			}
-		}
-		return nil
-	}, mount{device(s.volume(name)), "ro"})
-	return id, err
-}

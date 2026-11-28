@@ -90,15 +90,6 @@ func (s Store) seed(b *Box, vol string, sizeBytes int64, progress func(string)) 
 	if err != nil {
 		return err
 	}
-	// A record from before an image's volumes and root label were read
-	// lacks them; the image's config always has them.
-	cfg, err := img.ConfigFile()
-	if err != nil {
-		return err
-	}
-	if rec.Volumes, rec.KeepRoot, err = imageVolumes(cfg); err != nil {
-		return err
-	}
 	b.Defaults = rec.Defaults
 
 	imageSize, err := volsize(s.Images.volume(id))

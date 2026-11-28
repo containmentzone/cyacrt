@@ -221,14 +221,6 @@ func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool)
 		if err := st.Recover(name); err != nil {
 			return nil, err
 		}
-		if b.MachineID == "" { // a disk from before the host kept them
-			if b.MachineID, err = st.MachineID(name); err != nil {
-				return nil, err
-			}
-			if err := saveImage(meta, b); err != nil {
-				return nil, err
-			}
-		}
 		why, err := reseedWhy(st, name, w, b)
 		if err != nil || why == "" {
 			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))

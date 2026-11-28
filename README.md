@@ -131,8 +131,8 @@ share the one disk and its size, and a full disk is an ordinary "no space
 left" in the box. A new volume is filled once from what the root disk has
 at its path, as Docker fills a new volume from its image (copied: the
 root's copy stays, hidden under the mount, until the next reseed). A
-volume that is new with a reseed (a box from before volumes, or an image
-that adds a `VOLUME`) is filled from the old root where it has the path,
+volume that is new with a reseed (an image that adds a
+`VOLUME`) is filled from the old root where it has the path,
 so data the box kept there moves over instead of being replaced. A volume inside a kept
 one starts with what that one has at its path. The
 list only grows: a volume the image or the file stops naming stays
@@ -215,8 +215,7 @@ cyac itself never reads them.
 `cyac dns` answers for `<name>.cyac.internal` (boxes search that zone, so
 `<name>` works too) from the conf files, for the network's boxes and the
 services it attaches; every network has its own resolver, so a service on
-several networks resolves to its address in each. The older
-`<name>.<network>.cyac.internal` still answers as an alias. Everything else is forwarded from inside the
+several networks resolves to its address in each. Everything else is forwarded from inside the
 network's gateway, to its `DNS=` or 1.1.1.1, so a box can only resolve what
 its packets could reach. A sealed network gets no answers for outside
 names.

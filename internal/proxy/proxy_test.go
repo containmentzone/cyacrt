@@ -35,7 +35,7 @@ func TestReload(t *testing.T) {
 	if err := SaveRoute(routes, "a", &Route{Ports: map[string]int{"web": 8080}, Tokens: map[string]string{"web": "ta"}}); err != nil {
 		t.Fatal(err)
 	}
-	// "old" has no token (a route from before per-host tokens): not served.
+	// "old" has no token: not served.
 	if err := SaveRoute(routes, "b", &Route{Ports: map[string]int{"ui": 80, "api": 3000, "old": 1},
 		Tokens: map[string]string{"ui": "tui", "api": "tapi"}}); err != nil {
 		t.Fatal(err)
