@@ -15,13 +15,15 @@ func TestWriteNetConfig(t *testing.T) {
 	os.MkdirAll(filepath.Join(dir, "etc/systemd/network"), 0o755)
 	os.Symlink(outside, filepath.Join(dir, "etc/resolv.conf"))
 	os.WriteFile(filepath.Join(dir, "etc/systemd/network/10-cyac.network"), []byte("Address=10.88.0.2/16"), 0o644)
+	os.WriteFile(filepath.Join(dir, "etc/machine-id"), []byte("picked-by-the-box\n"), 0o444)
 
-	if err := WriteNetConfig(dir, Config{DNS: "1.1.1.1", Network: "Address=10.42.0.2/16\n"}); err != nil {
+	if err := WriteNetConfig(dir, Config{DNS: "1.1.1.1", Network: "Address=10.42.0.2/16\n", MachineID: "0123456789abcdef0123456789abcdef"}); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
 		"etc/resolv.conf":                     "# written by cyac on every start\nnameserver 1.1.1.1\n",
 		"etc/systemd/network/10-cyac.network": "Address=10.42.0.2/16\n",
+		"etc/machine-id":                      "0123456789abcdef0123456789abcdef\n",
 	} {
 		got, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || string(got) != want {
@@ -67,8 +69,7 @@ func TestVolumeOK(t *testing.T) {
 	for p, want := range map[string]bool{
 		"/home": true, "/var/lib/docker": true, "/etc/nginx": true, "/etc/ssh": true,
 		"/": false, "home": false, "/home/": false, "/a/../b": false, "../etc": false,
-		"/run": false, "/run/x": false, "/dev/shm": false, "/proc": false, "/sys/fs": false,
-		"/etc": false, "/etc/systemd": false, "/etc/systemd/network": false, "/runner": true,
+		"/run": true, "/etc": true,
 	} {
 		if got := VolumeOK(p); got != want {
 			t.Errorf("VolumeOK(%q) = %v, want %v", p, got, want)

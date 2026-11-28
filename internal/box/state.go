@@ -13,6 +13,10 @@ type Box struct {
 	// ImageID is the ID of the image Image resolved to when the disk was
 	// seeded: the digest of its config, which is per platform.
 	ImageID string `json:"image_id,omitempty"`
+	// MachineID is the box's /etc/machine-id, written into it on every
+	// start (see agent.WriteNetConfig). It is made when the disk is first
+	// seeded and kept through reseeds.
+	MachineID string `json:"machine_id,omitempty"`
 	Defaults
 	// Kept are the volumes the box's data disk holds, each filled once,
 	// when it first appeared (see FillVolumes). A volume stays mounted

@@ -33,7 +33,7 @@ func TestCarryFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"etc/machine-id":               "old-id\n",
+		"etc/machine-id":               "",
 		"etc/ssh/ssh_host_ed25519_key": "secret",
 		"etc/passwd":                   "new users",
 	} {

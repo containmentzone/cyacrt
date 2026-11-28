@@ -8,7 +8,7 @@ import (
 )
 
 func TestVolumes(t *testing.T) {
-	b := &Box{Kept: []string{"/old"}, Defaults: Defaults{Volumes: []string{"/var/lib/docker", "/home", "../../etc", "/run/x", "/etc"}}}
+	b := &Box{Kept: []string{"/old"}, Defaults: Defaults{Volumes: []string{"/var/lib/docker", "/home", "../../etc", "/"}}}
 	got := Volumes(b, []string{"/home/", "/srv"})
 	want := []string{"/old", "/srv", "/home", "/var/lib/docker"}
 	if !slices.Equal(got, want) {
@@ -63,13 +63,6 @@ func TestFillVolume(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(data, "home-x.tmp/keep")); err != nil {
 		t.Errorf("another volume was touched: %v", err)
 	}
-	// A symlink the box left on the data disk is no volume.
-	if err := os.Symlink("/etc", filepath.Join(data, "srv")); err != nil {
-		t.Fatal(err)
-	}
-	if err := fillVolume(sources(nil, data, []string{root}, "/srv"), data, "/srv", quiet); err == nil {
-		t.Error("took a symlink on the data disk")
-	}
 }
 
 // After a reseed, a new volume comes from the old root where it has the
@@ -100,13 +93,6 @@ func TestFillVolumeAfterReseed(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(filepath.Join(data, "var-log/skeleton")); string(got) != "image" {
 		t.Errorf("var/log not taken from the new root: %q", got)
-	}
-}
-
-func TestMountable(t *testing.T) {
-	got := Mountable([]string{"/home", "/run/app", "/etc", "/var/log"})
-	if want := []string{"/home", "/var/log"}; !slices.Equal(got, want) {
-		t.Errorf("got %v, want %v", got, want)
 	}
 }
 

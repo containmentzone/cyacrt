@@ -31,12 +31,13 @@ type Config struct {
 	Env  []string `json:"env,omitempty"`
 	Cwd  string   `json:"cwd,omitempty"`
 	User string   `json:"user,omitempty"`
-	// DNS and Network (a systemd-networkd config for eth0) are written
-	// into the box on every start, Hostname on its first, see
-	// WriteNetConfig.
-	Hostname string `json:"hostname,omitempty"`
-	DNS      string `json:"dns,omitempty"`
-	Network  string `json:"network,omitempty"`
+	// DNS, Network (a systemd-networkd config for eth0) and MachineID
+	// are written into the box on every start, Hostname on its first,
+	// see WriteNetConfig.
+	Hostname  string `json:"hostname,omitempty"`
+	MachineID string `json:"machine_id,omitempty"`
+	DNS       string `json:"dns,omitempty"`
+	Network   string `json:"network,omitempty"`
 	// Volumes are the paths a VM's cyac-init bind-mounts from its data
 	// disk (/dev/vdb), each from the directory VolumeDir names, shortest
 	// path first.
@@ -44,25 +45,10 @@ type Config struct {
 }
 
 // VolumeOK reports whether path can be a volume: a clean absolute path
-// other than /, outside the API filesystems (/dev, /proc, /sys, /run)
-// that would mount over it, and not above the network config that cyac
-// writes into the root on every start (/etc/resolv.conf and
-// /etc/systemd/network), which a volume would hide.
+// other than /. Where a box puts its volumes is its own business, even
+// over /etc or /run.
 func VolumeOK(path string) bool {
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
-		return false
-	}
-	for _, api := range []string{"/dev", "/proc", "/sys", "/run"} {
-		if path == api || strings.HasPrefix(path, api+"/") {
-			return false
-		}
-	}
-	for _, w := range []string{"/etc/resolv.conf", "/etc/systemd/network/"} {
-		if strings.HasPrefix(w, path+"/") {
-			return false
-		}
-	}
-	return true
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
 }
 
 // VolumeDir is the directory on a box's data disk that holds the volume
@@ -90,6 +76,8 @@ func VolumeDir(path string) string {
 // with the host when cyac's subnet changes. resolv.conf replaces whatever
 // the image has there, including a symlink to systemd-resolved's stub,
 // which isn't running yet (or at all) when the box needs DNS.
+// c.MachineID, which the host keeps, replaces /etc/machine-id, so a box
+// keeps its ID across reseeds and can't pick another.
 // /etc/hostname and /etc/hosts (so `hostname -f` resolves) are written
 // only where missing, as on a box's first start: disks come from images
 // that leave them out, so one image serves every box, and after that
@@ -123,6 +111,11 @@ func WriteNetConfig(dir string, c Config) error {
 	}
 	if err := ReplaceFile(root, "etc/resolv.conf", resolv); err != nil {
 		return err
+	}
+	if c.MachineID != "" {
+		if err := ReplaceFile(root, "etc/machine-id", c.MachineID+"\n"); err != nil {
+			return err
+		}
 	}
 	return ReplaceFile(root, "etc/systemd/network/10-cyac.network", c.Network)
 }
