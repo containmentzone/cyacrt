@@ -12,6 +12,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -36,6 +37,51 @@ type Config struct {
 	Hostname string `json:"hostname,omitempty"`
 	DNS      string `json:"dns,omitempty"`
 	Network  string `json:"network,omitempty"`
+	// Volumes are the paths a VM's cyac-init bind-mounts from its data
+	// disk (/dev/vdb), each from the directory VolumeDir names, shortest
+	// path first.
+	Volumes []string `json:"volumes,omitempty"`
+}
+
+// VolumeOK reports whether path can be a volume: a clean absolute path
+// other than /, outside the API filesystems (/dev, /proc, /sys, /run)
+// that would mount over it, and not above the network config that cyac
+// writes into the root on every start (/etc/resolv.conf and
+// /etc/systemd/network), which a volume would hide.
+func VolumeOK(path string) bool {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == "/" {
+		return false
+	}
+	for _, api := range []string{"/dev", "/proc", "/sys", "/run"} {
+		if path == api || strings.HasPrefix(path, api+"/") {
+			return false
+		}
+	}
+	for _, w := range []string{"/etc/resolv.conf", "/etc/systemd/network/"} {
+		if strings.HasPrefix(w, path+"/") {
+			return false
+		}
+	}
+	return true
+}
+
+// VolumeDir is the directory on a box's data disk that holds the volume
+// at path, named the way systemd names a path's mount unit:
+// /var/lib/docker is var-lib-docker, and a "-" in a name is \x2d.
+func VolumeDir(path string) string {
+	var b strings.Builder
+	for i, c := range []byte(strings.Trim(path, "/")) {
+		switch {
+		case c == '/':
+			b.WriteByte('-')
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '.' && i > 0:
+			b.WriteByte(c)
+		default:
+			fmt.Fprintf(&b, "\\x%02x", c)
+		}
+	}
+	return b.String()
 }
 
 // WriteNetConfig writes c's resolver to /etc/resolv.conf and c.Network to

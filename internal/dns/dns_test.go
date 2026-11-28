@@ -28,10 +28,10 @@ func server(t *testing.T, fwd Forward) *Server {
 		"dev.cynetwork":    "[Network]\nAttach=service:proxy\nAttach=gateway:out\n",
 		"lab.cynetwork":    "[Network]\nAttach=gateway:out\n",
 		"sealed.cynetwork": "[Network]\n",
-		"proxy.cyservice":  "[Service]\nSeedImage=i\nGateway=out\nPort=8080\n",
-		"a.cybox":          "[Box]\nSeedImage=i\nNetwork=dev\n",
-		"b.cybox":          "[Box]\nSeedImage=i\nNetwork=lab\n",
-		"c.cybox":          "[Box]\nSeedImage=i\nNetwork=sealed\n",
+		"proxy.cyservice":  "[Service]\nImage=i\nGateway=out\nPort=8080\n",
+		"a.cybox":          "[Box]\nImage=i\nNetwork=dev\n",
+		"b.cybox":          "[Box]\nImage=i\nNetwork=lab\n",
+		"c.cybox":          "[Box]\nImage=i\nNetwork=sealed\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
 			t.Fatal(err)

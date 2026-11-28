@@ -1,6 +1,8 @@
 package runc
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -51,5 +53,32 @@ func TestGVisorCommands(t *testing.T) {
 		if got := strings.Join(cmd.Args, " "); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.rt.Name(), got, tc.want)
 		}
+	}
+}
+
+func TestVolumeMounts(t *testing.T) {
+	m := &driver.Machine{Name: "x", RunDir: "/run/x", CPUs: 1, MemMiB: 64,
+		Data: "/dev/zvol/tank/boxes/x.data", Volumes: []string{"/home", "/var/lib/my-app"}}
+	var got []string
+	for _, mnt := range (Runtime{}).containerSpec(m).Mounts {
+		if mnt.Type == "bind" {
+			got = append(got, mnt.Source+" "+mnt.Destination)
+		}
+	}
+	want := []string{"/run/x/data/home /home", `/run/x/data/var-lib-my\x2dapp /var/lib/my-app`}
+	if !slices.Equal(got, want) {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestCheckVolumes(t *testing.T) {
+	data := t.TempDir()
+	os.Mkdir(filepath.Join(data, "home"), 0o755)
+	os.Symlink("/etc", filepath.Join(data, "srv"))
+	if err := checkVolumes(data, []string{"/home"}); err != nil {
+		t.Errorf("a directory: %v", err)
+	}
+	if err := checkVolumes(data, []string{"/home", "/srv"}); err == nil {
+		t.Error("took a symlink on the data disk")
 	}
 }

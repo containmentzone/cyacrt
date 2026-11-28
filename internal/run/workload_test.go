@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/containmentzone/cyacrt/internal/box"
+	"github.com/containmentzone/cyacrt/internal/conf"
 	"github.com/containmentzone/cyacrt/internal/driver"
 )
 
@@ -71,7 +73,7 @@ const sealed = "[Network]\n"
 func TestBox(t *testing.T) {
 	r, f := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox": "[Box]\nSeedImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n" +
+		"a.cybox": "[Box]\nImage=img\nExec=/bin/app --x\nEnv=B=2\nMemory=2G\n" +
 			"Network=lab\n",
 	})
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
@@ -121,9 +123,9 @@ func TestBox(t *testing.T) {
 	}
 }
 
-// A box without SeedImage= starts from the disk it has, and can't start
+// A box without Image= starts from the disk it has, and can't start
 // without one.
-func TestBoxNoSeedImage(t *testing.T) {
+func TestBoxNoImage(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
 		"a.cybox":       "[Box]\nNetwork=lab\n",
@@ -131,8 +133,8 @@ func TestBoxNoSeedImage(t *testing.T) {
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
 	fakeZFS(t, false)
-	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "SeedImage=") {
-		t.Fatalf("got %v, want a missing SeedImage= error", err)
+	if err := r.Start(context.Background(), "cybox", "a"); err == nil || !strings.Contains(err.Error(), "Image=") {
+		t.Fatalf("got %v, want a missing Image= error", err)
 	}
 	seeded(t, r.State, "a", `{"init":["/sbin/init"]}`)
 	fakeZFS(t, true)
@@ -145,7 +147,7 @@ func TestService(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"out.cygateway":   "[Gateway]\nKind=direct\nDNS=9.9.9.9\n",
 		"dev.cynetwork":   "[Network]\nAttach=service:proxy\n",
-		"proxy.cyservice": "[Service]\nSeedImage=img\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
+		"proxy.cyservice": "[Service]\nImage=img\nRuntime=runc\nGateway=out\nPort=8080\nSecret=KEY:/k\n",
 	})
 	rc := &fakeRuntime{name: "runc", kind: driver.Netns}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{&fakeRuntime{name: "vm"}, rc}
@@ -174,7 +176,7 @@ func TestService(t *testing.T) {
 func TestBoxKeepsUnknownDisk(t *testing.T) {
 	r, _ := runner(t, map[string]string{
 		"lab.cynetwork": sealed,
-		"a.cybox":       "[Box]\nSeedImage=img\nNetwork=lab\n",
+		"a.cybox":       "[Box]\nImage=img\nNetwork=lab\n",
 	})
 	vm := &fakeRuntime{name: "cloud-hypervisor", kind: driver.Tap}
 	r.State, r.Dataset, r.Runtimes = t.TempDir(), "tank/cyac", []driver.Runtime{vm}
@@ -228,12 +230,47 @@ func TestServiceRuntime(t *testing.T) {
 		r, _ := runner(t, map[string]string{
 			"out.cygateway":   "[Gateway]\nKind=direct\n",
 			"dev.cynetwork":   "[Network]\nAttach=service:proxy\n",
-			"proxy.cyservice": "[Service]\nSeedImage=img\n" + tc.runtime + "Gateway=out\nPort=8080\n",
+			"proxy.cyservice": "[Service]\nImage=img\n" + tc.runtime + "Gateway=out\nPort=8080\n",
 		})
 		r.State, r.Dataset = t.TempDir(), "tank/cyac"
 		r.Runtimes = []driver.Runtime{&fakeRuntime{name: "cloud-hypervisor"}, &fakeRuntime{name: "runc", kind: driver.Netns}}
 		if err := r.Start(context.Background(), "cyservice", "proxy"); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("%q: got %v, want %q", tc.runtime, err, tc.want)
 		}
+	}
+}
+
+func TestReseedWhy(t *testing.T) {
+	st := box.Store{Dir: t.TempDir()}
+	if err := os.MkdirAll(filepath.Join(st.Dir, "disks"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := &box.Box{Name: "a", Image: "img:1"}
+	kept := &box.Box{Name: "a", Image: "img:1", Defaults: box.Defaults{KeepRoot: true}}
+	for _, tc := range []struct {
+		name   string
+		w      conf.Workload
+		b      *box.Box
+		reseed bool
+	}{
+		{"same image", conf.Workload{Image: "img:1"}, old, false},
+		{"no image", conf.Workload{}, old, false},
+		{"unknown seed image", conf.Workload{Image: "img:2"}, &box.Box{Name: "a"}, false},
+		{"changed", conf.Workload{Image: "img:2"}, old, true},
+		{"Root=keep", conf.Workload{Image: "img:2", Root: "keep"}, old, false},
+		{"label keeps", conf.Workload{Image: "img:2"}, kept, false},
+		{"Root=replace over label", conf.Workload{Image: "img:2", Root: "replace"}, kept, true},
+	} {
+		why, err := reseedWhy(st, "a", tc.w, tc.b)
+		if err != nil || (why != "") != tc.reseed {
+			t.Errorf("%s: got %q, %v, want reseed %v", tc.name, why, err, tc.reseed)
+		}
+	}
+	// cyac reseed --force overrides keep, even for the same image.
+	if err := os.WriteFile(reseedPath(st, "a"), []byte("force"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if why, err := reseedWhy(st, "a", conf.Workload{Image: "img:1", Root: "keep"}, kept); err != nil || why == "" {
+		t.Errorf("forced: got %q, %v", why, err)
 	}
 }

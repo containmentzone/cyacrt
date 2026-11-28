@@ -47,3 +47,31 @@ func TestWriteNetConfigHostname(t *testing.T) {
 		}
 	}
 }
+
+func TestVolumeDir(t *testing.T) {
+	for in, want := range map[string]string{
+		"/home":               "home",
+		"/var/lib/docker":     "var-lib-docker",
+		"/var/lib/my-app":     `var-lib-my\x2dapp`,
+		"/srv/.hidden":        "srv-.hidden",
+		"/.dot":               `\x2edot`,
+		"/var/lib/tailscale/": "var-lib-tailscale",
+	} {
+		if got := VolumeDir(in); got != want {
+			t.Errorf("VolumeDir(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestVolumeOK(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/home": true, "/var/lib/docker": true, "/etc/nginx": true, "/etc/ssh": true,
+		"/": false, "home": false, "/home/": false, "/a/../b": false, "../etc": false,
+		"/run": false, "/run/x": false, "/dev/shm": false, "/proc": false, "/sys/fs": false,
+		"/etc": false, "/etc/systemd": false, "/etc/systemd/network": false, "/runner": true,
+	} {
+		if got := VolumeOK(p); got != want {
+			t.Errorf("VolumeOK(%q) = %v, want %v", p, got, want)
+		}
+	}
+}

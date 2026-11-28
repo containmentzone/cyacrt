@@ -61,6 +61,9 @@ const usage = `usage: cyac <command> [args]
   regen <name> [<pname>...]     new tokens for those ports (default: all);
                                 the old ones stop working
   unexpose <name>
+  reseed [--force] <name>       seed the box's disk again from its Image= if that
+                                now resolves to another image (a tag that moved),
+                                or always with --force; restarts it if it runs
   version
 
   dns <gateway>                 run by cydns@<gateway>.service: the gateway's resolver
@@ -270,6 +273,11 @@ func dispatch(c *client.Client, cmd string, args []string) error {
 
 	case "unexpose":
 		return c.Do("DELETE", "/v1/boxes/"+parse(fs, args, 1)[0]+"/route", nil, nil)
+
+	case "reseed":
+		force := fs.Bool("force", false, "reseed even if the image is the same")
+		name := parse(fs, args, 1)[0]
+		return c.Do("POST", "/v1/boxes/"+name+"/reseed", api.Reseed{Force: *force}, nil)
 
 	default:
 		fmt.Fprint(os.Stderr, usage)

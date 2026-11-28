@@ -34,7 +34,7 @@ Attach=gateway:out
 
 # web.cybox
 [Box]
-SeedImage=ghcr.io/boldsoftware/exeuntu
+Image=ghcr.io/boldsoftware/exeuntu
 CPU=2
 Memory=4G
 Network=dev
@@ -66,8 +66,8 @@ The full set of keys:
 
 | Kind | Section | Keys |
 |---|---|---|
-| cybox, cyservice | `[Box]`, `[Service]` | `SeedImage=` (required until it has a disk), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
-| cybox | `[Box]` | `Network=`, `Autostart=` |
+| cybox, cyservice | `[Box]`, `[Service]` | `Image=` (required until it has a disk; a change reseeds it), `Root=keep` or `replace` (reseed when `Image=` changes; default: what the image's `cyac.nullvoid.space/root` label says, else replace), `Exec=` (replaces the image's `ENTRYPOINT`+`CMD`), `Env=KEY=VALUE` (repeatable), `WorkingDirectory=`, `User=`, `CPU=` (default 1), `Memory=` (default 1G), `DiskSize=` (default 10G), `Runtime=` (box: default `cloud-hypervisor`; service: default `runsc`, or `runc`) |
+| cybox | `[Box]` | `Network=`, `Autostart=`, `Volume=/path` (repeatable; kept on the data disk, on top of the image's `VOLUME`s), `DataSize=` (default 10G, shared by all volumes) |
 | cyservice | `[Service]` | `Gateway=`, `Port=` (required), `Secret=NAME:/abs/path` (repeatable) |
 | cynetwork | `[Network]` | `Attach=gateway:<name>`, `Attach=service:<name>` (up to 7) |
 | cygateway | `[Gateway]` | `Kind=direct` or `wireguard`, `DNS=`, and `Uplink=<host interface>` (direct) or `Config=<wg setconf file>` and `Address=<tunnel address/len>` (wireguard) |
@@ -101,9 +101,49 @@ the disk, so later starts don't need the registry. Every start also writes
 a systemd-networkd config for `eth0` with the box's address, gateway and
 DNS, and an `/etc/resolv.conf` that points at the network's resolver. From
 then on the disk *is* the box. apt installs, files in `/root`, and
-everything else survive stops, starts and host reboots. That's why the key
-is `SeedImage=`: it's only read when the box has no disk yet, and can be
-changed or dropped afterwards without touching the disk. Raising `DiskSize=` grows the
+everything else survive stops, starts and host reboots.
+
+**Changing `Image=` reseeds the disk.** On the next start, a box whose
+`Image=` names another image than its disk came from gets a new disk,
+cloned from the new image, with only its machine ID and SSH host keys
+carried over; everything else on the old disk is gone from the box,
+except its volumes (below). The
+new disk is made as `<name>.new` and swapped in by `zfs rename`, so the
+old one is untouched until then and stays as `<name>.prev` (and its
+defaults as `disks/<name>.prev.json`) until the next reseed. Dropping
+`Image=`, or leaving it as it is, keeps the disk. A tag that moved in its
+registry is the same `Image=`, so starts never need the registry;
+`cyac reseed <name>` follows it, reseeding if the tag now resolves to
+another image (`--force`: always), and restarts the box if it runs. To
+never reseed, set `Root=keep` on the box, or label the image
+`cyac.nullvoid.space/root=keep`; `Root=replace` overrides the label, and
+`cyac reseed` overrides both. Services reseed the same way.
+
+**Volumes outlive reseeds.** A box's volumes are its image's `VOLUME`s
+plus its `Volume=`s. They live on a second zvol, `$CYAC_ZFS/boxes/<name>.data`
+(an ext4 of `DataSize=`, made when the box first has a volume, and grown
+by the host while the box is stopped when `DataSize=` rises), as one
+directory each, named like systemd names a path's mount unit
+(`/var/lib/docker` is `var-lib-docker`), bind-mounted at its path: by
+cyac-init from `/dev/vdb` in a VM, by the host under runc. All volumes
+share the one disk and its size, and a full disk is an ordinary "no space
+left" in the box. A new volume is filled once from what the root disk has
+at its path, as Docker fills a new volume from its image (copied: the
+root's copy stays, hidden under the mount, until the next reseed). A
+volume that is new with a reseed (a box from before volumes, or an image
+that adds a `VOLUME`) is filled from the old root where it has the path,
+so data the box kept there moves over instead of being replaced (and
+the box doesn't reseed again until that is done). A volume inside a kept
+one starts with what that one has at its path. The
+list only grows: a volume the image or the file stops naming stays
+mounted where it was, so dropping a `VOLUME` line never loses data. To
+drop one, remove it from `kept_volumes` in `$CYAC_DIR/disks/<name>.json`
+and its directory from the data disk. A volume can't be `/`, under
+`/dev`, `/proc`, `/sys` or `/run`, or `/etc` or `/etc/systemd`, which
+hold the network config cyac writes on every start; an image `VOLUME`
+there is ignored. Services have no volumes.
+
+Raising `DiskSize=` grows the
 zvol on the next start (it never shrinks); a VM grows its own filesystem
 (exeuntu's `x-systemd.growfs`, or `resize2fs /dev/vda`), and under runc the
 host runs an online `resize2fs`.
@@ -343,7 +383,7 @@ elsewhere, `nix build .#cyac-inject-image`):
 ```ini
 # /var/lib/cyac/conf/nanogpt.cyservice
 [Service]
-SeedImage=/var/lib/cyac/images/cyac-inject.tar
+Image=/var/lib/cyac/images/cyac-inject.tar
 Exec=/bin/cyac-inject -listen :80 -upstream https://nano-gpt.com/api/v1 -value-file /run/secrets/key -prefix "Bearer "
 Memory=64M
 Gateway=out
@@ -364,11 +404,12 @@ curl http://nanogpt.cyac.internal/chat/completions -d @req.json
 The proxy forwards any path under the upstream URL, replaces any value the
 box sent for the header, and passes on no `X-Forwarded-*` headers. It reads
 the secret once at start, so restart `cyservice@nanogpt` after changing it.
-A service's disk is seeded once, like a box's: after the image changes,
-stop the service and `zfs destroy $CYAC_ZFS/services/nanogpt` and remove
-`$CYAC_DIR/services/disks/nanogpt.json` to reseed it.
+A service's disk reseeds like a box's when its `Image=` changes.
+`cyac reseed` covers only boxes, so to pick up a rebuilt image under the
+same tag, stop the service, `zfs destroy $CYAC_ZFS/services/nanogpt` and
+remove `$CYAC_DIR/services/disks/nanogpt.json`.
 
-`SeedImage=` takes a registry reference or an absolute path to an uncompressed
+`Image=` takes a registry reference or an absolute path to an uncompressed
 `docker save` tarball.
 
 ## Host requirements

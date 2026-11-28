@@ -3,11 +3,13 @@ package box
 import (
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -30,6 +32,10 @@ var validUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 // exposeLabel followed by <name> gives a port `cyac expose` serves by
 // default, as <name>.
 const exposeLabel = "cyac.nullvoid.space/expose."
+
+// rootLabel set to "keep" marks an image whose disks are never reseeded
+// when a workload moves to another image (see Defaults.KeepRoot).
+const rootLabel = "cyac.nullvoid.space/root"
 
 // exposes reads the default exposes from an image's labels, by name.
 func exposes(labels map[string]string) (map[string]int, error) {
@@ -60,6 +66,11 @@ func exposes(labels map[string]string) (map[string]int, error) {
 // consulted. progress gets a line per step and, while unpacking, every
 // few seconds.
 func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
+	return s.seed(b, s.volume(b.Name), sizeBytes, progress)
+}
+
+// seed makes vol, a new disk for b, as Seed describes.
+func (s Store) seed(b *Box, vol string, sizeBytes int64, progress func(string)) error {
 	progress("resolving " + b.Image)
 	img, err := pull(b.Image)
 	if err != nil {
@@ -79,6 +90,15 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 	if err != nil {
 		return err
 	}
+	// A record from before an image's volumes and root label were read
+	// lacks them; the image's config always has them.
+	cfg, err := img.ConfigFile()
+	if err != nil {
+		return err
+	}
+	if rec.Volumes, rec.KeepRoot, err = imageVolumes(cfg); err != nil {
+		return err
+	}
 	b.Defaults = rec.Defaults
 
 	imageSize, err := volsize(s.Images.volume(id))
@@ -86,16 +106,16 @@ func (s Store) Seed(b *Box, sizeBytes int64, progress func(string)) error {
 		return err
 	}
 	if sizeBytes >= imageSize {
-		progress("cloning " + s.Images.snapshot(id) + " to " + s.volume(b.Name))
-		if err := cloneVolume(s.Images.snapshot(id), s.volume(b.Name)); err != nil {
+		progress("cloning " + s.Images.snapshot(id) + " to " + vol)
+		if err := cloneVolume(s.Images.snapshot(id), vol); err != nil {
 			return err
 		}
-		if err := s.Grow(b.Name, sizeBytes); err != nil {
+		if err := grow(vol, sizeBytes); err != nil {
 			return err
 		}
 	} else {
 		progress(fmt.Sprintf("%s is smaller than the image's %s, unpacking it again", mib(sizeBytes), mib(imageSize)))
-		if _, err := unpack(img, filepath.Join(s.Dir, "disks"), s.volume(b.Name), sizeBytes, progress); err != nil {
+		if _, err := unpack(img, filepath.Join(s.Dir, "disks"), vol, sizeBytes, progress); err != nil {
 			return err
 		}
 	}
@@ -124,6 +144,9 @@ func unpack(img v1.Image, tmp, vol string, size int64, progress func(string)) (D
 		}
 	}
 	if d.Expose, err = exposes(cfg.Config.Labels); err != nil {
+		return d, err
+	}
+	if d.Volumes, d.KeepRoot, err = imageVolumes(cfg); err != nil {
 		return d, err
 	}
 	if layers, err := img.Layers(); err == nil {
@@ -268,3 +291,17 @@ func (c *counter) Read(p []byte) (int, error) {
 }
 
 func mib(n int64) string { return fmt.Sprintf("%d MiB", n>>20) }
+
+// imageVolumes reads an image's VOLUMEs and whether its root label says
+// to keep the root (see Defaults).
+func imageVolumes(cfg *v1.ConfigFile) ([]string, bool, error) {
+	vols := slices.Sorted(maps.Keys(cfg.Config.Volumes))
+	switch v := cfg.Config.Labels[rootLabel]; v {
+	case "keep":
+		return vols, true, nil
+	case "", "replace":
+		return vols, false, nil
+	default:
+		return nil, false, fmt.Errorf("label %s=%q: want keep or replace", rootLabel, v)
+	}
+}

@@ -58,6 +58,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/boxes/{name}/route/regen", s.regen)
 	mux.HandleFunc("POST /v1/boxes/{name}/exec", s.exec)
 	mux.HandleFunc("POST /v1/boxes/{name}/console", s.console)
+	mux.HandleFunc("POST /v1/boxes/{name}/reseed", s.reseed)
 	return logRequests(mux)
 }
 
@@ -159,6 +160,26 @@ func (s *Server) unit(verb string) http.HandlerFunc {
 		}
 		reply(w, struct{}{}, sh.Run("systemctl", verb, units.Name(conf.KindBox, name)))
 	}
+}
+
+// reseed asks for the box's disk to be seeded again on its next start,
+// and restarts it if it runs, so that is now.
+func (s *Server) reseed(w http.ResponseWriter, r *http.Request) {
+	var req api.Reseed
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		reply(w, nil, err)
+		return
+	}
+	name := r.PathValue("name")
+	if _, err := s.box(name); err != nil {
+		reply(w, nil, err)
+		return
+	}
+	if err := s.Run.MarkReseed(name, req.Force); err != nil {
+		reply(w, nil, err)
+		return
+	}
+	reply(w, struct{}{}, sh.Run("systemctl", "try-restart", units.Name(conf.KindBox, name)))
 }
 
 func (s *Server) expose(w http.ResponseWriter, r *http.Request) {

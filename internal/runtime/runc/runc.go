@@ -10,6 +10,7 @@ package runc
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,7 @@ func (Runtime) LinkKind() driver.LinkKind  { return driver.Netns }
 func containerID(m *driver.Machine) string { return "cyac-" + m.Name }
 func rootfs(m *driver.Machine) string      { return filepath.Join(m.RunDir, "rootfs") }
 func initConfig(m *driver.Machine) string  { return filepath.Join(m.RunDir, "init.json") }
+func dataDir(m *driver.Machine) string     { return filepath.Join(m.RunDir, "data") }
 
 // bin is the OCI runtime's binary, which is also this runtime's name.
 func (r Runtime) bin() string {
@@ -79,6 +81,19 @@ func (r Runtime) Start(m *driver.Machine) error {
 	// filesystem, online; this does nothing if it already fills the zvol.
 	if err := sh.Run("resize2fs", m.Disk); err != nil {
 		return err
+	}
+	// The data disk holds the volumes the spec bind-mounts (see
+	// containerSpec). FillVolumes grew it, if it had to.
+	if m.Data != "" {
+		if err := os.Mkdir(dataDir(m), 0o700); err != nil {
+			return err
+		}
+		if err := sh.Run("mount", "-o", "discard", m.Data, dataDir(m)); err != nil {
+			return err
+		}
+		if err := checkVolumes(dataDir(m), m.Volumes); err != nil {
+			return err
+		}
 	}
 	if err := agent.WriteNetConfig(rootfs(m), m.Init); err != nil {
 		return err
@@ -141,6 +156,7 @@ func (r Runtime) Running(m *driver.Machine) bool {
 func (r Runtime) Cleanup(m *driver.Machine) {
 	r.run("delete", "--force", containerID(m))
 	sh.Run("umount", rootfs(m))
+	sh.Run("umount", dataDir(m))
 }
 
 func (r Runtime) Command(m *driver.Machine, args []string) (*exec.Cmd, error) {
@@ -169,6 +185,10 @@ func (r Runtime) containerSpec(m *driver.Machine) *specs.Spec {
 			{Destination: "/run/cyac/init", Type: "bind", Source: r.Init, Options: []string{"bind", "ro"}},
 			{Destination: "/run/cyac/config.json", Type: "bind", Source: initConfig(m), Options: []string{"bind", "ro"}},
 		}
+	}
+	for _, v := range m.Volumes {
+		initMounts = append(initMounts, specs.Mount{Destination: v, Type: "bind",
+			Source: filepath.Join(dataDir(m), agent.VolumeDir(v)), Options: []string{"rbind"}})
 	}
 	if m.Secrets != "" {
 		initMounts = append(initMounts, specs.Mount{Destination: "/run/secrets", Type: "bind", Source: m.Secrets,
@@ -247,4 +267,20 @@ func baseMounts(confined bool) []specs.Mount {
 		mounts = append(mounts, specs.Mount{Destination: "/sys/fs/cgroup", Type: "cgroup", Source: "cgroup", Options: []string{"nosuid", "noexec", "nodev", "rw"}})
 	}
 	return mounts
+}
+
+// checkVolumes makes sure each volume's directory on the data disk at
+// data is one. The box writes that disk (a VM's guest as well), and runc
+// would follow a symlink there on the host when it bind-mounts it.
+func checkVolumes(data string, vols []string) error {
+	for _, v := range vols {
+		fi, err := os.Lstat(filepath.Join(data, agent.VolumeDir(v)))
+		if err != nil {
+			return fmt.Errorf("volume %s: %w", v, err)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("volume %s: %s on the data disk is not a directory", v, agent.VolumeDir(v))
+		}
+	}
+	return nil
 }

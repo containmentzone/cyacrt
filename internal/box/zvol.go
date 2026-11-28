@@ -75,12 +75,23 @@ func (s Store) Destroy(name string) error {
 // Grow raises name's zvol to size bytes. It never shrinks one, which would
 // cut off the end of its filesystem. The filesystem grows separately: a VM
 // grows its own, and runc grows a container's on start.
-func (s Store) Grow(name string, size int64) error {
-	cur, err := volsize(s.volume(name))
+func (s Store) Grow(name string, size int64) error { return grow(s.volume(name), size) }
+
+func grow(vol string, size int64) error {
+	cur, err := volsize(vol)
 	if err != nil || size <= cur {
 		return err
 	}
-	return sh.Run("zfs", "set", "volsize="+strconv.FormatInt(size, 10), s.volume(name))
+	return sh.Run("zfs", "set", "volsize="+strconv.FormatInt(size, 10), vol)
+}
+
+// rename renames the zvol from to to, and waits for udev to move its
+// device link.
+func rename(from, to string) error {
+	if err := sh.Run("zfs", "rename", from, to); err != nil {
+		return err
+	}
+	return waitDevice(to)
 }
 
 func volsize(vol string) (int64, error) {
