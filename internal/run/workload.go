@@ -221,6 +221,14 @@ func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool)
 		if err := st.Recover(name); err != nil {
 			return nil, err
 		}
+		if b.MachineID == "" { // a disk from before the host kept them
+			if b.MachineID, err = st.MachineID(name); err != nil {
+				return nil, err
+			}
+			if err := saveImage(meta, b); err != nil {
+				return nil, err
+			}
+		}
 		why, err := reseedWhy(st, name, w, b)
 		if err != nil || why == "" {
 			return b, errors.Join(err, st.Grow(name, int64(diskMB)<<20))
@@ -228,7 +236,7 @@ func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool)
 		progress("reseeding " + name + ": " + why)
 		// The data disk and its volumes stay as they are.
 		// A volume new with the new image is filled from the old root.
-		next := &box.Box{Name: name, Image: w.Image, Kept: b.Kept}
+		next := &box.Box{Name: name, Image: w.Image, MachineID: b.MachineID, Kept: b.Kept}
 		if volumes {
 			next.FillFrom = name + ".prev"
 		}
@@ -267,7 +275,7 @@ func image(st box.Store, name string, w conf.Workload, diskMB int, volumes bool)
 	if w.Image == "" {
 		return nil, fmt.Errorf("no disk yet and no Image= to seed one from")
 	}
-	b = &box.Box{Name: name, Image: w.Image}
+	b = &box.Box{Name: name, Image: w.Image, MachineID: box.NewMachineID()}
 	if err := st.Seed(b, int64(diskMB)<<20, progress); err != nil {
 		return nil, err
 	}
@@ -371,7 +379,7 @@ func loadImage(path string) (*box.Box, error) {
 // machine fills in m, a bare machine, for the runtime: the image's
 // defaults with the file's settings on top.
 func machine(m *driver.Machine, w conf.Workload, img *box.Box) *driver.Machine {
-	init := agent.Config{Hostname: m.Name, Mode: img.Mode, Args: img.Init, Env: append(img.Env, w.Env...), Cwd: img.Cwd, User: img.RunAs}
+	init := agent.Config{Hostname: m.Name, MachineID: img.MachineID, Mode: img.Mode, Args: img.Init, Env: append(img.Env, w.Env...), Cwd: img.Cwd, User: img.RunAs}
 	if len(w.Exec) > 0 {
 		init.Args, init.Mode = w.Exec, box.ModeFor(w.Exec)
 	}

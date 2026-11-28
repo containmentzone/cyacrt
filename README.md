@@ -94,7 +94,9 @@ its blocks; only a box asking for a smaller disk than the image's gets a
 copy unpacked of its own. Each image records when a box was last seeded
 from it (`$CYAC_DIR/images/<id>.json`), for pruning later; a clone pins its
 image's snapshot, so ZFS won't destroy an image while a box cloned from it
-exists. The box's first start writes its hostname and an `/etc/hosts` that
+exists. The host keeps each box's machine ID next to its disk and writes
+it to `/etc/machine-id` on every start, so a reseed keeps it (a disk from
+before that keeps the one it has). The box's first start writes its hostname and an `/etc/hosts` that
 resolves it, where missing. It saves the
 image's defaults (command, `Env`, `WorkingDir`, `USER`, login user) next to
 the disk, so later starts don't need the registry. Every start also writes
@@ -105,8 +107,7 @@ everything else survive stops, starts and host reboots.
 
 **Changing `Image=` reseeds the disk.** On the next start, a box whose
 `Image=` names another image than its disk came from gets a new disk,
-cloned from the new image, with only its machine ID and SSH host keys
-carried over; everything else on the old disk is gone from the box,
+cloned from the new image, with only its SSH host keys carried over; everything else on the old disk is gone from the box,
 except its volumes (below). The
 new disk is made as `<name>.new` and swapped in by `zfs rename`, so the
 old one is untouched until then and stays as `<name>.prev` (and its

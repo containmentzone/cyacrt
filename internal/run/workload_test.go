@@ -39,9 +39,15 @@ func (f *fakeRuntime) Running(*driver.Machine) bool                         { re
 func (f *fakeRuntime) Cleanup(m *driver.Machine)                            { f.cleanedUp = append(f.cleanedUp, m.RunDir) }
 func (f *fakeRuntime) Command(*driver.Machine, []string) (*exec.Cmd, error) { return nil, nil }
 
-// seeded pretends name's disk was seeded from an image with these defaults.
+const testMachineID = "0123456789abcdef0123456789abcdef"
+
+// seeded pretends name's disk was seeded from an image with these defaults,
+// and testMachineID unless meta has another.
 func seeded(t *testing.T, dir, name, meta string) {
 	t.Helper()
+	if !strings.Contains(meta, "machine_id") {
+		meta = strings.Replace(meta, "{", `{"machine_id":"`+testMachineID+`",`, 1)
+	}
 	if err := os.MkdirAll(filepath.Join(dir, "disks"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +93,9 @@ func TestBox(t *testing.T) {
 	m := vm.started
 	if m == nil {
 		t.Fatal("not started")
+	}
+	if m.Init.MachineID != testMachineID {
+		t.Errorf("machine ID %q, want the one kept next to the disk", m.Init.MachineID)
 	}
 	if m.Link.HostIface != "cyb0-3" || m.Link.Netns != "" || m.MAC != "02:c7:ac:00:00:03" {
 		t.Errorf("link %+v, mac %s", m.Link, m.MAC)

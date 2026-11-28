@@ -1,6 +1,8 @@
 package box
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -17,8 +19,8 @@ import (
 )
 
 // Reseed replaces b's disk with a new one seeded from b.Image, as Seed
-// would make it, carrying over what identifies the box: its machine ID
-// and SSH host keys (see carry). Everything else the old disk held is
+// would make it, carrying over the box's SSH host keys (see carry); its
+// machine ID is the host's to write (Box.MachineID). Everything else the old disk held is
 // gone from the box. The new disk is made as <name>.new and swapped in
 // by renaming, so the old one is untouched until then, and it stays as
 // <name>.prev until the next reseed. The box must not be running.
@@ -31,7 +33,7 @@ func (s Store) Reseed(b *Box, sizeBytes int64, progress func(string)) error {
 		s.Destroy(next)
 		return err
 	}
-	progress("carrying the machine ID and SSH host keys over to " + s.volume(next))
+	progress("carrying the SSH host keys over to " + s.volume(next))
 	if err := s.carry(b.Name, next); err != nil {
 		s.Destroy(next)
 		return err
@@ -109,7 +111,7 @@ func (s Store) mounted(name string, fn func(dirs []string) error, ms ...mount) e
 	return fn(dirs)
 }
 
-// carryFiles copies the machine ID and SSH host keys from the tree at
+// carryFiles copies the SSH host keys from the tree at
 // src to the one at dst, where they replace the image's. Both trees are
 // box content, so every path goes through os.Root, and only regular files
 // are copied.
@@ -124,7 +126,7 @@ func carryFiles(src, dst string) error {
 		return err
 	}
 	defer to.Close()
-	names := []string{"etc/machine-id"}
+	var names []string
 	if keys, err := fs.ReadDir(from.FS(), "etc/ssh"); err == nil {
 		for _, k := range keys {
 			if strings.HasPrefix(k.Name(), "ssh_host_") {
@@ -172,4 +174,27 @@ func copyFile(from, to *os.Root, name string, perm fs.FileMode) error {
 		err = cerr
 	}
 	return err
+}
+
+// NewMachineID is a random machine ID, as systemd would make one.
+func NewMachineID() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return hex.EncodeToString(b)
+}
+
+// MachineID returns the machine ID on name's disk, so a box from before
+// the host kept them keeps its own, or a new one if the disk has none.
+func (s Store) MachineID(name string) (string, error) {
+	id := NewMachineID()
+	err := s.mounted(name, func(dirs []string) error {
+		b, err := os.ReadFile(filepath.Join(dirs[0], "etc/machine-id"))
+		if old := strings.TrimSpace(string(b)); err == nil && len(old) == 32 {
+			if _, err := hex.DecodeString(old); err == nil {
+				id = old
+			}
+		}
+		return nil
+	}, mount{device(s.volume(name)), "ro"})
+	return id, err
 }
